@@ -1,0 +1,79 @@
+{
+  "name": "@morpho-org/viem-dlc",
+  "version": "0.0.1",
+  "description": "",
+  "license": "MIT",
+  "keywords": [],
+  "author": "Morpho Association <contact@morpho.org>",
+  "contributors": [
+    "Hayden Shively <hayden@morpho.xyz>"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./actions": {
+      "types": "./dist/actions/index.d.ts",
+      "import": "./dist/actions/index.js",
+      "default": "./dist/actions/index.js"
+    },
+    "./stores": {
+      "types": "./dist/stores/index.d.ts",
+      "import": "./dist/stores/index.js",
+      "default": "./dist/stores/index.js"
+    },
+    "./stores/compressed": {
+      "types": "./dist/stores/compressed.d.ts",
+      "import": "./dist/stores/compressed.js",
+      "default": "./dist/stores/compressed.js"
+    },
+    "./stores/upstash": {
+      "types": "./dist/stores/upstash.d.ts",
+      "import": "./dist/stores/upstash.js",
+      "default": "./dist/stores/upstash.js"
+    },
+    "./transports": {
+      "types": "./dist/transports/index.d.ts",
+      "import": "./dist/transports/index.js",
+      "default": "./dist/transports/index.js"
+    },
+    "./utils": {
+      "types": "./dist/utils/index.d.ts",
+      "import": "./dist/utils/index.js",
+      "default": "./dist/utils/index.js"
+    }
+  },
+  "scripts": {
+    "format": "pnpm exec biome format --write",
+    "lint": "pnpm exec biome lint --write",
+    "build": "tsc",
+    "typecheck": "tsc --project tsconfig.json --noEmit --incremental",
+    "test:unit": "vitest run",
+    "prepare": "pnpm build"
+  },
+  "peerDependencies": {
+    "@upstash/redis": "^1.0.0",
+    "viem": "^2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@upstash/redis": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.13",
+    "@tsconfig/node-ts": "23.6.2",
+    "@tsconfig/node24": "24.0.4",
+    "@types/node": "25.2.0",
+    "@upstash/redis": "1.36.1",
+    "typescript": "5.9.3",
+    "viem": "2.45.1",
+    "vitest": "4.0.18"
+  },
+  "packageManager": "pnpm@10.22.0"
+}
