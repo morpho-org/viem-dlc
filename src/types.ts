@@ -1,0 +1,128 @@
+import type {
+  BlockNumber,
+  BlockTag,
+  EIP1193RequestFn,
+  Hex,
+  MaybePromise,
+  Prettify,
+  PublicRpcSchema,
+  RpcSchema,
+} from "viem";
+
+import type { Concat, ElementwiseUnionUnion, Optionalize, Tuple } from "./utils/tuples.js";
+
+/*//////////////////////////////////////////////////////////////
+                            HELPERS
+//////////////////////////////////////////////////////////////*/
+
+/**
+ * Union of method signatures found in `T` that match `Method`.
+ * `Method` is `string` by default, which matches all signatures.
+ */
+export type RpcSignature<T extends RpcSchema = RpcSchema, Method extends T[number]["Method"] = string> = Extract<
+  T[number],
+  { Method: Method }
+>;
+
+/**
+ * Extended entry that defines `AdditionalParameters` for a single `Method`.
+ * The method must exist in `T` with tuple-like `Parameters`.
+ */
+export type RpcSignatureExtension<T extends RpcSchema> = Extract<
+  T[number],
+  { Parameters: Tuple }
+>["Method"] extends infer M
+  ? {
+      Method: M;
+      AdditionalParameters: Tuple;
+    }
+  : never;
+
+/**
+ * Extended entries that define `AdditionalParameters` for a set of `Method`s.
+ * Each method must exist in `T` with tuple-like `Parameters`.
+ */
+export type RpcSchemaExtension<T extends RpcSchema> = readonly RpcSignatureExtension<T>[];
+
+type DeriveParameters<P, AdditionalP extends Tuple> = Exclude<P, undefined> extends infer Base // Infer non-optional part of `P`
+  ? [Base] extends [never]
+    ? P // undefined-ish, leave as-is
+    : [Base] extends [Tuple]
+      ? Concat<ElementwiseUnionUnion<Base>, Optionalize<AdditionalP>> | Extract<P, undefined>
+      : P // not tuple-ish, leave as-is
+  : never;
+
+/**
+ * Extends `T[K]["Parameters"]` to include `AdditionalParameters` (if any exist for `T[K]["Method"]`)
+ * as an optional suffix. Preserves named tuple labels.
+ */
+type DeriveRpcSignature<
+  T extends RpcSchema,
+  K extends keyof T,
+  Extension extends RpcSignatureExtension<T>,
+> = T[K] extends { Method: infer M; Parameters?: infer P } // Try to infer Method and Parameters types for `T[K]`. If unable, leave `T[K]` as-is.
+  ? // If `Extension` lacks Method `M`, leave `T[K]` as-is. Otherwise derive extended parameters.
+    [Extract<Extension, { Method: M }>] extends [never]
+    ? T[K]
+    : Omit<T[K], "Parameters"> & {
+        Parameters: DeriveParameters<P, Extract<Extension, { Method: M }>["AdditionalParameters"]>;
+      }
+  : T[K];
+
+/**
+ * Derives a new `RpcSchema` that appends the `AdditionalParameters` of `Extension` as optional elements
+ * of `T`'s `Parameters`.
+ *
+ * This allows you to extend a base `RpcSchema` (e.g., `PublicRpcSchema`) without jeapardizing existing,
+ * expected functionality, in contrast to a naive approach that could overwrite method(s) with entirely
+ * different parameters.
+ *
+ * @example
+ * // To add cache-related args to `eth_call`:
+ * export type CacheRpcSchema = SafelyExtendRpcSchema<
+ *   PublicRpcSchema,
+ *   [{ Method: 'eth_call'; AdditionalParameters: [{ cacheKeys: string[] }] }]
+ * >
+ *
+ * const req = async (args: EIP1193Parameters<CacheRpcSchema>) => {
+ *   if (args.method === 'eth_call') {
+ *     // Existing parameters are unchanged:
+ *     const a = args.params[0] // type: ExactPartial<RpcTransactionRequest>
+ *     const b = args.params[1] // type: `0x${string}` | BlockTag | RpcBlockIdentifier | undefined
+ *     const c = args.params[2] // type: RpcStateOverride | undefined
+ *     const d = args.params[3] // type: Rpc | undefined
+ *     // `AdditionalParameters` are appended at the end:
+ *     const e = args.params[4] // type: { cacheKeys: string[]; } | undefined
+ *   }
+ *   // ...
+ * }
+ */
+export type SafelyExtendRpcSchema<T extends RpcSchema, Extension extends RpcSchemaExtension<T>> = {
+  readonly [K in keyof T]: Prettify<DeriveRpcSignature<T, K, Extension[number]>>;
+};
+
+/*//////////////////////////////////////////////////////////////
+                              TYPES
+//////////////////////////////////////////////////////////////*/
+
+export interface Store {
+  get(key: string): MaybePromise<string | null>;
+  set(key: string, value: string): MaybePromise<void>;
+  delete(key: string): MaybePromise<void>;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface Cache<T extends {}> {
+  read(keys: string[]): Promise<(T | undefined)[]>;
+  write(items: { key: string; value: T }[]): Promise<void>;
+}
+
+export type BlockNumberish = BlockNumber | BlockTag | Hex;
+
+export type BlockRange = { fromBlock: bigint; toBlock: bigint };
+
+export type EIP1193RequestOptions = Parameters<EIP1193RequestFn>["1"];
+
+export type EthGetLogsFilter = RpcSignature<PublicRpcSchema, "eth_getLogs">["Parameters"][0];
+
+export type EthGetLogsHashlessFilter = Omit<EthGetLogsFilter, "blockHash">;
