@@ -1,16 +1,25 @@
 {
   "name": "@morpho-org/viem-dlc",
   "version": "0.0.1",
-  "description": "",
+  "description": "A collection of flexible viem extensions with a focus on intelligent caching.",
   "license": "MIT",
-  "keywords": [],
+  "keywords": [
+    "viem",
+    "cache",
+    "eth_getLogs"
+  ],
   "author": "Morpho Association <contact@morpho.org>",
   "contributors": [
     "Hayden Shively <hayden@morpho.xyz>"
   ],
+  "repository": "https://github.com/morpho-org/viem-dlc.git",
+  "homepage": "https://github.com/morpho-org/viem-dlc",
   "type": "module",
   "sideEffects": false,
   "files": ["dist"],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
