@@ -1,6 +1,6 @@
 import type { Address, LogTopic } from "viem";
 
-import type { EthGetLogsParams } from "../../types.js";
+import type { BlockRange, EthGetLogsParams } from "../../types.js";
 import { cyrb64Hash } from "../../utils/hash.js";
 
 /** Separator between filter part and block range part of cache key */
@@ -34,11 +34,17 @@ export function computeCacheKey(params: {
   topics?: LogTopic[];
   fromBlock: bigint;
   toBlock: bigint;
+  /** When provided, the original call's block range is included in the group hash */
+  originalRange?: BlockRange;
 }): string {
   const addressPart = normalizeAddress(params.address);
   const topicsPart = normalizeTopics(params.topics);
 
-  const filterPart = cyrb64Hash(`${addressPart}:${topicsPart}`, 36, 777777);
+  const originalRangePart = params.originalRange
+    ? `:${params.originalRange.fromBlock}:${params.originalRange.toBlock}`
+    : "";
+
+  const filterPart = cyrb64Hash(`${addressPart}:${topicsPart}${originalRangePart}`, 36, 777777);
   const rangePart = `${params.fromBlock}:${params.toBlock}`;
 
   return `${params.chainId}:ethGetLogs:${filterPart}${CACHE_KEY_SEPARATOR}${rangePart}`;

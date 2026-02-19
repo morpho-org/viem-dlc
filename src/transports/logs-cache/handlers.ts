@@ -4,7 +4,7 @@ import type { BlockRange, Cache, EIP1193PublicRequestFn, EthGetLogsParams } from
 import { divideBlockRange, isInBlockRange, mergeBlockRanges, resolveBlockNumber } from "../../utils/blocks.js";
 import { min } from "../../utils/math.js";
 
-import type { CachedChunk, InvalidationStrategy } from "./types.js";
+import { CacheKeyIncludes, type CachedChunk, type InvalidationStrategy } from "./types.js";
 import { computeCacheKey } from "./utils.js";
 
 /**
@@ -46,10 +46,12 @@ export async function handleGetLogs(
     binSize,
     invalidationStrategy,
     cache,
+    cacheKeyIncludes,
   }: {
     binSize: number;
     invalidationStrategy: InvalidationStrategy;
     cache: Cache<CachedChunk>;
+    cacheKeyIncludes?: CacheKeyIncludes;
   },
 ): Promise<RpcLog[]> {
   // blockHash queries are not cached - pass through
@@ -69,6 +71,9 @@ export async function handleGetLogs(
   // TODO: handle the above + case where they're above latest, maybe throw errors, both here and in divider.
   // TODO: also maybe update divideBlockRange to allow only alinging fromBlock to help avoid this in divider
 
+  const originalRange =
+    cacheKeyIncludes === CacheKeyIncludes.BlockRange ? { fromBlock, toBlock } : undefined;
+
   // Generate bin-aligned ranges and try to read from cache
   const ranges = divideBlockRange({ fromBlock, toBlock }, binSize, binSize);
   const cacheKeys = ranges.map((range) =>
@@ -78,6 +83,7 @@ export async function handleGetLogs(
       topics: filter.topics,
       fromBlock: range.fromBlock,
       toBlock: range.toBlock,
+      originalRange,
     }),
   );
   const cachedValues = await cache.read(cacheKeys);
@@ -92,7 +98,7 @@ export async function handleGetLogs(
     const validLogs = cached ? tryUseCachedRange(cached, range, ranges.length, invalidationStrategy) : null;
 
     if (validLogs !== null) {
-      allLogs.push(...validLogs);
+      for (const log of validLogs) allLogs.push(log);
     } else {
       gaps.push(range);
     }
@@ -119,6 +125,10 @@ export async function handleGetLogs(
                   // TODO: (@haydenshively future-work) There's probably a way to pass this through without
                   // polluting filter args
                   latestBlock: toHex(latestBlockNumber), // extra param that logsDivider understands
+                  ...(originalRange && {
+                    originalFromBlock: toHex(originalRange.fromBlock),
+                    originalToBlock: toHex(originalRange.toBlock),
+                  }),
                 },
               ],
             },
@@ -135,7 +145,11 @@ export async function handleGetLogs(
       throw new Error(`${context} ${String(error)}`);
     }
 
-    allLogs.push(...logs.flat());
+    for (const chunk of logs) {
+      for (const log of chunk) {
+        allLogs.push(log);
+      }
+    }
   }
 
   return allLogs

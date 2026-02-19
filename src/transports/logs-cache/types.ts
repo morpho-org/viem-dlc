@@ -37,6 +37,18 @@ export interface InvalidationContext {
 /** Returns probability [0,1] that a cached chunk should be refetched */
 export type InvalidationStrategy = (context: InvalidationContext) => number;
 
+/** Controls what additional information is included in the cache key's group portion. */
+export enum CacheKeyIncludes {
+  /**
+   * Include the original call's resolved block range in the cache key group.
+   * This bounds the size of each ShardedCache group to `ceil(callRange / binSize)` entries,
+   * preventing OOM from unbounded group growth.
+   *
+   * Trade-off: bins from different original calls (even if they overlap) are cached separately.
+   */
+  BlockRange = "BlockRange",
+}
+
 export type LogsCacheConfig = {
   /**
    * Cache alignment boundary. Chunks are aligned to multiples of this value.
@@ -46,6 +58,11 @@ export type LogsCacheConfig = {
   /** Returns the probability [0,1] that a cached chunk should be refetched. */
   invalidationStrategy: InvalidationStrategy;
   store: Store;
+  /**
+   * When set, includes additional information in the cache key group,
+   * bounding ShardedCache group sizes and preventing OOM.
+   */
+  cacheKeyIncludes?: CacheKeyIncludes;
 
   logsDividerConfig: Omit<LogsDividerConfig, "alignTo" | "onLogsResponse">;
   rateLimiterConfig: RateLimiterConfig;

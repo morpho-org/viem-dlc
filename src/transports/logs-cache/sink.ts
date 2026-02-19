@@ -5,7 +5,7 @@ import { isInBlockRange, mergeBlockRanges } from "../../utils/blocks.js";
 import { max, min } from "../../utils/math.js";
 import type { LogsResponse, OnLogsResponse } from "../logs-divider/types.js";
 
-import type { CachedChunk } from "./types.js";
+import { CacheKeyIncludes, type CachedChunk } from "./types.js";
 import { computeCacheKey } from "./utils.js";
 
 export interface SinkConfig {
@@ -14,6 +14,8 @@ export interface SinkConfig {
   binSize: number;
   /** Cache instance to write to */
   cache: Cache<CachedChunk>;
+  /** When set, includes additional information in cache key groups */
+  cacheKeyIncludes?: CacheKeyIncludes;
 }
 
 interface BinAccumulator {
@@ -54,7 +56,7 @@ function getLogKey(log: RpcLog): string {
  * @internal
  */
 export function createSink(config: SinkConfig): OnLogsResponse {
-  const { chainId, binSize, cache } = config;
+  const { chainId, binSize, cache, cacheKeyIncludes } = config;
   const binSizeBigInt = BigInt(binSize);
 
   // Map from cache key -> accumulator
@@ -62,6 +64,9 @@ export function createSink(config: SinkConfig): OnLogsResponse {
 
   return (response: LogsResponse) => {
     const { logs, filter, fromBlock, toBlock, fetchedAtBlock, fetchedAt } = response;
+
+    const originalRange =
+      cacheKeyIncludes === CacheKeyIncludes.BlockRange ? response.originalRange : undefined;
 
     // Collect completed bins for batched write
     const completedBins: { key: string; value: CachedChunk }[] = [];
@@ -78,6 +83,7 @@ export function createSink(config: SinkConfig): OnLogsResponse {
         topics: filter.topics,
         fromBlock: binStart,
         toBlock: binEnd,
+        originalRange,
       });
 
       // Get or create accumulator for this bin
@@ -95,7 +101,7 @@ export function createSink(config: SinkConfig): OnLogsResponse {
 
       // Add logs that fall within this bin's overlap
       const binLogs = logs.filter(isInBlockRange({ fromBlock: binStart, toBlock: binEnd }));
-      acc.logs.push(...binLogs);
+      for (const log of binLogs) acc.logs.push(log);
       acc.coveredRanges.push({
         // It's important to use actual `filter.toBlock` because planned `toBlock` may have been > latestBlock,
         // and therefore not actually covered.

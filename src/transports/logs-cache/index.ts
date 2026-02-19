@@ -11,6 +11,7 @@ import { createSink } from "./sink.js";
 import type { CachedChunk, InvalidationStrategy, LogsCacheConfig } from "./types.js";
 import { CACHE_KEY_SEPARATOR } from "./utils.js";
 
+export { CacheKeyIncludes } from "./types.js";
 export type {
   CachedChunk,
   InvalidationStrategy,
@@ -111,7 +112,7 @@ export function createSimpleInvalidation(
 export function logsCache(
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
   baseTransportFn: Transport<string, Record<string, any>, EIP1193PublicRequestFn>,
-  { binSize, store, invalidationStrategy, logsDividerConfig, rateLimiterConfig }: LogsCacheConfig,
+  { binSize, store, invalidationStrategy, cacheKeyIncludes, logsDividerConfig, rateLimiterConfig }: LogsCacheConfig,
 ): Transport {
   return (params) => {
     if (params.chain === undefined) {
@@ -120,7 +121,7 @@ export function logsCache(
     const chainId = params.chain.id;
 
     const cache = new ShardedCache<CachedChunk>(store, stringify, parse, CACHE_KEY_SEPARATOR);
-    const sink = createSink({ chainId, binSize, cache });
+    const sink = createSink({ chainId, binSize, cache, cacheKeyIncludes });
     const transport = logsDivider(rateLimiter(baseTransportFn, rateLimiterConfig), {
       ...logsDividerConfig,
       alignTo: binSize,
@@ -137,6 +138,7 @@ export function logsCache(
         binSize,
         invalidationStrategy,
         cache,
+        cacheKeyIncludes,
       });
     };
 

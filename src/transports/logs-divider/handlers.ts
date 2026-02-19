@@ -19,6 +19,7 @@ interface ProcessContext {
   baseFilter: Omit<EthGetLogsParams, "blockHash">;
   maxConcurrentChunks: number;
   latestBlockNumber: bigint;
+  originalRange?: BlockRange;
 }
 
 /** Fetches logs for a single range with automatic retry and range halving on range-related failure. */
@@ -55,6 +56,7 @@ async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange): Prom
       toBlock: range.toBlock,
       fetchedAtBlock: ctx.latestBlockNumber,
       fetchedAt: Date.now(),
+      originalRange: ctx.originalRange,
     });
 
     return logs;
@@ -118,11 +120,16 @@ async function processRangesWithConcurrency(ctx: ProcessContext, ranges: BlockRa
  */
 export async function handleGetLogs(
   requestFn: EIP1193PublicRequestFn,
-  filter: EthGetLogsParams & { latestBlock?: Hex },
+  filter: EthGetLogsParams & { latestBlock?: Hex; originalFromBlock?: Hex; originalToBlock?: Hex },
   config: Required<Omit<LogsDividerConfig, "alignTo">> & Pick<LogsDividerConfig, "alignTo">,
 ): Promise<RpcLog[]> {
   const maybeLatestBlockNumber = filter.latestBlock;
   delete filter.latestBlock; // make sure our extra param isn't passed to upstream RPCs
+
+  const maybeOriginalFromBlock = filter.originalFromBlock;
+  const maybeOriginalToBlock = filter.originalToBlock;
+  delete filter.originalFromBlock;
+  delete filter.originalToBlock;
 
   // blockHash queries cannot be divided - pass through
   if (filter.blockHash) {
@@ -147,6 +154,10 @@ export async function handleGetLogs(
     baseFilter: filter,
     maxConcurrentChunks: config.maxConcurrentChunks,
     latestBlockNumber,
+    originalRange:
+      maybeOriginalFromBlock && maybeOriginalToBlock
+        ? { fromBlock: hexToBigInt(maybeOriginalFromBlock), toBlock: hexToBigInt(maybeOriginalToBlock) }
+        : undefined,
   };
 
   const range: BlockRange = { fromBlock, toBlock };

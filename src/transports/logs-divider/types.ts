@@ -1,6 +1,6 @@
 import type { Hex, RpcLog } from "viem";
 
-import type { EthGetLogsParams } from "../../types.js";
+import type { BlockRange, EthGetLogsParams } from "../../types.js";
 
 /** Data provided to the response callback */
 export interface LogsResponse {
@@ -26,6 +26,8 @@ export interface LogsResponse {
   fetchedAtBlock: bigint;
   /** Unix timestamp (ms) when logs response was received */
   fetchedAt: number;
+  /** Original call's resolved block range (for cache key scoping) */
+  originalRange?: BlockRange;
 }
 
 /** Callback invoked for each successful sub-request (including retried chunks) */
