@@ -10,11 +10,7 @@ rate limiting, and automatic request splitting.
 pnpm add @morpho-org/viem-dlc
 ```
 
-> Published to the GitHub Package Registry. You may need to configure your `.npmrc`:
->
-> ```
-> @morpho-org:registry=https://npm.pkg.github.com
-> ```
+Also available on the [GitHub Package Registry](https://npm.pkg.github.com).
 
 ## Transports
 
