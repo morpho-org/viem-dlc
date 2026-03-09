@@ -86,14 +86,14 @@ export class DebouncedStore implements Store {
 
   /** Schedules `key` to be set on the underlying store, respecting the configured `DebouncedStoreOptions`. */
   async set(key: string, value: string) {
-    if (this.closed) throw new Error("Store is closed");
+    if (this.closed) throw new Error("[DebouncedStore] Store is closed");
     this.buffer(key, { kind: "set", value });
     void this.pump();
   }
 
   /** Schedules `key` to be deleted from the underlying store, respecting the configured `DebouncedStoreOptions`. */
   async delete(key: string) {
-    if (this.closed) throw new Error("Store is closed");
+    if (this.closed) throw new Error("[DebouncedStore] Store is closed");
     this.buffer(key, { kind: "delete" });
     void this.pump();
   }

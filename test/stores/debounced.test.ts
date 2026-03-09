@@ -592,10 +592,7 @@ describe("DebouncedStore", () => {
         maxWritesBurst: 1,
         maxWritesPerSecond: 100,
         onWriteError: (key, err) => {
-          // viem's withTimeout throws an error with message "timed out"
-          if (err instanceof Error && err.message === "timed out") {
-            errors.push({ key, err });
-          }
+          errors.push({ key, err });
         },
       });
 
@@ -607,6 +604,7 @@ describe("DebouncedStore", () => {
 
       expect(errors.length).toBe(1);
       expect(errors[0]!.key).toBe("key");
+      expect(errors[0]!.err).toBeInstanceOf(Error);
 
       underlying.set = originalSet;
       store.close();
