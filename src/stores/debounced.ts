@@ -39,7 +39,10 @@ function dueAt(e: PendingEntry, opts: Pick<DebouncedStoreOptions, "debounceMs" |
 function applyUpstream(store: Store, key: string, op: PendingOp): Promise<void> {
   const fn = async () => (op.kind === "set" ? store.set(key, op.value) : store.delete(key));
   // NOTE: It's important for DebouncedStore.pump that this doesn't hang.
-  return withTimeout(fn, { timeout: 10_000 });
+  return withTimeout(fn, {
+    errorInstance: new Error(`[DebouncedStore] upstream ${op.kind} timed out for key "${key}"`),
+    timeout: 10_000,
+  });
 }
 
 /**

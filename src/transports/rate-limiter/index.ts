@@ -54,7 +54,7 @@ export function rateLimiter(
     throw new Error(`maxRequestsPerSecond must be positive, got ${maxRequestsPerSecond}`);
   }
   if (maxBurstRequests < 1) {
-    throw new Error(`maxConcurrency must be at least 1, got ${maxBurstRequests}`);
+    throw new Error(`maxBurstRequests must be at least 1, got ${maxBurstRequests}`);
   }
 
   return (params) => {
