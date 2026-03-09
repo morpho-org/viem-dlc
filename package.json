@@ -1,6 +1,6 @@
 {
   "name": "@morpho-org/viem-dlc",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "A collection of flexible viem extensions with a focus on intelligent caching.",
   "license": "MIT",
   "keywords": [
@@ -17,9 +17,6 @@
   "type": "module",
   "sideEffects": false,
   "files": ["dist"],
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
