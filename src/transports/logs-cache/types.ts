@@ -47,6 +47,6 @@ export type LogsCacheConfig = {
   invalidationStrategy: InvalidationStrategy;
   store: Store;
 
-  logsDividerConfig: Omit<LogsDividerConfig, "alignTo" | "onLogsResponse">;
+  logsDividerConfig: Omit<LogsDividerConfig, "alignTo">;
   rateLimiterConfig: RateLimiterConfig;
 };

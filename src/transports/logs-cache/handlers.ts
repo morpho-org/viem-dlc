@@ -6,6 +6,7 @@ import { min } from "../../utils/math.js";
 import type { LogsDividerRpcSchema } from "../logs-divider/schema.js";
 
 import type { LogsCacheRpcSchema } from "./schema.js";
+import { createSink } from "./sink.js";
 import type { CachedChunk, InvalidationStrategy } from "./types.js";
 import { computeCacheKey } from "./utils.js";
 
@@ -105,6 +106,10 @@ export async function handleGetLogs(
   if (gaps.length > 0) {
     const rangesToFetch = mergeBlockRanges(gaps);
 
+    const sinkConfig = { chainId, binSize, cache };
+    const sinkContext = { filter: { address: filter.address, topics: filter.topics } };
+    const sink = createSink(sinkConfig, sinkContext);
+
     let logs: RpcLog[][];
     try {
       logs = await Promise.all(
@@ -121,6 +126,7 @@ export async function handleGetLogs(
                 },
                 {
                   latestBlock: toHex(latestBlockNumber),
+                  onLogsResponse: sink,
                 },
               ],
             },
