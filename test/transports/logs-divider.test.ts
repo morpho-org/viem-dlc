@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { handleGetLogs } from "../../src/transports/logs-divider/handlers.js";
 import type { LogsResponse } from "../../src/transports/logs-divider/types.js";
+import { estimateUtf8Bytes } from "../../src/utils/json.js";
 import { sleep } from "../../src/utils/sleep.js";
 
 function createMockLog(blockNumber: bigint, logIndex = 0): RpcLog {
@@ -133,6 +134,21 @@ describe("handleGetLogs", () => {
 
       const getLogsCall = requestFn.mock.calls.find((call: any[]) => call[0].method === "eth_getLogs");
       expect(getLogsCall?.[0].params[0].fromBlock).toBe(toHex(0n));
+    });
+
+    it("filters out logs above maxLogBytes and keeps logs exactly at the limit", async () => {
+      const smallLog = createMockLog(0n, 0);
+      const largeLog = { ...createMockLog(0n, 1), data: `0x${"a".repeat(1_000)}` as Hex };
+      const maxLogBytes = estimateUtf8Bytes(smallLog);
+      const requestFn = createMockRequestFn({ logGenerator: () => [smallLog, largeLog] });
+
+      const logs = await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], {
+        ...defaultConfig,
+        maxLogBytes,
+      });
+
+      expect(logs).toEqual([smallLog]);
+      expect(estimateUtf8Bytes(largeLog)).toBeGreaterThan(maxLogBytes);
     });
   });
 
@@ -361,6 +377,22 @@ describe("handleGetLogs", () => {
 
       expect(capturedFilter.address).toBe(address);
       expect(capturedFilter.fromBlock).toBe(toHex(0n));
+    });
+
+    it("passes filtered logs to onLogsResponse", async () => {
+      const smallLog = createMockLog(0n, 0);
+      const largeLog = { ...createMockLog(0n, 1), data: `0x${"b".repeat(1_000)}` as Hex };
+      const logsResponses: LogsResponse[] = [];
+      const requestFn = createMockRequestFn({ logGenerator: () => [smallLog, largeLog] });
+
+      await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], {
+        ...defaultConfig,
+        maxLogBytes: estimateUtf8Bytes(smallLog),
+        onLogsResponse: (response) => logsResponses.push(response),
+      });
+
+      expect(logsResponses).toHaveLength(1);
+      expect(logsResponses[0]!.logs).toEqual([smallLog]);
     });
 
     it("calls callback for retried (halved) requests too", async () => {

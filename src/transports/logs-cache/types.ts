@@ -38,6 +38,7 @@ export interface InvalidationContext {
 export type InvalidationStrategy = (context: InvalidationContext) => number;
 
 export type LogsCacheConfig = {
+  store: Store;
   /**
    * Cache alignment boundary. Chunks are aligned to multiples of this value.
    * Smaller values allow finer-grained invalidation.
@@ -45,7 +46,6 @@ export type LogsCacheConfig = {
   binSize: number;
   /** Returns the probability [0,1] that a cached chunk should be refetched. */
   invalidationStrategy: InvalidationStrategy;
-  store: Store;
 
   logsDividerConfig: Omit<LogsDividerConfig, "alignTo" | "onLogsResponse">;
   rateLimiterConfig: RateLimiterConfig;
