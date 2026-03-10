@@ -1,4 +1,4 @@
-import { type Hex, type LogTopic, type RpcLog, toHex } from "viem";
+import { type Address, type Hex, type LogTopic, type RpcLog, toHex } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { handleGetLogs } from "../../src/transports/logs-cache/handlers.js";
@@ -238,12 +238,13 @@ describe("computeCacheKey", () => {
 
 describe("createCacheWriter", () => {
   const binSize = 10_000;
+  const defaultFilter = { address: "0x1234567890123456789012345678901234567890" as Address, topics: ["0xabc"] as LogTopic[] };
   let cache: ReturnType<typeof createMockCache>;
   let sink: ReturnType<typeof createSink>;
 
   beforeEach(() => {
     cache = createMockCache();
-    sink = createSink({ chainId, binSize, cache });
+    sink = createSink({ chainId, binSize, cache }, { filter: defaultFilter });
   });
 
   describe("single response handling", () => {
@@ -252,7 +253,6 @@ describe("createCacheWriter", () => {
 
       sink({
         logs: [log],
-        filter: { fromBlock: "0x0", toBlock: "0x270f" }, // 0-9999
         fromBlock: 0n,
         toBlock: 9999n,
         fetchedAtBlock: 50000n,
@@ -270,7 +270,6 @@ describe("createCacheWriter", () => {
     it("does not write incomplete bin to cache", async () => {
       sink({
         logs: [createMockLog(5000n)],
-        filter: { fromBlock: "0x0", toBlock: "0x1388" }, // 0-5000 (partial bin)
         fromBlock: 0n,
         toBlock: 5000n,
         fetchedAtBlock: 50000n,
@@ -288,7 +287,6 @@ describe("createCacheWriter", () => {
       // First half of bin
       sink({
         logs: [createMockLog(2500n)],
-        filter: { fromBlock: "0x0", toBlock: "0x1387" },
         fromBlock: 0n,
         toBlock: 4999n,
         fetchedAtBlock: 50000n,
@@ -301,7 +299,6 @@ describe("createCacheWriter", () => {
       // Second half of bin
       sink({
         logs: [createMockLog(7500n)],
-        filter: { fromBlock: "0x1388", toBlock: "0x270f" },
         fromBlock: 5000n,
         toBlock: 9999n,
         fetchedAtBlock: 50000n,
@@ -318,7 +315,6 @@ describe("createCacheWriter", () => {
       // First response covers 0-6000
       sink({
         logs: [createMockLog(3000n)],
-        filter: { fromBlock: "0x0", toBlock: "0x1770" },
         fromBlock: 0n,
         toBlock: 6000n,
         fetchedAtBlock: 50000n,
@@ -328,7 +324,6 @@ describe("createCacheWriter", () => {
       // Second response covers 4000-9999 (overlaps 4000-6000)
       sink({
         logs: [createMockLog(8000n)],
-        filter: { fromBlock: "0xfa0", toBlock: "0x270f" },
         fromBlock: 4000n,
         toBlock: 9999n,
         fetchedAtBlock: 50000n,
@@ -352,7 +347,6 @@ describe("createCacheWriter", () => {
       // First concurrent response covers 0-5000
       sink({
         logs: [uniqueLog1, sharedLog],
-        filter: { fromBlock: "0x0", toBlock: "0x1388" },
         fromBlock: 0n,
         toBlock: 5000n,
         fetchedAtBlock: 50000n,
@@ -362,7 +356,6 @@ describe("createCacheWriter", () => {
       // Second concurrent response covers 5000-9999 (overlaps at 5000)
       sink({
         logs: [sharedLog, uniqueLog2],
-        filter: { fromBlock: "0x1388", toBlock: "0x270f" },
         fromBlock: 5000n,
         toBlock: 9999n,
         fetchedAtBlock: 50000n,
@@ -390,7 +383,6 @@ describe("createCacheWriter", () => {
 
       sink({
         logs,
-        filter: { fromBlock: "0x0", toBlock: "0x4e1f" }, // 0-19999
         fromBlock: 0n,
         toBlock: 19999n,
         fetchedAtBlock: 50000n,
@@ -422,7 +414,6 @@ describe("createCacheWriter", () => {
 
       sink({
         logs: [],
-        filter: { fromBlock: "0x0", toBlock: "0x1387" },
         fromBlock: 0n,
         toBlock: 4999n,
         fetchedAtBlock: 50000n,
@@ -431,7 +422,6 @@ describe("createCacheWriter", () => {
 
       sink({
         logs: [],
-        filter: { fromBlock: "0x1388", toBlock: "0x270f" },
         fromBlock: 5000n,
         toBlock: 9999n,
         fetchedAtBlock: 50000n,
@@ -446,7 +436,6 @@ describe("createCacheWriter", () => {
     it("tracks fetchedAtBlock as max across responses", async () => {
       sink({
         logs: [],
-        filter: { fromBlock: "0x0", toBlock: "0x1387" },
         fromBlock: 0n,
         toBlock: 4999n,
         fetchedAtBlock: 40000n,
@@ -455,7 +444,6 @@ describe("createCacheWriter", () => {
 
       sink({
         logs: [],
-        filter: { fromBlock: "0x1388", toBlock: "0x270f" },
         fromBlock: 5000n,
         toBlock: 9999n,
         fetchedAtBlock: 50000n,
@@ -469,24 +457,24 @@ describe("createCacheWriter", () => {
   });
 
   describe("filter isolation", () => {
-    it("maintains separate accumulators for different filters", async () => {
+    it("maintains separate cache entries for different filters", async () => {
       const address1 = "0x1111111111111111111111111111111111111111";
       const address2 = "0x2222222222222222222222222222222222222222";
 
-      // Response for address1
-      sink({
+      // Create two sinks with different filters (as logsCache would per-request)
+      const sink1 = createSink({ chainId, binSize, cache }, { filter: { address: address1 } });
+      const sink2 = createSink({ chainId, binSize, cache }, { filter: { address: address2 } });
+
+      sink1({
         logs: [createMockLog(5000n)],
-        filter: { address: address1, fromBlock: "0x0", toBlock: "0x270f" },
         fromBlock: 0n,
         toBlock: 9999n,
         fetchedAtBlock: 50000n,
         fetchedAt: Date.now(),
       });
 
-      // Response for address2 (different filter, same range)
-      sink({
+      sink2({
         logs: [createMockLog(6000n)],
-        filter: { address: address2, fromBlock: "0x0", toBlock: "0x270f" },
         fromBlock: 0n,
         toBlock: 9999n,
         fetchedAtBlock: 50000n,
@@ -495,7 +483,7 @@ describe("createCacheWriter", () => {
 
       await sleep(10);
 
-      // Should have two separate cache entries
+      // Should have two separate cache entries (different keys due to different addresses)
       expect(cache.writeCalls).toHaveLength(2);
       expect(cache.storage.size).toBe(2);
     });
