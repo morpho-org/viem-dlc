@@ -238,7 +238,10 @@ describe("computeCacheKey", () => {
 
 describe("createCacheWriter", () => {
   const binSize = 10_000;
-  const defaultFilter = { address: "0x1234567890123456789012345678901234567890" as Address, topics: ["0xabc"] as LogTopic[] };
+  const defaultFilter = {
+    address: "0x1234567890123456789012345678901234567890" as Address,
+    topics: ["0xabc"] as LogTopic[],
+  };
   let cache: ReturnType<typeof createMockCache>;
   let sink: ReturnType<typeof createSink>;
 
