@@ -8,6 +8,7 @@ import {
   isInBlockRange,
   resolveBlockNumber,
 } from "../../utils/blocks.js";
+import { estimateUtf8Bytes } from "../../utils/json.js";
 import { min } from "../../utils/math.js";
 
 import type { LogsDividerRpcSchema } from "./schema.js";
@@ -19,11 +20,12 @@ interface ProcessContext {
   onLogsResponse?: OnLogsResponse;
   baseFilter: EthGetLogsHashlessFilter;
   maxConcurrentChunks: number;
+  maxLogBytes?: number;
   latestBlockNumber: bigint;
 }
 
 /** Fetches logs for a single range with automatic retry and range halving on range-related failure. */
-async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange): Promise<RpcLog[]> {
+async function fetchRangeWithRetry({ maxLogBytes, ...ctx }: ProcessContext, range: BlockRange): Promise<RpcLog[]> {
   // Constrain toBlock to chain tip (range may span past it due to alignment)
   const constrainedRange: BlockRange = {
     fromBlock: range.fromBlock,
@@ -42,11 +44,14 @@ async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange): Prom
   };
 
   try {
-    const logs = await ctx.requestFn(
+    let logs = await ctx.requestFn(
       { method: "eth_getLogs", params: [filter] },
       // `retryCount: 0` so that we fail fast on block range errors
       { dedupe: true, retryCount: 0 },
     );
+    if (maxLogBytes !== undefined) {
+      logs = logs.filter((log) => estimateUtf8Bytes(log) <= maxLogBytes);
+    }
 
     // Success - invoke callback
     ctx.onLogsResponse?.({
@@ -119,7 +124,8 @@ async function processRangesWithConcurrency(ctx: ProcessContext, ranges: BlockRa
 export async function handleGetLogs(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
   [filter, ...params]: RpcSignature<LogsDividerRpcSchema, "eth_getLogs">["Parameters"],
-  config: Required<Omit<LogsDividerConfig, "alignTo">> & Pick<LogsDividerConfig, "alignTo">,
+  config: Required<Omit<LogsDividerConfig, "alignTo" | "maxLogBytes">> &
+    Pick<LogsDividerConfig, "alignTo" | "maxLogBytes">,
 ): Promise<RpcLog[]> {
   // blockHash queries cannot be divided - pass through
   if (filter.blockHash) {
@@ -143,6 +149,7 @@ export async function handleGetLogs(
     onLogsResponse: params[0]?.onLogsResponse,
     baseFilter: filter,
     maxConcurrentChunks: config.maxConcurrentChunks,
+    maxLogBytes: config.maxLogBytes,
     latestBlockNumber,
   };
 

@@ -1,4 +1,23 @@
 /**
+ * Measure the UTF-8 encoded byte length of a string.
+ *
+ * Uses code-point iteration -- no allocations, no TextEncoder.
+ * Lone surrogates count as 3 bytes (matching TextEncoder / U+FFFD behavior).
+ */
+export function measureUtf8Bytes(value: string): number {
+  const len = value.length;
+  let byteLen = 0;
+
+  for (let i = 0; i < len; ) {
+    const cp = value.codePointAt(i)!;
+    byteLen += cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+    i += cp > 0xffff ? 2 : 1;
+  }
+
+  return byteLen;
+}
+
+/**
  * Split a JS string into chunks whose UTF-8 encoded size is <= maxBytes.
  *
  * - Does not split surrogate pairs (iterates by Unicode code point).
