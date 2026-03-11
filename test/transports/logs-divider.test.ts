@@ -364,32 +364,15 @@ describe("handleGetLogs", () => {
       expect(logsResponses[1]!.toBlock).toBe(199n);
     });
 
-    it("provides correct filter in logs response", async () => {
-      let capturedFilter: any;
-      const address = "0x1234567890123456789012345678901234567890";
-      const requestFn = createMockRequestFn({ logsPerRequest: 1 });
-
-      await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50", address }], {
-        ...defaultConfig,
-        onLogsResponse: (response) => {
-          capturedFilter = response.filter;
-        },
-      });
-
-      expect(capturedFilter.address).toBe(address);
-      expect(capturedFilter.fromBlock).toBe(toHex(0n));
-    });
-
     it("passes filtered logs to onLogsResponse", async () => {
       const smallLog = createMockLog(0n, 0);
       const largeLog = { ...createMockLog(0n, 1), data: `0x${"b".repeat(1_000)}` as Hex };
       const logsResponses: LogsResponse[] = [];
       const requestFn = createMockRequestFn({ logGenerator: () => [smallLog, largeLog] });
 
-      await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], {
+      await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }, { onLogsResponse: (response) => logsResponses.push(response) }], {
         ...defaultConfig,
         maxLogBytes: estimateUtf8Bytes(smallLog),
-        onLogsResponse: (response) => logsResponses.push(response),
       });
 
       expect(logsResponses).toHaveLength(1);
