@@ -110,7 +110,6 @@ export async function handleGetLogs(
     const sinkContext = { filter: { address: filter.address, topics: filter.topics } };
     const sink = createSink(sinkConfig, sinkContext);
 
-    let logs: RpcLog[][];
     try {
       const fetches = await Promise.all(
         rangesToFetch.map((range) =>
