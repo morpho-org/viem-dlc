@@ -8,7 +8,6 @@ import { rateLimiter } from "../rate-limiter/index.js";
 import { ShardedCache } from "./cache.js";
 import { handleGetLogs } from "./handlers.js";
 import type { LogsCacheRpcSchema } from "./schema.js";
-import { createSink } from "./sink.js";
 import type { CachedChunk, InvalidationStrategy, LogsCacheConfig } from "./types.js";
 import { CACHE_KEY_SEPARATOR } from "./utils.js";
 
@@ -118,11 +117,9 @@ export function logsCache(
     const chainId = params.chain.id;
 
     const cache = new ShardedCache<CachedChunk>(store, stringify, parse, CACHE_KEY_SEPARATOR);
-    const sink = createSink({ chainId, binSize, cache });
     const transport = logsDivider(rateLimiter(baseTransportFn, rateLimiterConfig), {
       ...logsDividerConfig,
       alignTo: binSize,
-      onLogsResponse: sink,
     })(params);
 
     const request = (args: EIP1193Parameters<LogsCacheRpcSchema>, options?: EIP1193RequestOptions) => {

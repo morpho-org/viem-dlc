@@ -1,23 +1,12 @@
-import type { Hex, RpcLog } from "viem";
-
-import type { EthGetLogsHashlessFilter } from "../../types.js";
+import type { RpcLog } from "viem";
 
 /** Data provided to the response callback */
 export interface LogsResponse {
   /** Logs returned by the sub-request */
   logs: RpcLog[];
-  /** The full eth_getLogs params used for this sub-request */
-  filter: EthGetLogsHashlessFilter & { fromBlock: Hex; toBlock: Hex };
-  /**
-   * Planned start block of this sub-request
-   * (always matches filter.fromBlock)
-   */
+  /** filter.fromBlock for the sub-request */
   fromBlock: bigint;
-  /**
-   * Planned end block of this sub-request
-   * (may be greater than filter.toBlock if alignTo is set and toBlock > "latest")
-   * TODO: (@haydenshively future-work) potentially remove this, it can be confusing
-   */
+  /** filter.toBlock for the sub-request */
   toBlock: bigint;
   /** Latest block (chain tip) when main request started */
   fetchedAtBlock: bigint;
@@ -25,7 +14,7 @@ export interface LogsResponse {
   fetchedAt: number;
 }
 
-/** Callback invoked for each successful sub-request (including retried chunks) */
+/** Callback to be invoked for each successful sub-request (including retried chunks) */
 export type OnLogsResponse = (response: LogsResponse) => void;
 
 export interface LogsDividerConfig {
@@ -39,6 +28,4 @@ export interface LogsDividerConfig {
    * are filtered out before the final return. Useful for cache hit optimization.
    */
   alignTo?: number;
-  /** Optional callback receiving logs results for each sub-request */
-  onLogsResponse?: OnLogsResponse;
 }

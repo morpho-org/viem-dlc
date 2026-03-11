@@ -77,7 +77,6 @@ function createMockRequestFn(options: {
 const defaultConfig = {
   maxBlockRange: 100,
   maxConcurrentChunks: 5,
-  onLogsResponse: () => {},
 };
 
 describe("handleGetLogs", () => {
@@ -332,11 +331,13 @@ describe("handleGetLogs", () => {
 
       await handleGetLogs(
         requestFn,
-        [{ fromBlock: "0x0", toBlock: "0xc7" }], // 2 chunks
+        [
+          { fromBlock: "0x0", toBlock: "0xc7" }, // 2 chunks
+          { onLogsResponse: (response) => logsResponses.push(response) },
+        ],
         {
           ...defaultConfig,
           maxBlockRange: 100,
-          onLogsResponse: (response) => logsResponses.push(response),
         },
       );
 
@@ -345,22 +346,6 @@ describe("handleGetLogs", () => {
       expect(logsResponses[0]!.toBlock).toBe(99n);
       expect(logsResponses[1]!.fromBlock).toBe(100n);
       expect(logsResponses[1]!.toBlock).toBe(199n);
-    });
-
-    it("provides correct filter in logs response", async () => {
-      let capturedFilter: any;
-      const address = "0x1234567890123456789012345678901234567890";
-      const requestFn = createMockRequestFn({ logsPerRequest: 1 });
-
-      await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50", address }], {
-        ...defaultConfig,
-        onLogsResponse: (response) => {
-          capturedFilter = response.filter;
-        },
-      });
-
-      expect(capturedFilter.address).toBe(address);
-      expect(capturedFilter.fromBlock).toBe(toHex(0n));
     });
 
     it("calls callback for retried (halved) requests too", async () => {
@@ -386,11 +371,13 @@ describe("handleGetLogs", () => {
 
       await handleGetLogs(
         requestFn,
-        [{ fromBlock: "0x0", toBlock: "0x63" }], // 100 blocks -> halved to 2x50
+        [
+          { fromBlock: "0x0", toBlock: "0x63" }, // 100 blocks -> halved to 2x50
+          { onLogsResponse: (response) => logsResponses.push(response) },
+        ],
         {
           ...defaultConfig,
           maxBlockRange: 100,
-          onLogsResponse: (response) => logsResponses.push(response),
         },
       );
 
