@@ -370,10 +370,14 @@ describe("handleGetLogs", () => {
       const logsResponses: LogsResponse[] = [];
       const requestFn = createMockRequestFn({ logGenerator: () => [smallLog, largeLog] });
 
-      await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }, { onLogsResponse: (response) => logsResponses.push(response) }], {
-        ...defaultConfig,
-        maxLogBytes: estimateUtf8Bytes(smallLog),
-      });
+      await handleGetLogs(
+        requestFn,
+        [{ fromBlock: "0x0", toBlock: "0x50" }, { onLogsResponse: (response) => logsResponses.push(response) }],
+        {
+          ...defaultConfig,
+          maxLogBytes: estimateUtf8Bytes(smallLog),
+        },
+      );
 
       expect(logsResponses).toHaveLength(1);
       expect(logsResponses[0]!.logs).toEqual([smallLog]);

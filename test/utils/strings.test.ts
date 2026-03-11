@@ -1,6 +1,49 @@
 import { describe, expect, it } from "vitest";
 
-import { shardString } from "../../src/utils/strings.js";
+import { measureUtf8Bytes, shardString } from "../../src/utils/strings.js";
+
+describe("measureUtf8Bytes", () => {
+  it("returns 0 for empty string", () => {
+    expect(measureUtf8Bytes("")).toBe(0);
+  });
+
+  it("counts ASCII characters as 1 byte each", () => {
+    expect(measureUtf8Bytes("hello")).toBe(5);
+    expect(measureUtf8Bytes("a")).toBe(1);
+  });
+
+  it("counts 2-byte characters correctly", () => {
+    // 'ñ' is U+00F1 => 2 bytes
+    expect(measureUtf8Bytes("ñ")).toBe(2);
+    // 'é' is U+00E9 => 2 bytes
+    expect(measureUtf8Bytes("é")).toBe(2);
+  });
+
+  it("counts 3-byte characters correctly", () => {
+    // '中' is U+4E2D => 3 bytes
+    expect(measureUtf8Bytes("中")).toBe(3);
+    expect(measureUtf8Bytes("中文")).toBe(6);
+  });
+
+  it("counts 4-byte characters correctly", () => {
+    // '😀' is U+1F600 => 4 bytes
+    expect(measureUtf8Bytes("😀")).toBe(4);
+    expect(measureUtf8Bytes("🎉")).toBe(4);
+  });
+
+  it("counts mixed-width strings correctly", () => {
+    // 'a' = 1, 'é' = 2, '中' = 3, '😀' = 4 => total 10
+    expect(measureUtf8Bytes("aé中😀")).toBe(10);
+  });
+
+  it("matches TextEncoder output", () => {
+    const encoder = new TextEncoder();
+    const cases = ["", "hello", "ñ", "中文世界", "😀🎉", "hello 中文 😀", "aé中😀"];
+    for (const str of cases) {
+      expect(measureUtf8Bytes(str)).toBe(encoder.encode(str).byteLength);
+    }
+  });
+});
 
 describe("shardString", () => {
   describe("basic functionality", () => {
