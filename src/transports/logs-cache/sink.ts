@@ -1,9 +1,9 @@
-import { hexToBigInt, type RpcLog } from "viem";
+import type { RpcLog } from "viem";
 
-import type { BlockRange, Cache } from "../../types.js";
+import type { BlockRange, Cache, EthGetLogsHashlessFilter } from "../../types.js";
 import { isInBlockRange, mergeBlockRanges } from "../../utils/blocks.js";
 import { max, min } from "../../utils/math.js";
-import type { LogsResponse, OnLogsResponse } from "../logs-divider/types.js";
+import type { OnLogsResponse } from "../logs-divider/types.js";
 
 import type { CachedChunk } from "./types.js";
 import { computeCacheKey } from "./utils.js";
@@ -14,6 +14,10 @@ export interface SinkConfig {
   binSize: number;
   /** Cache instance to write to */
   cache: Cache<CachedChunk>;
+}
+
+export interface SinkContext {
+  filter: Pick<EthGetLogsHashlessFilter, "address" | "topics">;
 }
 
 interface BinAccumulator {
@@ -53,16 +57,13 @@ function getLogKey(log: RpcLog): string {
  *
  * @internal
  */
-export function createSink(config: SinkConfig): OnLogsResponse {
-  const { chainId, binSize, cache } = config;
+export function createSink({ chainId, binSize, cache }: SinkConfig, { filter }: SinkContext): OnLogsResponse {
   const binSizeBigInt = BigInt(binSize);
 
   // Map from cache key -> accumulator
   const accumulators = new Map<string, BinAccumulator>();
 
-  return (response: LogsResponse) => {
-    const { logs, filter, fromBlock, toBlock, fetchedAtBlock, fetchedAt } = response;
-
+  return ({ logs, fromBlock, toBlock, fetchedAt, fetchedAtBlock }) => {
     // Collect completed bins for batched write
     const completedBins: { key: string; value: CachedChunk }[] = [];
 
@@ -95,12 +96,10 @@ export function createSink(config: SinkConfig): OnLogsResponse {
 
       // Add logs that fall within this bin's overlap
       const binLogs = logs.filter(isInBlockRange({ fromBlock: binStart, toBlock: binEnd }));
-      acc.logs.push(...binLogs);
+      for (const log of binLogs) acc.logs.push(log); // NOTE: avoiding `...binLogs` spread due to engine arg limits
       acc.coveredRanges.push({
-        // It's important to use actual `filter.toBlock` because planned `toBlock` may have been > latestBlock,
-        // and therefore not actually covered.
-        fromBlock: max(binStart, hexToBigInt(filter.fromBlock)),
-        toBlock: min(binEnd, hexToBigInt(filter.toBlock)),
+        fromBlock: max(binStart, fromBlock),
+        toBlock: min(binEnd, toBlock),
       });
       acc.fetchedAt = Math.max(acc.fetchedAt, fetchedAt);
       acc.fetchedAtBlock = max(acc.fetchedAtBlock, fetchedAtBlock);

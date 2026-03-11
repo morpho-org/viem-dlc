@@ -56,9 +56,8 @@ async function fetchRangeWithRetry({ maxLogBytes, ...ctx }: ProcessContext, rang
     // Success - invoke callback
     ctx.onLogsResponse?.({
       logs,
-      filter,
-      fromBlock: range.fromBlock,
-      toBlock: range.toBlock,
+      fromBlock: constrainedRange.fromBlock,
+      toBlock: constrainedRange.toBlock,
       fetchedAtBlock: ctx.latestBlockNumber,
       fetchedAt: Date.now(),
     });
@@ -147,7 +146,7 @@ export async function handleGetLogs(
 
   const ctx: ProcessContext = {
     requestFn,
-    onLogsResponse: config.onLogsResponse,
+    onLogsResponse: params[0]?.onLogsResponse,
     baseFilter: filter,
     maxConcurrentChunks: config.maxConcurrentChunks,
     maxLogBytes: config.maxLogBytes,

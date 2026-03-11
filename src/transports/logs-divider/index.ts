@@ -46,7 +46,7 @@ export type * from "./types.js";
  */
 export function logsDivider(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  { maxBlockRange, maxConcurrentChunks = 5, maxLogBytes, alignTo, onLogsResponse = () => {} }: LogsDividerConfig,
+  { maxBlockRange, maxConcurrentChunks = 5, maxLogBytes, alignTo }: LogsDividerConfig,
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
 ): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsDividerRpcSchema>> {
   if (Number.isNaN(maxBlockRange) || maxBlockRange < 1) {
@@ -70,7 +70,6 @@ export function logsDivider(
         maxConcurrentChunks,
         maxLogBytes,
         alignTo,
-        onLogsResponse,
       });
     };
 

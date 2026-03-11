@@ -78,7 +78,6 @@ function createMockRequestFn(options: {
 const defaultConfig = {
   maxBlockRange: 100,
   maxConcurrentChunks: 5,
-  onLogsResponse: () => {},
 };
 
 describe("handleGetLogs", () => {
@@ -348,11 +347,13 @@ describe("handleGetLogs", () => {
 
       await handleGetLogs(
         requestFn,
-        [{ fromBlock: "0x0", toBlock: "0xc7" }], // 2 chunks
+        [
+          { fromBlock: "0x0", toBlock: "0xc7" }, // 2 chunks
+          { onLogsResponse: (response) => logsResponses.push(response) },
+        ],
         {
           ...defaultConfig,
           maxBlockRange: 100,
-          onLogsResponse: (response) => logsResponses.push(response),
         },
       );
 
@@ -418,11 +419,13 @@ describe("handleGetLogs", () => {
 
       await handleGetLogs(
         requestFn,
-        [{ fromBlock: "0x0", toBlock: "0x63" }], // 100 blocks -> halved to 2x50
+        [
+          { fromBlock: "0x0", toBlock: "0x63" }, // 100 blocks -> halved to 2x50
+          { onLogsResponse: (response) => logsResponses.push(response) },
+        ],
         {
           ...defaultConfig,
           maxBlockRange: 100,
-          onLogsResponse: (response) => logsResponses.push(response),
         },
       );
 

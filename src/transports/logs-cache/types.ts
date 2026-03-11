@@ -47,6 +47,6 @@ export type LogsCacheConfig = {
   /** Returns the probability [0,1] that a cached chunk should be refetched. */
   invalidationStrategy: InvalidationStrategy;
 
-  logsDividerConfig: Omit<LogsDividerConfig, "alignTo" | "onLogsResponse">;
+  logsDividerConfig: Omit<LogsDividerConfig, "alignTo">;
   rateLimiterConfig: RateLimiterConfig;
 };

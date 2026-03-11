@@ -6,6 +6,7 @@ import { min } from "../../utils/math.js";
 import type { LogsDividerRpcSchema } from "../logs-divider/schema.js";
 
 import type { LogsCacheRpcSchema } from "./schema.js";
+import { createSink } from "./sink.js";
 import type { CachedChunk, InvalidationStrategy } from "./types.js";
 import { computeCacheKey } from "./utils.js";
 
@@ -94,7 +95,7 @@ export async function handleGetLogs(
     const validLogs = cached ? tryUseCachedRange(cached, range, ranges.length, invalidationStrategy) : null;
 
     if (validLogs !== null) {
-      allLogs.push(...validLogs);
+      for (const log of validLogs) allLogs.push(log); // NOTE: avoiding `...validLogs` spread due to engine arg limits
     } else {
       gaps.push(range);
     }
@@ -105,9 +106,12 @@ export async function handleGetLogs(
   if (gaps.length > 0) {
     const rangesToFetch = mergeBlockRanges(gaps);
 
-    let logs: RpcLog[][];
+    const sinkConfig = { chainId, binSize, cache };
+    const sinkContext = { filter: { address: filter.address, topics: filter.topics } };
+    const sink = createSink(sinkConfig, sinkContext);
+
     try {
-      logs = await Promise.all(
+      const fetches = await Promise.all(
         rangesToFetch.map((range) =>
           requestFn(
             {
@@ -121,6 +125,7 @@ export async function handleGetLogs(
                 },
                 {
                   latestBlock: toHex(latestBlockNumber),
+                  onLogsResponse: sink,
                 },
               ],
             },
@@ -128,6 +133,15 @@ export async function handleGetLogs(
           ),
         ),
       );
+
+      // NOTE: Individual `.push(item)` is safer than `.push(...arr)` for large `arr` because
+      // the spread turns each item into a function arg, which can hit engine limits. Nested
+      // for loop is safer than `.flat()` because that would create a copy.
+      for (const logs of fetches) {
+        for (const log of logs) {
+          allLogs.push(log);
+        }
+      }
     } catch (error) {
       const context = `[logsCache] Gap fetch failed for ${rangesToFetch.length} range(s): ${rangesToFetch.map((r) => `[${r.fromBlock}n, ${r.toBlock}n]`).join(", ")}`;
       if (error instanceof Error) {
@@ -136,8 +150,6 @@ export async function handleGetLogs(
       }
       throw new Error(`${context} ${String(error)}`);
     }
-
-    allLogs.push(...logs.flat());
   }
 
   return allLogs
