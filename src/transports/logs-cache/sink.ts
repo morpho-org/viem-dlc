@@ -96,7 +96,7 @@ export function createSink({ chainId, binSize, cache }: SinkConfig, { filter }: 
 
       // Add logs that fall within this bin's overlap
       const binLogs = logs.filter(isInBlockRange({ fromBlock: binStart, toBlock: binEnd }));
-      acc.logs.push(...binLogs);
+      for (const log of binLogs) acc.logs.push(log); // NOTE: avoiding `...binLogs` spread due to engine arg limits
       acc.coveredRanges.push({
         fromBlock: max(binStart, fromBlock),
         toBlock: min(binEnd, toBlock),
