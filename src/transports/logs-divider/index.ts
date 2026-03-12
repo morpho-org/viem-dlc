@@ -2,6 +2,7 @@ import type { PublicRpcSchema, Transport } from "viem";
 import { custom, type EIP1193RequestFn } from "viem";
 
 import type { EIP1193Parameters, EIP1193RequestOptions } from "../../types.js";
+import { type LogsSieveConfig, logsSieve } from "../logs-sieve/index.js";
 import { type RateLimiterConfig, rateLimiter } from "../rate-limiter/index.js";
 
 import { handleGetLogs } from "./handlers.js";
@@ -15,6 +16,7 @@ export type * from "./types.js";
  * Creates a transport wrapper that divides large eth_getLogs requests into smaller chunks.
  *
  * Internally composes a `rateLimiter` transport for rate and concurrency limiting.
+ * Compose `logsSieve` around the base transport if you also need oversized-log filtering.
  *
  * Features:
  * - Divides requests exceeding maxBlockRange into smaller chunks
@@ -54,18 +56,15 @@ export type * from "./types.js";
  */
 export function logsDivider(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  [{ maxBlockRange, maxLogBytes, alignTo }, rateLimiterConfig]: [LogsDividerConfig, RateLimiterConfig],
+  [logsDividerConfig, rateLimiterConfig, logsSieveConfig]: [LogsDividerConfig, RateLimiterConfig, LogsSieveConfig],
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
 ): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsDividerRpcSchema>> {
-  if (Number.isNaN(maxBlockRange) || maxBlockRange < 1) {
-    throw new Error(`[logsDivider] maxBlockRange must be > 1 (got ${maxBlockRange})`);
-  }
-  if (maxLogBytes !== undefined && (!Number.isSafeInteger(maxLogBytes) || maxLogBytes < 1)) {
-    throw new Error(`[logsDivider] maxLogBytes must be undefined or a safe integer > 1 (got ${maxLogBytes})`);
+  if (Number.isNaN(logsDividerConfig.maxBlockRange) || logsDividerConfig.maxBlockRange < 1) {
+    throw new Error(`[logsDivider] maxBlockRange must be > 1 (got ${logsDividerConfig.maxBlockRange})`);
   }
 
   return (params) => {
-    const transport = rateLimiter(baseTransportFn, [rateLimiterConfig])(params);
+    const transport = rateLimiter(logsSieve(baseTransportFn, [logsSieveConfig]), [rateLimiterConfig])(params);
 
     const request = (args: EIP1193Parameters<LogsDividerRpcSchema>, options?: EIP1193RequestOptions) => {
       if (args.method !== "eth_getLogs") {
@@ -73,11 +72,7 @@ export function logsDivider(
       }
 
       // TODO: (@haydenshively future-work) `handleGetLogs` could respect `options`
-      return handleGetLogs(transport.request, args.params, {
-        maxBlockRange,
-        maxLogBytes,
-        alignTo,
-      });
+      return handleGetLogs(transport.request, args.params, logsDividerConfig);
     };
 
     return custom({ request })(params);
