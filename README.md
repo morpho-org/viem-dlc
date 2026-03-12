@@ -2,7 +2,7 @@
 
 A collection of flexible [viem](https://viem.sh) extensions with a focus on intelligent caching.
 Provides composable transport wrappers for optimized `eth_getLogs` fetching with caching,
-rate limiting, and automatic request splitting.
+rate limiting, automatic request splitting, and oversized-log filtering.
 
 ## Installation
 
@@ -16,9 +16,9 @@ Also available on the [GitHub Package Registry](https://npm.pkg.github.com).
 
 ### `logsCache`
 
-All-in-one caching transport for `eth_getLogs`. Internally composes rate limiting, request
-splitting, and caching. Requires a `chain` on the client so it can namespace cache keys by
-chain ID.
+All-in-one caching transport for `eth_getLogs`. Internally composes oversized-log filtering,
+rate limiting, request splitting, and caching. Requires a `chain` on the client so it can
+namespace cache keys by chain ID.
 
 ```ts
 import { createPublicClient, http } from 'viem'
@@ -40,6 +40,9 @@ const transport = logsCache(http(rpcUrl), [
     maxBurstRequests: 5,
     maxConcurrentRequests: 5,
   },
+  {
+    maxBytes: 8_192,
+  },
 ])
 
 const client = createPublicClient({ chain: mainnet, transport })
@@ -57,7 +60,8 @@ Two invalidation strategies are provided:
 ### `logsDivider`
 
 Splits large `eth_getLogs` requests into smaller chunks with automatic retry, optional alignment,
-and internal rate/concurrency limiting via `rateLimiter`.
+internal rate/concurrency limiting via `rateLimiter`, and oversized-log filtering via
+`logsSieve`.
 
 ```ts
 import { createPublicClient, http } from 'viem'
@@ -71,6 +75,9 @@ const transport = logsDivider(http(rpcUrl), [
   {
     maxRequestsPerSecond: 10,
     maxConcurrentRequests: 5,
+  },
+  {
+    maxBytes: 8_192,
   },
 ])
 
@@ -88,6 +95,21 @@ const logs = await client.request({
     },
   ],
 })
+```
+
+### `logsSieve`
+
+Filters `eth_getLogs` responses by estimated UTF-8 payload size. Any `RpcLog` whose serialized
+size exceeds `maxBytes` is silently dropped. `logsDivider(...)` and `logsCache(...)` already
+compose this transport by default; use `logsSieve(...)` directly when filtering is all you need.
+
+```ts
+import { createPublicClient, http } from 'viem'
+import { logsSieve } from '@morpho-org/viem-dlc/transports'
+
+const transport = logsSieve(http(rpcUrl), [{ maxBytes: 8_192 }])
+
+const client = createPublicClient({ transport })
 ```
 
 ### `rateLimiter`

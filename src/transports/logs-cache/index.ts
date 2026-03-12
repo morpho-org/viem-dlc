@@ -3,6 +3,7 @@ import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } f
 import type { EIP1193Parameters, EIP1193RequestOptions } from "../../types.js";
 import { parse, stringify } from "../../utils/json.js";
 import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
+import type { LogsSieveConfig } from "../logs-sieve/types.js";
 import type { RateLimiterConfig } from "../rate-limiter/index.js";
 
 import { ShardedCache } from "./cache.js";
@@ -105,10 +106,11 @@ export function createSimpleInvalidation(
  */
 export function logsCache(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  [{ binSize, store, invalidationStrategy }, logsDividerConfig, rateLimiterConfig]: [
+  [{ binSize, store, invalidationStrategy }, logsDividerConfig, ...otherConfigs]: [
     LogsCacheConfig,
     Omit<LogsDividerConfig, "alignTo">,
     RateLimiterConfig,
+    LogsSieveConfig,
   ],
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
 ): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsCacheRpcSchema>> {
@@ -119,7 +121,7 @@ export function logsCache(
     const chainId = params.chain.id;
 
     const cache = new ShardedCache<CachedChunk>(store, stringify, parse, CACHE_KEY_SEPARATOR);
-    const transport = logsDivider(baseTransportFn, [{ ...logsDividerConfig, alignTo: binSize }, rateLimiterConfig])(
+    const transport = logsDivider(baseTransportFn, [{ ...logsDividerConfig, alignTo: binSize }, ...otherConfigs])(
       params,
     );
 

@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import { handleGetLogs } from "../../src/transports/logs-divider/handlers.js";
 import type { LogsResponse } from "../../src/transports/logs-divider/types.js";
-import { estimateUtf8Bytes } from "../../src/utils/json.js";
 
 function createMockLog(blockNumber: bigint, logIndex = 0): RpcLog {
   return {
@@ -134,19 +133,14 @@ describe("handleGetLogs", () => {
       expect(getLogsCall?.[0].params[0].fromBlock).toBe(toHex(0n));
     });
 
-    it("filters out logs above maxLogBytes and keeps logs exactly at the limit", async () => {
+    it("does not filter logs by size", async () => {
       const smallLog = createMockLog(0n, 0);
       const largeLog = { ...createMockLog(0n, 1), data: `0x${"a".repeat(1_000)}` as Hex };
-      const maxLogBytes = estimateUtf8Bytes(smallLog);
       const requestFn = createMockRequestFn({ logGenerator: () => [smallLog, largeLog] });
 
-      const logs = await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], {
-        ...defaultConfig,
-        maxLogBytes,
-      });
+      const logs = await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], defaultConfig);
 
-      expect(logs).toEqual([smallLog]);
-      expect(estimateUtf8Bytes(largeLog)).toBeGreaterThan(maxLogBytes);
+      expect(logs).toEqual([smallLog, largeLog]);
     });
   });
 
@@ -402,7 +396,7 @@ describe("handleGetLogs", () => {
       expect(logsResponses[1]!.toBlock).toBe(199n);
     });
 
-    it("passes filtered logs to onLogsResponse", async () => {
+    it("passes all logs to onLogsResponse", async () => {
       const smallLog = createMockLog(0n, 0);
       const largeLog = { ...createMockLog(0n, 1), data: `0x${"b".repeat(1_000)}` as Hex };
       const logsResponses: LogsResponse[] = [];
@@ -415,14 +409,11 @@ describe("handleGetLogs", () => {
           undefined,
           { onLogsResponse: (response) => logsResponses.push(response) },
         ],
-        {
-          ...defaultConfig,
-          maxLogBytes: estimateUtf8Bytes(smallLog),
-        },
+        defaultConfig,
       );
 
       expect(logsResponses).toHaveLength(1);
-      expect(logsResponses[0]!.logs).toEqual([smallLog]);
+      expect(logsResponses[0]!.logs).toEqual([smallLog, largeLog]);
     });
 
     it("calls callback for retried (halved) requests too", async () => {

@@ -8,7 +8,6 @@ import {
   isInBlockRange,
   resolveBlockNumber,
 } from "../../utils/blocks.js";
-import { estimateUtf8Bytes } from "../../utils/json.js";
 import { min } from "../../utils/math.js";
 import type { RateLimiterSchema } from "../rate-limiter/schema.js";
 
@@ -20,16 +19,11 @@ interface ProcessContext {
   requestFn: EIP1193RequestFn<RateLimiterSchema>;
   onLogsResponse?: OnLogsResponse;
   baseFilter: EthGetLogsHashlessFilter;
-  maxLogBytes?: number;
   latestBlockNumber: bigint;
 }
 
 /** Fetches logs for a single range with automatic retry and range halving on range-related failure. */
-async function fetchRangeWithRetry(
-  { maxLogBytes, ...ctx }: ProcessContext,
-  range: BlockRange,
-  priority?: number,
-): Promise<RpcLog[]> {
+async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange, priority?: number): Promise<RpcLog[]> {
   // Constrain toBlock to chain tip (range may span past it due to alignment)
   const constrainedRange: BlockRange = {
     fromBlock: range.fromBlock,
@@ -48,7 +42,7 @@ async function fetchRangeWithRetry(
   };
 
   try {
-    let logs = await ctx.requestFn(
+    const logs = await ctx.requestFn(
       {
         method: "eth_getLogs",
         params: [filter, { __rateLimiter: true, priority }],
@@ -56,9 +50,6 @@ async function fetchRangeWithRetry(
       // `retryCount: 0` so that we fail fast on block range errors
       { dedupe: true, retryCount: 0 },
     );
-    if (maxLogBytes !== undefined) {
-      logs = logs.filter((log) => estimateUtf8Bytes(log) <= maxLogBytes);
-    }
 
     // Success - invoke callback
     ctx.onLogsResponse?.({
@@ -103,7 +94,6 @@ export async function handleGetLogs(
 ): Promise<RpcLog[]> {
   // blockHash queries cannot be divided - pass through
   if (filter.blockHash) {
-    // TODO: maxLogBytes isn't respected here
     return requestFn({ method: "eth_getLogs", params: params[0] ? [filter, params[0]] : [filter] }, { dedupe: true });
   }
 
@@ -125,7 +115,6 @@ export async function handleGetLogs(
     requestFn,
     onLogsResponse: params[1]?.onLogsResponse,
     baseFilter: filter,
-    maxLogBytes: config.maxLogBytes,
     latestBlockNumber,
   };
 
