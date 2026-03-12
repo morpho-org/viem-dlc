@@ -529,7 +529,7 @@ describe("handleGetLogs", () => {
       expect(cache.readCalls).toHaveLength(1);
 
       // Should have made eth_getLogs call
-      const getLogsCalls = requestFn.mock.calls.filter((call: any[]) => call[0].method === "eth_getLogs");
+      const getLogsCalls = requestFn.mock.calls.filter((call) => call[0].method === "eth_getLogs");
       expect(getLogsCalls.length).toBeGreaterThan(0);
     });
 
@@ -570,7 +570,7 @@ describe("handleGetLogs", () => {
       expect(logs).toContainEqual(cachedLog);
 
       // Should NOT have made eth_getLogs call
-      const getLogsCalls = requestFn.mock.calls.filter((call: any[]) => call[0].method === "eth_getLogs");
+      const getLogsCalls = requestFn.mock.calls.filter((call) => call[0].method === "eth_getLogs");
       expect(getLogsCalls).toHaveLength(0);
     });
 
@@ -597,7 +597,7 @@ describe("handleGetLogs", () => {
       expect(logs.length).toBeGreaterThanOrEqual(2);
 
       // Should have fetched only the missing range
-      const getLogsCalls = requestFn.mock.calls.filter((call: any[]) => call[0].method === "eth_getLogs");
+      const getLogsCalls = requestFn.mock.calls.filter((call) => call[0].method === "eth_getLogs");
       expect(getLogsCalls).toHaveLength(1);
 
       // The fetch should be for the gap (second bin)
@@ -624,7 +624,7 @@ describe("handleGetLogs", () => {
       });
 
       // Should have fetched fresh data
-      const getLogsCalls = requestFn.mock.calls.filter((call: any[]) => call[0].method === "eth_getLogs");
+      const getLogsCalls = requestFn.mock.calls.filter((call) => call[0].method === "eth_getLogs");
       expect(getLogsCalls).toHaveLength(1);
     });
 
@@ -676,7 +676,7 @@ describe("handleGetLogs", () => {
       );
 
       // Should merge gaps [10000-19999] and [20000-29999] into single fetch
-      const getLogsCalls = requestFn.mock.calls.filter((call: any[]) => call[0].method === "eth_getLogs");
+      const getLogsCalls = requestFn.mock.calls.filter((call) => call[0].method === "eth_getLogs");
       expect(getLogsCalls).toHaveLength(1);
 
       const fetchedFrom = BigInt(getLogsCalls[0]![0].params[0].fromBlock);

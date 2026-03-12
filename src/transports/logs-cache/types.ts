@@ -1,8 +1,6 @@
 import type { RpcLog } from "viem";
 
 import type { BlockRange, Store } from "../../types.js";
-import type { LogsDividerConfig } from "../logs-divider/types.js";
-import type { RateLimiterConfig } from "../rate-limiter/index.js";
 
 export interface CachedChunk {
   logs: RpcLog[];
@@ -37,7 +35,7 @@ export interface InvalidationContext {
 /** Returns probability [0,1] that a cached chunk should be refetched */
 export type InvalidationStrategy = (context: InvalidationContext) => number;
 
-export type LogsCacheConfig = {
+export interface LogsCacheConfig {
   store: Store;
   /**
    * Cache alignment boundary. Chunks are aligned to multiples of this value.
@@ -46,7 +44,4 @@ export type LogsCacheConfig = {
   binSize: number;
   /** Returns the probability [0,1] that a cached chunk should be refetched. */
   invalidationStrategy: InvalidationStrategy;
-
-  logsDividerConfig: Omit<LogsDividerConfig, "alignTo">;
-  rateLimiterConfig: RateLimiterConfig;
-};
+}

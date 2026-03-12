@@ -16,7 +16,9 @@
   "homepage": "https://github.com/morpho-org/viem-dlc",
   "type": "module",
   "sideEffects": false,
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -81,5 +83,8 @@
     "viem": "2.45.1",
     "vitest": "4.0.18"
   },
-  "packageManager": "pnpm@10.22.0"
+  "packageManager": "pnpm@10.22.0",
+  "dependencies": {
+    "valibot": "^1.2.0"
+  }
 }

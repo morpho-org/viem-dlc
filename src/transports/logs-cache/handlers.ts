@@ -123,6 +123,7 @@ export async function handleGetLogs(
                   fromBlock: toHex(range.fromBlock),
                   toBlock: toHex(range.toBlock),
                 },
+                undefined,
                 {
                   latestBlock: toHex(latestBlockNumber),
                   onLogsResponse: sink,

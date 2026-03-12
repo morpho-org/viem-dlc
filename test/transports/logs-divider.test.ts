@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from "vitest";
 import { handleGetLogs } from "../../src/transports/logs-divider/handlers.js";
 import type { LogsResponse } from "../../src/transports/logs-divider/types.js";
 import { estimateUtf8Bytes } from "../../src/utils/json.js";
-import { sleep } from "../../src/utils/sleep.js";
 
 function createMockLog(blockNumber: bigint, logIndex = 0): RpcLog {
   return {
@@ -122,7 +121,7 @@ describe("handleGetLogs", () => {
       });
 
       // Should fetch from 0 to 500 (the latest block)
-      const getLogsCall = requestFn.mock.calls.find((call: any[]) => call[0].method === "eth_getLogs");
+      const getLogsCall = requestFn.mock.calls.find((call) => call[0].method === "eth_getLogs");
       expect(getLogsCall?.[0].params[0].toBlock).toBe(toHex(500n));
     });
 
@@ -131,7 +130,7 @@ describe("handleGetLogs", () => {
 
       await handleGetLogs(requestFn, [{ fromBlock: "earliest", toBlock: "0x50" }], defaultConfig);
 
-      const getLogsCall = requestFn.mock.calls.find((call: any[]) => call[0].method === "eth_getLogs");
+      const getLogsCall = requestFn.mock.calls.find((call) => call[0].method === "eth_getLogs");
       expect(getLogsCall?.[0].params[0].fromBlock).toBe(toHex(0n));
     });
 
@@ -165,7 +164,7 @@ describe("handleGetLogs", () => {
       );
 
       // Should have 3 chunks: 0-99, 100-199, 200-299
-      const getLogsCalls = requestFn.mock.calls.filter((call: any[]) => call[0].method === "eth_getLogs");
+      const getLogsCalls = requestFn.mock.calls.filter((call) => call[0].method === "eth_getLogs");
       expect(getLogsCalls).toHaveLength(3);
       expect(logs).toHaveLength(3); // One log per chunk
     });
@@ -197,7 +196,7 @@ describe("handleGetLogs", () => {
         { ...defaultConfig, maxBlockRange: 100 },
       );
 
-      const getLogsCalls = requestFn.mock.calls.filter((call: any[]) => call[0].method === "eth_getLogs");
+      const getLogsCalls = requestFn.mock.calls.filter((call) => call[0].method === "eth_getLogs");
 
       for (const call of getLogsCalls) {
         expect(call[0].params[0].address).toBe(address);
@@ -206,55 +205,90 @@ describe("handleGetLogs", () => {
     });
   });
 
-  describe("concurrency", () => {
-    it("respects maxConcurrentChunks limit", async () => {
-      let maxConcurrent = 0;
-      let currentConcurrent = 0;
+  describe("chunk priority", () => {
+    function getLogsPriorities(requestFn: ReturnType<typeof vi.fn>) {
+      return requestFn.mock.calls
+        .filter((call) => call[0].method === "eth_getLogs")
+        .map((call) => call[0].params[1]?.priority as number | undefined);
+    }
 
-      const requestFn = vi.fn().mockImplementation(async (args: any) => {
-        if (args.method === "eth_blockNumber") {
-          return toHex(500n);
-        }
-
-        currentConcurrent++;
-        maxConcurrent = Math.max(maxConcurrent, currentConcurrent);
-
-        // Simulate async work
-        await sleep(10);
-
-        currentConcurrent--;
-        return [createMockLog(0n)];
-      });
-
-      await handleGetLogs(
-        requestFn,
-        [{ fromBlock: "0x0", toBlock: "0x1f3" }], // 0 to 499 = 5 chunks
-        { ...defaultConfig, maxBlockRange: 100, maxConcurrentChunks: 2 },
-      );
-
-      expect(maxConcurrent).toBeLessThanOrEqual(2);
-    });
-
-    it("processes all chunks even with concurrency limit", async () => {
+    it("assigns ascending fractional priorities to chunks", async () => {
       const requestFn = createMockRequestFn({
         latestBlock: 500n,
         logGenerator: (from) => [createMockLog(from)],
       });
 
-      const logs = await handleGetLogs(
+      await handleGetLogs(
         requestFn,
-        [{ fromBlock: "0x0", toBlock: "0x1f3" }], // 5 chunks
-        { ...defaultConfig, maxBlockRange: 100, maxConcurrentChunks: 2 },
+        [{ fromBlock: "0x0", toBlock: "0x1f3" }], // 0 to 499 = 5 chunks
+        { ...defaultConfig, maxBlockRange: 100 },
       );
 
-      expect(logs).toHaveLength(5);
+      const priorities = getLogsPriorities(requestFn);
+      expect(priorities).toHaveLength(5);
+      for (let i = 1; i < priorities.length; i++) {
+        expect(priorities[i]).toBeGreaterThan(priorities[i - 1]!);
+      }
+      // Each chunk i gets i/5
+      expect(priorities[0]).toBeCloseTo(0 / 5);
+      expect(priorities[4]).toBeCloseTo(4 / 5);
+    });
+
+    it("adds base priority from params", async () => {
+      const requestFn = createMockRequestFn({
+        latestBlock: 200n,
+        logGenerator: (from) => [createMockLog(from)],
+      });
+
+      await handleGetLogs(
+        requestFn,
+        [{ fromBlock: "0x0", toBlock: "0xc7" }, { __rateLimiter: true, priority: 10 }], // 2 chunks
+        { ...defaultConfig, maxBlockRange: 100 },
+      );
+
+      const priorities = getLogsPriorities(requestFn);
+      expect(priorities).toHaveLength(2);
+      expect(priorities[0]).toBeCloseTo(10 + 0 / 2);
+      expect(priorities[1]).toBeCloseTo(10 + 1 / 2);
+    });
+
+    it("preserves priority on retried (halved) chunks", async () => {
+      let firstAttempt = true;
+
+      const requestFn = vi.fn().mockImplementation(async (args) => {
+        if (args.method === "eth_blockNumber") {
+          return toHex(100n);
+        }
+
+        const filter = args.params?.[0];
+        const rangeSize = BigInt(filter.toBlock) - BigInt(filter.fromBlock) + 1n;
+
+        if (firstAttempt && rangeSize > 50n) {
+          firstAttempt = false;
+          throw createRangeError(-32005, "range too large");
+        }
+
+        return [createMockLog(BigInt(filter.fromBlock))];
+      });
+
+      await handleGetLogs(
+        requestFn,
+        [{ fromBlock: "0x0", toBlock: "0x63" }], // 100 blocks, 1 chunk -> halved to 2
+        { ...defaultConfig, maxBlockRange: 100 },
+      );
+
+      const priorities = getLogsPriorities(requestFn);
+      // First call fails, then two halves succeed — all should have the same priority
+      expect(priorities).toHaveLength(3);
+      expect(priorities[0]).toBe(priorities[1]);
+      expect(priorities[1]).toBe(priorities[2]);
     });
   });
 
   describe("error handling and retry", () => {
     it("retries with halved range on block range error", async () => {
       let attempts = 0;
-      const requestFn = vi.fn().mockImplementation(async (args: any) => {
+      const requestFn = vi.fn().mockImplementation(async (args) => {
         if (args.method === "eth_blockNumber") {
           return toHex(100n);
         }
@@ -283,7 +317,7 @@ describe("handleGetLogs", () => {
     });
 
     it("continues halving until success or single block", async () => {
-      const requestFn = vi.fn().mockImplementation(async (args: any) => {
+      const requestFn = vi.fn().mockImplementation(async (args) => {
         if (args.method === "eth_blockNumber") {
           return toHex(10n);
         }
@@ -310,7 +344,7 @@ describe("handleGetLogs", () => {
     });
 
     it("propagates non-range errors immediately", async () => {
-      const requestFn = vi.fn().mockImplementation(async (args: any) => {
+      const requestFn = vi.fn().mockImplementation(async (args) => {
         if (args.method === "eth_blockNumber") {
           return toHex(100n);
         }
@@ -323,7 +357,7 @@ describe("handleGetLogs", () => {
     });
 
     it("propagates error when single block still fails", async () => {
-      const requestFn = vi.fn().mockImplementation(async (args: any) => {
+      const requestFn = vi.fn().mockImplementation(async (args) => {
         if (args.method === "eth_blockNumber") {
           return toHex(10n);
         }
@@ -349,6 +383,7 @@ describe("handleGetLogs", () => {
         requestFn,
         [
           { fromBlock: "0x0", toBlock: "0xc7" }, // 2 chunks
+          undefined,
           { onLogsResponse: (response) => logsResponses.push(response) },
         ],
         {
@@ -372,7 +407,7 @@ describe("handleGetLogs", () => {
 
       await handleGetLogs(
         requestFn,
-        [{ fromBlock: "0x0", toBlock: "0x50" }, { onLogsResponse: (response) => logsResponses.push(response) }],
+        [{ fromBlock: "0x0", toBlock: "0x50" }, undefined, { onLogsResponse: (response) => logsResponses.push(response) }],
         {
           ...defaultConfig,
           maxLogBytes: estimateUtf8Bytes(smallLog),
@@ -387,7 +422,7 @@ describe("handleGetLogs", () => {
       const logsResponses: LogsResponse[] = [];
       let firstAttempt = true;
 
-      const requestFn = vi.fn().mockImplementation(async (args: any) => {
+      const requestFn = vi.fn().mockImplementation(async (args) => {
         if (args.method === "eth_blockNumber") {
           return toHex(100n);
         }
@@ -408,6 +443,7 @@ describe("handleGetLogs", () => {
         requestFn,
         [
           { fromBlock: "0x0", toBlock: "0x63" }, // 100 blocks -> halved to 2x50
+          undefined,
           { onLogsResponse: (response) => logsResponses.push(response) },
         ],
         {
@@ -456,7 +492,7 @@ describe("handleGetLogs", () => {
       );
 
       // Should be a single request, not divided
-      const getLogsCalls = requestFn.mock.calls.filter((call: any[]) => call[0].method === "eth_getLogs");
+      const getLogsCalls = requestFn.mock.calls.filter((call) => call[0].method === "eth_getLogs");
       expect(getLogsCalls).toHaveLength(1);
       expect(logs).toHaveLength(1);
     });
@@ -474,7 +510,7 @@ describe("handleGetLogs", () => {
       );
 
       // Should make 10 requests
-      const getLogsCalls = requestFn.mock.calls.filter((call: any[]) => call[0].method === "eth_getLogs");
+      const getLogsCalls = requestFn.mock.calls.filter((call) => call[0].method === "eth_getLogs");
       expect(getLogsCalls).toHaveLength(10);
       expect(logs).toEqual([]);
     });

@@ -1,9 +1,9 @@
-import { custom, type EIP1193Parameters, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
+import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
-import type { EIP1193RequestOptions } from "../../types.js";
+import type { EIP1193Parameters, EIP1193RequestOptions } from "../../types.js";
 import { parse, stringify } from "../../utils/json.js";
-import { logsDivider } from "../logs-divider/index.js";
-import { rateLimiter } from "../rate-limiter/index.js";
+import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
+import type { RateLimiterConfig } from "../rate-limiter/index.js";
 
 import { ShardedCache } from "./cache.js";
 import { handleGetLogs } from "./handlers.js";
@@ -77,7 +77,7 @@ export function createSimpleInvalidation(
  * Creates an all-in-one caching transport for eth_getLogs calls.
  *
  * Internally composes three layers:
- * - **rateLimiter**: Controls RPC request rate (token bucket with FIFO queue)
+ * - **rateLimiter**: Controls RPC request rate (token bucket + concurrency limit + priority queue)
  * - **logsDivider**: Splits large requests, retries with range halving on failure
  * - **cache**: Reads from cache, fetches gaps, writes complete bins via accumulator
  *
@@ -92,22 +92,24 @@ export function createSimpleInvalidation(
  *   larger values may hit RPC limits and trigger halving.
  *
  * @example
- * import { MemoryStore } from '@morpho-org/viem-dlc/stores/memory'
- *
- * const transport = logsCache(http(rpcUrl), {
- *   binSize: 10_000,
- *   store: new MemoryStore(),
- *   invalidationStrategy: createSimpleInvalidation(),
- *   maxCacheShardBytes: 1_000_000,
- *   logsDividerConfig: { maxBlockRange: 100_000 },
- *   rateLimiterConfig: { maxRequestsPerSecond: 10, maxConcurrentRequests: 5 }
- * })
+ * const transport = logsCache(
+ *   http(rpcUrl),
+ *   [
+ *     { binSize: 10_000, store: new LruStore(), invalidationStrategy: createSimpleInvalidation() },
+ *     { maxBlockRange: 100_000 },
+ *     { maxRequestsPerSecond: 10, maxConcurrentRequests: 5 }
+ *   ]
+ * )
  *
  * const client = createPublicClient({ chain: mainnet, transport })
  */
 export function logsCache(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  { binSize, store, invalidationStrategy, logsDividerConfig, rateLimiterConfig }: LogsCacheConfig,
+  [{ binSize, store, invalidationStrategy }, logsDividerConfig, rateLimiterConfig]: [
+    LogsCacheConfig,
+    Omit<LogsDividerConfig, "alignTo">,
+    RateLimiterConfig,
+  ],
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
 ): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsCacheRpcSchema>> {
   return (params) => {
@@ -117,10 +119,9 @@ export function logsCache(
     const chainId = params.chain.id;
 
     const cache = new ShardedCache<CachedChunk>(store, stringify, parse, CACHE_KEY_SEPARATOR);
-    const transport = logsDivider(rateLimiter(baseTransportFn, rateLimiterConfig), {
-      ...logsDividerConfig,
-      alignTo: binSize,
-    })(params);
+    const transport = logsDivider(baseTransportFn, [{ ...logsDividerConfig, alignTo: binSize }, rateLimiterConfig])(
+      params,
+    );
 
     const request = (args: EIP1193Parameters<LogsCacheRpcSchema>, options?: EIP1193RequestOptions) => {
       if (args.method !== "eth_getLogs") {

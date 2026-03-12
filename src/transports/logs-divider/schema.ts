@@ -1,11 +1,12 @@
-import type { Hex, PublicRpcSchema } from "viem";
+import type { Hex } from "viem";
 
 import type { SafelyExtendRpcSchema } from "../../types.js";
+import type { RateLimiterSchema } from "../rate-limiter/schema.js";
 
 import type { OnLogsResponse } from "./types.js";
 
 export type LogsDividerRpcSchema = SafelyExtendRpcSchema<
-  PublicRpcSchema,
+  RateLimiterSchema,
   [
     {
       Method: "eth_getLogs";
