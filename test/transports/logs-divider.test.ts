@@ -242,7 +242,10 @@ describe("handleGetLogs", () => {
 
       await handleGetLogs(
         requestFn,
-        [{ fromBlock: "0x0", toBlock: "0xc7" }, { __rateLimiter: true, priority: 10 }], // 2 chunks
+        [
+          { fromBlock: "0x0", toBlock: "0xc7" },
+          { __rateLimiter: true, priority: 10 },
+        ], // 2 chunks
         { ...defaultConfig, maxBlockRange: 100 },
       );
 
@@ -407,7 +410,11 @@ describe("handleGetLogs", () => {
 
       await handleGetLogs(
         requestFn,
-        [{ fromBlock: "0x0", toBlock: "0x50" }, undefined, { onLogsResponse: (response) => logsResponses.push(response) }],
+        [
+          { fromBlock: "0x0", toBlock: "0x50" },
+          undefined,
+          { onLogsResponse: (response) => logsResponses.push(response) },
+        ],
         {
           ...defaultConfig,
           maxLogBytes: estimateUtf8Bytes(smallLog),
