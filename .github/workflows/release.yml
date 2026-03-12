@@ -15,11 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
@@ -30,15 +30,6 @@ jobs:
         id: read-local-version
         run: |
           echo "version=$(jq -r .version package.json)" >> $GITHUB_OUTPUT
-
-      - name: Read GitHub Packages version
-        id: read-github-version
-        run: |
-          PKG_NAME=$(jq -r .name package.json)
-          version=$(pnpm view $PKG_NAME version --registry https://npm.pkg.github.com 2>/dev/null || echo "")
-          echo "version=$version" >> $GITHUB_OUTPUT
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Read NPM version
         id: read-npm-version
@@ -58,7 +49,6 @@ jobs:
 
       - name: Install and pack
         if: >-
-          steps.read-local-version.outputs.version != steps.read-github-version.outputs.version ||
           steps.read-local-version.outputs.version != steps.read-npm-version.outputs.version ||
           steps.check-tag.outputs.exists == 'false'
         id: pack
@@ -66,14 +56,6 @@ jobs:
           pnpm install
           tarball=$(pnpm pack --out package.tgz | tail -n 1)
           echo "tarball=$tarball" >> $GITHUB_OUTPUT
-
-      - name: Publish to GitHub Packages
-        if: ${{ steps.read-local-version.outputs.version != steps.read-github-version.outputs.version }}
-        run: |
-          pnpm config set //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
-          pnpm publish ${{ steps.pack.outputs.tarball }} --registry https://npm.pkg.github.com --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to NPM
         if: ${{ steps.read-local-version.outputs.version != steps.read-npm-version.outputs.version }}
