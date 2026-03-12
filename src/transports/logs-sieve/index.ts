@@ -21,7 +21,7 @@ export function logsSieve(
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
 ): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsSieveSchema>> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
-    throw new Error(`[logsSieve] maxBytes must be a safe integer > 1 (got ${maxBytes})`);
+    throw new Error(`[logsSieve] maxBytes must be a safe integer >= 1 (got ${maxBytes})`);
   }
 
   return (params) => {

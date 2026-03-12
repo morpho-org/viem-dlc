@@ -16,7 +16,6 @@ export type * from "./types.js";
  * Creates a transport wrapper that divides large eth_getLogs requests into smaller chunks.
  *
  * Internally composes a `rateLimiter` transport for rate and concurrency limiting.
- * Compose `logsSieve` around the base transport if you also need oversized-log filtering.
  *
  * Features:
  * - Divides requests exceeding maxBlockRange into smaller chunks
@@ -60,7 +59,7 @@ export function logsDivider(
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
 ): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsDividerRpcSchema>> {
   if (Number.isNaN(logsDividerConfig.maxBlockRange) || logsDividerConfig.maxBlockRange < 1) {
-    throw new Error(`[logsDivider] maxBlockRange must be > 1 (got ${logsDividerConfig.maxBlockRange})`);
+    throw new Error(`[logsDivider] maxBlockRange must be >= 1 (got ${logsDividerConfig.maxBlockRange})`);
   }
 
   return (params) => {
