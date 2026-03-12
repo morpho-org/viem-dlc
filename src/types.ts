@@ -1,4 +1,5 @@
 import type {
+  EIP1193Parameters as _EIP1193Parameters,
   BlockNumber,
   BlockTag,
   EIP1193RequestFn,
@@ -9,11 +10,20 @@ import type {
   RpcSchema,
 } from "viem";
 
-import type { Concat, ElementwiseUnionUnion, Optionalize, Tuple } from "./utils/tuples.js";
+import type { Concat, ElementwiseUnionUnion, Inits, Tuple } from "./utils/tuples.js";
 
 /*//////////////////////////////////////////////////////////////
                             HELPERS
 //////////////////////////////////////////////////////////////*/
+
+/**
+ * Alternative to the viem type of the same name that allows you to (optionally)
+ * select parameters for a specific `Method`.
+ */
+export type EIP1193Parameters<T extends RpcSchema, Method extends T[number]["Method"] = T[number]["Method"]> = Extract<
+  _EIP1193Parameters<T>,
+  { method: Method }
+>;
 
 /**
  * Union of method signatures found in `T` that match `Method`.
@@ -39,16 +49,24 @@ export type RpcSignatureExtension<T extends RpcSchema> = Extract<
   : never;
 
 /**
+ * Union of method names in `T` whose `Parameters` are tuple-like (and thus extendable).
+ */
+export type ExtendableRpcSignatures<T extends RpcSchema> = Extract<T[number], { Parameters: Tuple }>;
+
+/**
  * Extended entries that define `AdditionalParameters` for a set of `Method`s.
  * Each method must exist in `T` with tuple-like `Parameters`.
  */
 export type RpcSchemaExtension<T extends RpcSchema> = readonly RpcSignatureExtension<T>[];
 
+/** Extracts members of `Extension` whose `Method` field includes `M` (supports union `Method`s). */
+type MatchExtension<Extension, M> = Extension extends { Method: infer EM } ? (M extends EM ? Extension : never) : never;
+
 type DeriveParameters<P, AdditionalP extends Tuple> = Exclude<P, undefined> extends infer Base // Infer non-optional part of `P`
   ? [Base] extends [never]
     ? P // undefined-ish, leave as-is
     : [Base] extends [Tuple]
-      ? Concat<ElementwiseUnionUnion<Base>, Optionalize<AdditionalP>> | Extract<P, undefined>
+      ? Concat<ElementwiseUnionUnion<Base>, Inits<AdditionalP>> | Extract<P, undefined>
       : P // not tuple-ish, leave as-is
   : never;
 
@@ -62,10 +80,10 @@ type DeriveRpcSignature<
   Extension extends RpcSignatureExtension<T>,
 > = T[K] extends { Method: infer M; Parameters?: infer P } // Try to infer Method and Parameters types for `T[K]`. If unable, leave `T[K]` as-is.
   ? // If `Extension` lacks Method `M`, leave `T[K]` as-is. Otherwise derive extended parameters.
-    [Extract<Extension, { Method: M }>] extends [never]
+    [MatchExtension<Extension, M>] extends [never]
     ? T[K]
     : Omit<T[K], "Parameters"> & {
-        Parameters: DeriveParameters<P, Extract<Extension, { Method: M }>["AdditionalParameters"]>;
+        Parameters: DeriveParameters<P, MatchExtension<Extension, M>["AdditionalParameters"]>;
       }
   : T[K];
 

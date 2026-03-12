@@ -1,4 +1,8 @@
-/** Token bucket state for rate limiting */
+/*//////////////////////////////////////////////////////////////
+                          TOKEN BUCKET
+//////////////////////////////////////////////////////////////*/
+
+/** Token bucket for rate limiting */
 export interface TokenBucket {
   /** Current number of available tokens */
   tokens: number;
@@ -8,10 +12,6 @@ export interface TokenBucket {
   maxTokens: number;
   /** Tokens added per second */
   refillRate: number;
-  /** Queue of resolvers waiting for tokens (FIFO) */
-  queue: Array<() => void>;
-  /** Whether a drain timer is already scheduled */
-  drainScheduled: boolean;
 }
 
 /**
@@ -20,28 +20,22 @@ export interface TokenBucket {
  *
  * @param maxTokens Maximum tokens (burst capacity)
  * @param refillRate Tokens added per second. Use `Infinity` for no rate limiting.
- * Use `0` to allow only the initial burst (no refill).
+ *   Use `0` to allow only the initial burst (no refill).
  */
 export function createTokenBucket(maxTokens: number, refillRate: number): TokenBucket {
+  if (maxTokens <= 0) {
+    throw new Error(`[createTokenBucket] maxTokens must be positive, got ${maxTokens}`);
+  }
+  if (refillRate < 0) {
+    throw new Error(`[createTokenBucket] refillRate must be non-negative, got ${refillRate}`);
+  }
+
   return {
     tokens: maxTokens,
     lastRefill: Date.now(),
     maxTokens,
     refillRate,
-    queue: [],
-    drainScheduled: false,
   };
-}
-
-/**
- * Refills the bucket based on elapsed time.
- * Called internally before consuming tokens.
- */
-function refillBucket(bucket: TokenBucket): void {
-  const now = Date.now();
-  const elapsedSeconds = (now - bucket.lastRefill) / 1000;
-  bucket.tokens = Math.min(bucket.maxTokens, bucket.tokens + elapsedSeconds * bucket.refillRate);
-  bucket.lastRefill = now;
 }
 
 /**
@@ -73,52 +67,170 @@ export function timeUntilToken(bucket: TokenBucket): number {
 }
 
 /**
- * Schedules a drain if not already scheduled and queue is non-empty.
+ * Refills the bucket based on elapsed time.
+ * Called internally before consuming tokens.
  */
-function scheduleDrain(bucket: TokenBucket): void {
-  if (bucket.drainScheduled || bucket.queue.length === 0) return;
+function refillBucket(bucket: TokenBucket): void {
+  const now = Date.now();
+  const elapsedSeconds = (now - bucket.lastRefill) / 1000;
+  bucket.tokens = Math.min(bucket.maxTokens, bucket.tokens + elapsedSeconds * bucket.refillRate);
+  bucket.lastRefill = now;
+}
 
-  bucket.drainScheduled = true;
-  const waitTime = timeUntilToken(bucket);
+/*//////////////////////////////////////////////////////////////
+                            RATE LIMIT
+//////////////////////////////////////////////////////////////*/
 
+/** Job waiting to be admitted by the limiter */
+interface Job {
+  /** Resolver used to unblock the waiting caller */
+  resolve: () => void;
+  /** Lower numbers execute first */
+  priority: number;
+  /** Monotonic sequence number for FIFO within same priority */
+  seq: number;
+}
+
+interface RateLimitContext {
+  /** Token bucket for rate limiting */
+  bucket: TokenBucket;
+  /** Queue of resolvers waiting for tokens */
+  queue: Job[];
+  /** Maximum number of in-flight operations allowed */
+  maxConcurrent: number;
+  /** Current number of in-flight operations */
+  inFlight: number;
+  /** Sequence number used to preserve FIFO order within a priority */
+  nextSeq: number;
+  /** Whether a drain timer is already scheduled */
+  drainScheduled: boolean;
+}
+
+/**
+ * Removes and returns the next job to run:
+ * - lower numbers are considered higher priority (P0 before P1)
+ * - FIFO for jobs with the same priority
+ */
+function dequeueNext(queue: Job[]): Job | undefined {
+  if (queue.length === 0) return undefined;
+
+  let bestIndex = 0;
+
+  for (let i = 1; i < queue.length; i++) {
+    const candidate = queue[i]!;
+    const best = queue[bestIndex]!;
+
+    if (candidate.priority < best.priority || (candidate.priority === best.priority && candidate.seq < best.seq)) {
+      bestIndex = i;
+    }
+  }
+
+  const [job] = queue.splice(bestIndex, 1);
+  return job;
+}
+
+/**
+ * Schedules a drain if not already scheduled and queue is non-empty.
+ *
+ * Important:
+ * - If blocked only by concurrency, do not schedule a timer.
+ *   Completion of an in-flight task will call drainQueue().
+ * - If blocked by tokens, schedule wake-up for next token.
+ */
+function scheduleDrain(ctx: RateLimitContext): void {
+  if (ctx.drainScheduled || ctx.queue.length === 0 || ctx.inFlight >= ctx.maxConcurrent) return;
+
+  const waitTime = timeUntilToken(ctx.bucket);
+  if (!Number.isFinite(waitTime)) return;
+
+  ctx.drainScheduled = true;
   setTimeout(() => {
-    bucket.drainScheduled = false;
-    drainQueue(bucket);
+    ctx.drainScheduled = false;
+    drainQueue(ctx);
   }, waitTime);
 }
 
 /**
- * Resolves as many queued requests as tokens allow (FIFO order).
- * Schedules next drain if queue still has items.
+ * Starts as many queued requests as allowed by both:
+ * - token availability
+ * - concurrency availability
+ *
+ * Queue selection is by lowest priority value first, then FIFO within same priority.
  */
-function drainQueue(bucket: TokenBucket): void {
-  while (bucket.queue.length > 0 && tryConsume(bucket)) {
-    const resolve = bucket.queue.shift()!;
-    resolve();
+function drainQueue(ctx: RateLimitContext): void {
+  refillBucket(ctx.bucket);
+
+  while (ctx.queue.length > 0 && ctx.inFlight < ctx.maxConcurrent && ctx.bucket.tokens >= 1) {
+    ctx.bucket.tokens -= 1;
+    ctx.inFlight += 1;
+
+    const job = dequeueNext(ctx.queue)!;
+    job.resolve();
   }
-  scheduleDrain(bucket);
+
+  scheduleDrain(ctx);
 }
 
 /**
- * Wraps an async function with rate limiting using a token bucket.
- * Requests are processed in FIFO order.
- *
- * @example
- * const bucket = createTokenBucket(5, 10) // 5 burst, 10/sec refill
- *
- * // Single request
- * const result = await withRateLimit(() => fetch('/api'), { bucket })
- *
- * // Multiple concurrent requests (rate limited, FIFO order)
- * const results = await Promise.all(
- *   urls.map(url => withRateLimit(() => fetch(url), { bucket }))
- * )
+ * Releases one concurrency slot after an operation finishes.
  */
-export async function withRateLimit<data>(fn: () => Promise<data>, { bucket }: { bucket: TokenBucket }): Promise<data> {
-  await new Promise<void>((resolve) => {
-    bucket.queue.push(resolve);
-    drainQueue(bucket);
-  });
+function release(ctx: RateLimitContext): void {
+  if (ctx.inFlight > 0) {
+    ctx.inFlight -= 1;
+  }
 
-  return fn();
+  drainQueue(ctx);
+}
+
+export function createRateLimit(maxTokens: number, refillRate: number, maxConcurrent: number) {
+  if (maxConcurrent < 1) {
+    throw new Error(`[createRateLimit] maxConcurrent must be at least 1, got ${maxConcurrent}`);
+  }
+  const ctx: RateLimitContext = {
+    bucket: createTokenBucket(maxTokens, refillRate),
+    queue: [],
+    maxConcurrent,
+    inFlight: 0,
+    nextSeq: 0,
+    drainScheduled: false,
+  };
+
+  return {
+    /**
+     * Wraps an async function with:
+     * - token-bucket rate limiting
+     * - concurrency limiting
+     * - priority scheduling
+     *
+     * Lower numeric priority runs first (P0 before P1).
+     * Jobs with the same priority are processed FIFO.
+     *
+     * @example
+     * const { withRateLimit } = createRateLimit(5, 10, 2) // 5 burst, 10/sec refill, 2 concurrent
+     *
+     * const result = await withRateLimit(() => fetch('/api'), {})
+     *
+     * const results = await Promise.all([
+     *   withRateLimit(() => fetch('/low'), { priority: 10 }),
+     *   withRateLimit(() => fetch('/high'), { priority: 0 }),
+     *   withRateLimit(() => fetch('/medium'), { priority: 5 }),
+     * ])
+     */
+    async withRateLimit<T>(fn: () => Promise<T>, { priority = Infinity }: { priority?: number }): Promise<T> {
+      await new Promise<void>((resolve) => {
+        ctx.queue.push({
+          resolve,
+          priority,
+          seq: ctx.nextSeq++,
+        });
+        drainQueue(ctx);
+      });
+
+      try {
+        return await fn();
+      } finally {
+        release(ctx);
+      }
+    },
+  };
 }

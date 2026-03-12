@@ -26,13 +26,21 @@ import { mainnet } from 'viem/chains'
 import { logsCache, createSimpleInvalidation } from '@morpho-org/viem-dlc/transports'
 import { LruStore } from '@morpho-org/viem-dlc/stores'
 
-const transport = logsCache(http(rpcUrl), {
-  binSize: 10_000,
-  store: new LruStore(100_000_000),
-  invalidationStrategy: createSimpleInvalidation(),
-  logsDividerConfig: { maxBlockRange: 100_000 },
-  rateLimiterConfig: { maxRequestsPerSecond: 10, maxBurstRequests: 5 },
-})
+const transport = logsCache(http(rpcUrl), [
+  {
+    binSize: 10_000,
+    store: new LruStore(100_000_000),
+    invalidationStrategy: createSimpleInvalidation(),
+  },
+  {
+    maxBlockRange: 100_000,
+  },
+  {
+    maxRequestsPerSecond: 10,
+    maxBurstRequests: 5,
+    maxConcurrentRequests: 5,
+  },
+])
 
 const client = createPublicClient({ chain: mainnet, transport })
 ```
@@ -48,32 +56,67 @@ Two invalidation strategies are provided:
 
 ### `logsDivider`
 
-Splits large `eth_getLogs` requests into smaller chunks with concurrent fetching and automatic
-retry with range halving on failure.
+Splits large `eth_getLogs` requests into smaller chunks with automatic retry, optional alignment,
+and internal rate/concurrency limiting via `rateLimiter`.
 
 ```ts
+import { createPublicClient, http } from 'viem'
 import { logsDivider } from '@morpho-org/viem-dlc/transports'
 
-const transport = logsDivider(http(rpcUrl), {
-  maxBlockRange: 100_000,
-  maxConcurrentChunks: 5,
-  alignTo: 10_000,
-  onLogsResponse: ({ logs, fromBlock, toBlock }) => {
-    /* progressive updates */
+const transport = logsDivider(http(rpcUrl), [
+  {
+    maxBlockRange: 100_000,
+    alignTo: 10_000,
   },
+  {
+    maxRequestsPerSecond: 10,
+    maxConcurrentRequests: 5,
+  },
+])
+
+const client = createPublicClient({ transport })
+
+const logs = await client.request({
+  method: 'eth_getLogs',
+  params: [
+    filter,
+    undefined,
+    {
+      onLogsResponse: ({ logs, fromBlock, toBlock }) => {
+        /* progressive updates */
+      },
+    },
+  ],
 })
 ```
 
 ### `rateLimiter`
 
-Token bucket rate limiting with FIFO ordering:
+Token-bucket rate limiting with concurrency limiting and priority scheduling:
 
 ```ts
+import { createPublicClient, http } from 'viem'
 import { rateLimiter } from '@morpho-org/viem-dlc/transports'
 
-const transport = rateLimiter(http(rpcUrl), {
-  maxRequestsPerSecond: 10,
-  maxBurstRequests: 5,
+const transport = rateLimiter(http(rpcUrl), [
+  {
+    maxRequestsPerSecond: 10,
+    maxBurstRequests: 5,
+    maxConcurrentRequests: 3,
+  },
+])
+
+const client = createPublicClient({ transport })
+
+await client.request({
+  method: 'eth_getLogs',
+  params: [
+    filter,
+    {
+      __rateLimiter: true,
+      priority: 0,
+    },
+  ],
 })
 ```
 
@@ -144,7 +187,7 @@ Exported from `@morpho-org/viem-dlc/utils`:
 - `divideBlockRange` / `mergeBlockRanges` / `halveBlockRange` — block range manipulation
 - `resolveBlockNumber` — convert block tags to numbers
 - `isErrorCausedByBlockRange` — detect RPC "block range too large" errors
-- `createTokenBucket` / `withRateLimit` — rate limiting primitives
+- `createTokenBucket` / `createRateLimit` — rate limiting primitives
 - `createKeyedMutex` / `withKeyedMutex` — per-key concurrency control
 - `cyrb64Hash` — fast string hashing
 - `stringify` / `parse` — JSON serialization with bigint support
