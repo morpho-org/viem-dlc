@@ -127,6 +127,7 @@ export interface Store {
   get(key: string): MaybePromise<string | null>;
   set(key: string, value: string): MaybePromise<void>;
   delete(key: string): MaybePromise<void>;
+  flush(): MaybePromise<void>;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type

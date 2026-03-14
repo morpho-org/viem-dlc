@@ -20,4 +20,6 @@ export class MemoryStore implements Store {
   delete(key: string) {
     this.map.delete(key);
   }
+
+  flush() {}
 }

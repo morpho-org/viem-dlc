@@ -108,6 +108,8 @@ export class DebouncedStore implements Store {
     await this.pump();
     // Wait for in-flight promises to resolve (they handle their own errors, so no .allSettled necessary).
     await Promise.all([...this.inFlight.values()]);
+    // Wait for underlying store to do its own flush.
+    await this.store.flush();
   }
 
   /** Prevents further `buffered` entries from being moved to in-flight. */
