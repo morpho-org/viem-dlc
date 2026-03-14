@@ -96,7 +96,7 @@ export class UpstashStore implements Store {
     const [writeId0, shard0] = WriteId.unpack(shard0WithId);
 
     // Fetch remaining shards individually. This is necessary since shards are near request/response size limit.
-    const shards: string[] = [shard0];
+    let result = shard0;
     for (let i = 1; i < len; i++) {
       // NOTE: We don't `Promise.all` these because we expect values to be large enough to be bandwidth-constrained.
       const shardWithId = (await this.redis.lindex(key, i)) as string | null;
@@ -113,10 +113,10 @@ export class UpstashStore implements Store {
         return { value: null, motivatesRetry: true };
       }
 
-      shards.push(shard);
+      result += shard; // appending like this lets V8 engine defer memory copy until `result` is consumed
     }
 
-    return { value: shards.join(""), motivatesRetry: false };
+    return { value: result, motivatesRetry: false };
   }
 
   async get(key: string, maxRetries = 2): Promise<string | null> {
@@ -183,18 +183,23 @@ export function createOptimizedUpstashStore(options: UpstashStoreOptions & { max
 
   // 10k commands/sec → 3-6 commands/write (or more for high shard count) → 3+ concurrent instances ≅ 300 writes/sec
   const maxWritesPerSecond = 300;
+  // 100 commands/(10ms Upstash job bucket) → 3-6 commands/write → 3+ concurrent instances ≅ 3 writes
+  const maxWritesBurst = 3;
 
   // We use DebouncedStore to coalesce writes and reduce load, while still respecting rate limits.
   // debounceMs=500 gives good coalescing without too much lag.
   // maxStalenessMs=2000 ensures we don't hold data too long.
-  return new HierarchicalStore([
-    new LruStore(1 << 30), // 1 GB
-    new DebouncedStore(new CompressedStore(remote), {
-      debounceMs: 500,
-      maxStalenessMs: 2000,
-      maxWritesBurst: maxWritesPerSecond,
-      maxWritesPerSecond,
-      onWriteError: (key, err) => console.error(`[UpstashStore] Write error for key ${key}:`, err),
-    }),
-  ]);
+  return new HierarchicalStore(
+    [
+      new LruStore(1 << 30), // 1 GB
+      new DebouncedStore(new CompressedStore(remote), {
+        debounceMs: 500,
+        maxStalenessMs: 2000,
+        maxWritesBurst,
+        maxWritesPerSecond,
+        onWriteError: (key, err) => console.error(`[UpstashStore] Write error for key ${key}:`, err),
+      }),
+    ],
+    { populateOnMiss: true },
+  );
 }
