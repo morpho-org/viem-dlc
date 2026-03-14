@@ -183,6 +183,8 @@ export function createOptimizedUpstashStore(options: UpstashStoreOptions & { max
 
   // 10k commands/sec → 3-6 commands/write (or more for high shard count) → 3+ concurrent instances ≅ 300 writes/sec
   const maxWritesPerSecond = 300;
+  // 100 commands/(10ms Upstash job bucket) → 3-6 commands/write → 3+ concurrent instances ≅ 3 writes
+  const maxWritesBurst = 3;
 
   // We use DebouncedStore to coalesce writes and reduce load, while still respecting rate limits.
   // debounceMs=500 gives good coalescing without too much lag.
@@ -193,7 +195,7 @@ export function createOptimizedUpstashStore(options: UpstashStoreOptions & { max
       new DebouncedStore(new CompressedStore(remote), {
         debounceMs: 500,
         maxStalenessMs: 2000,
-        maxWritesBurst: maxWritesPerSecond,
+        maxWritesBurst,
         maxWritesPerSecond,
         onWriteError: (key, err) => console.error(`[UpstashStore] Write error for key ${key}:`, err),
       }),
