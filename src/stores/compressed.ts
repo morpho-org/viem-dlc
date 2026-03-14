@@ -1,11 +1,16 @@
 /// <reference types="node" />
 import { promisify } from "util";
-import { gunzip, gzip } from "zlib";
+import { type BrotliOptions, brotliCompress, brotliDecompress, constants as zlib } from "zlib";
 
 import type { Store } from "../types.js";
 
-const gzipAsync = promisify(gzip);
-const gunzipAsync = promisify(gunzip);
+const compress = promisify(brotliCompress);
+const decompress = promisify(brotliDecompress);
+const options: BrotliOptions = {
+  params: {
+    [zlib.BROTLI_PARAM_QUALITY]: 4,
+  },
+};
 
 /** A store that transparently compresses/decompresses values with gzip. */
 export class CompressedStore implements Store {
@@ -17,7 +22,7 @@ export class CompressedStore implements Store {
 
     try {
       const compressed = Buffer.from(value, "base64");
-      return (await gunzipAsync(compressed)).toString("utf8");
+      return (await decompress(compressed)).toString("utf8");
     } catch (e) {
       console.warn(`[CompressedStore] Failed to decompress value for key "${key}":`, e);
       return null;
@@ -25,7 +30,7 @@ export class CompressedStore implements Store {
   }
 
   async set(key: string, value: string) {
-    const compressed = await gzipAsync(value);
+    const compressed = await compress(value, options);
     return this.store.set(key, compressed.toString("base64"));
   }
 
