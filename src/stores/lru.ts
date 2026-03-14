@@ -48,4 +48,6 @@ export class LruStore implements Store {
       this.map.delete(key);
     }
   }
+
+  flush() {}
 }

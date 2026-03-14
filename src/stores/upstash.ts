@@ -4,6 +4,7 @@ import { randomBytes, randomUUID } from "crypto";
 import { Redis, type RedisConfigNodejs } from "@upstash/redis";
 
 import type { Store } from "../types.js";
+import { createInFlightBarrier } from "../utils/in-flight.js";
 import { omit } from "../utils/omit.js";
 import { shardString } from "../utils/strings.js";
 
@@ -66,6 +67,7 @@ end
 export class UpstashStore implements Store {
   private readonly options: UpstashStoreOptions;
   private readonly redis: Redis;
+  private readonly inFlight = createInFlightBarrier();
 
   constructor(options: UpstashStoreOptions) {
     if (!Number.isSafeInteger(options.maxRequestBytes) || options.maxRequestBytes! <= WriteId.LENGTH) {
@@ -135,7 +137,7 @@ export class UpstashStore implements Store {
     return null;
   }
 
-  async set(key: string, value: string) {
+  private async _set(key: string, value: string) {
     // Split `value` into shard(s), each no bigger than `maxRequestBytes - WriteId.LENGTH`.
     const shards = shardString(value, this.options.maxRequestBytes - WriteId.LENGTH);
     const hasMultipleChunks = shards.length > 1;
@@ -173,8 +175,16 @@ export class UpstashStore implements Store {
     await tx.exec();
   }
 
+  set(key: string, value: string) {
+    return this.inFlight.track(this._set(key, value));
+  }
+
   async delete(key: string) {
-    await this.redis.unlink(key);
+    await this.inFlight.track(this.redis.unlink(key));
+  }
+
+  flush() {
+    return this.inFlight.flush();
   }
 }
 

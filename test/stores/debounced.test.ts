@@ -274,6 +274,7 @@ describe("DebouncedStore", () => {
           throw new Error("write failed");
         },
         delete: async () => {},
+        flush: async () => {},
       };
 
       const store = new DebouncedStore(flaky, {
@@ -396,6 +397,7 @@ describe("DebouncedStore", () => {
           inFlightCount--;
         },
         delete: async () => {},
+        flush: async () => {},
       };
 
       const store = new DebouncedStore(slowStore, {
@@ -500,6 +502,7 @@ describe("DebouncedStore", () => {
           throw new Error("permanent failure");
         },
         delete: async () => {},
+        flush: async () => {},
       };
 
       const store = new DebouncedStore(flaky, {
