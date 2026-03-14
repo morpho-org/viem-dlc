@@ -12,17 +12,20 @@ const options: BrotliOptions = {
   },
 };
 
-/** A store that transparently compresses/decompresses values with gzip. */
+/** A store that transparently compresses/decompresses values with brotli. */
 export class CompressedStore implements Store {
   constructor(private readonly store: Store) {}
 
   async get(key: string) {
-    const value = await this.store.get(key);
+    let value = await this.store.get(key);
     if (value === null) return null;
 
     try {
-      const compressed = Buffer.from(value, "base64");
-      return (await decompress(compressed)).toString("utf8");
+      let compressed: Buffer | null = Buffer.from(value, "base64");
+      value = null; // release memory
+      const decompressed = await decompress(compressed);
+      compressed = null; // release memory
+      return decompressed.toString("utf8");
     } catch (e) {
       console.warn(`[CompressedStore] Failed to decompress value for key "${key}":`, e);
       return null;
