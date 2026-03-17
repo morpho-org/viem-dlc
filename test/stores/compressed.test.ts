@@ -119,4 +119,42 @@ describe("CompressedStore", () => {
     const raw = await underlying.get("key");
     expect(raw).not.toBe("value");
   });
+
+  it("flush waits for fire-and-forget writes accepted before the barrier", async () => {
+    const underlying = new MemoryStore();
+    const compressed = new CompressedStore(underlying);
+
+    const setPromise = compressed.set("key", "value");
+    await compressed.flush();
+
+    expect(await compressed.get("key")).toBe("value");
+    await setPromise;
+  });
+
+  it("flush delegates to the underlying store", async () => {
+    const underlying = new MemoryStore();
+    let resolveFlush: () => void = () => {};
+    const flushGate = new Promise<void>((resolve) => {
+      resolveFlush = resolve;
+    });
+
+    underlying.flush = async () => {
+      await flushGate;
+    };
+
+    const compressed = new CompressedStore(underlying);
+    const flushPromise = compressed.flush();
+
+    let completed = false;
+    void flushPromise.then(() => {
+      completed = true;
+    });
+
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    resolveFlush();
+    await flushPromise;
+    expect(completed).toBe(true);
+  });
 });

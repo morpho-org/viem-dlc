@@ -1,5 +1,6 @@
 export * from "./blocks.js";
 export * from "./hash.js";
+export * from "./in-flight.js";
 export * from "./json.js";
 export * from "./math.js";
 export * from "./omit.js";

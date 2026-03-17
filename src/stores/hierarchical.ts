@@ -34,4 +34,8 @@ export class HierarchicalStore implements Store {
   async delete(key: string) {
     await Promise.allSettled(this.stores.map((store) => store.delete(key)));
   }
+
+  async flush() {
+    await Promise.allSettled(this.stores.map((store) => store.flush()));
+  }
 }
