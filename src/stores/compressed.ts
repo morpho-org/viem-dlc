@@ -13,7 +13,12 @@ const options: BrotliOptions = {
   },
 };
 
-/** A store that transparently compresses/decompresses values with brotli. */
+/**
+ * A store that transparently compresses/decompresses values with brotli.
+ * 
+ * @deprecated Compression is now handled outside the `Store` stack, so this would be
+ * compressing already-compressed data.
+ */
 export class CompressedStore implements Store {
   private readonly inFlight = createInFlightBarrier();
 

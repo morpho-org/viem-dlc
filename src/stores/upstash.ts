@@ -7,7 +7,6 @@ import type { Store } from "../types.js";
 import { createInFlightBarrier } from "../utils/in-flight.js";
 import { shardString } from "../utils/strings.js";
 
-import { CompressedStore } from "./compressed.js";
 import { DebouncedStore } from "./debounced.js";
 import { HierarchicalStore } from "./hierarchical.js";
 import { LruStore } from "./lru.js";
@@ -213,7 +212,7 @@ export function createOptimizedUpstashStore(options: UpstashStoreOptions) {
   return new HierarchicalStore(
     [
       new LruStore(1 << 30), // 1 GB
-      new DebouncedStore(new CompressedStore(remote), {
+      new DebouncedStore(remote, {
         debounceMs: 500,
         maxDelayMs: 2000,
         maxStalenessMs: 30000, // defend against serverless freeze/thaw cycles
