@@ -147,7 +147,7 @@ export class DebouncedStore implements Store {
   /**
    * Snapshots buffered ops, schedules them to be executed (if not already in-flight) as quickly as rate-limit
    * allows (bypassing debounce logic), and waits for them to complete.
-   * 
+   *
    * @dev `await debouncedStore.flush()` DOES NOT imply that all data has been persisted -- only that we
    * **tried** to persist it (or dropped it after `maxStalenessMs`). The underlying store is allowed to error.
    *

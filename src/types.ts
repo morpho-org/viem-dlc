@@ -126,7 +126,7 @@ export type SafelyExtendRpcSchema<T extends RpcSchema, Extension extends RpcSche
 /**
  * All methods are best-effort and MUST NOT throw. Stores should be robust to gaps
  * in wall clock time (e.g., freeze/thaw cycles in serverless function environments).
- * 
+ *
  * @dev `flush` is expected to resolve after pending work is complete. The definition of
  * "pending work" may be Store-specific.
  */
