@@ -19,7 +19,7 @@ export class HierarchicalStore implements Store {
       const value = await this.stores[i]!.get(key);
       if (value !== null) {
         if (this.options?.populateOnMiss) {
-          void Promise.allSettled(this.stores.slice(0, i).map((store) => store.set(key, value)));
+          void Promise.all(this.stores.slice(0, i).map((store) => store.set(key, value)));
         }
         return value;
       }
@@ -28,14 +28,14 @@ export class HierarchicalStore implements Store {
   }
 
   async set(key: string, value: string) {
-    await Promise.allSettled(this.stores.map((store) => store.set(key, value)));
+    await Promise.all(this.stores.map((store) => store.set(key, value)));
   }
 
   async delete(key: string) {
-    await Promise.allSettled(this.stores.map((store) => store.delete(key)));
+    await Promise.all(this.stores.map((store) => store.delete(key)));
   }
 
   async flush() {
-    await Promise.allSettled(this.stores.map((store) => store.flush()));
+    await Promise.all(this.stores.map((store) => store.flush()));
   }
 }

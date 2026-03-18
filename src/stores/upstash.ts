@@ -5,7 +5,6 @@ import { Redis, type RedisConfigNodejs } from "@upstash/redis";
 
 import type { Store } from "../types.js";
 import { createInFlightBarrier } from "../utils/in-flight.js";
-import { omit } from "../utils/omit.js";
 import { shardString } from "../utils/strings.js";
 
 import { CompressedStore } from "./compressed.js";
@@ -175,21 +174,33 @@ export class UpstashStore implements Store {
     await tx.exec();
   }
 
-  set(key: string, value: string) {
-    return this.inFlight.track(this._set(key, value));
+  async set(key: string, value: string) {
+    try {
+      await this.inFlight.track(this._set(key, value));
+    } catch (err) {
+      console.warn(`[UpstashStore] Failed to set key "${key}":`, err);
+    }
   }
 
   async delete(key: string) {
-    await this.inFlight.track(this.redis.unlink(key));
+    try {
+      await this.inFlight.track(this.redis.unlink(key));
+    } catch (err) {
+      console.warn(`[UpstashStore] Failed to delete key "${key}":`, err);
+    }
   }
 
-  flush() {
-    return this.inFlight.flush();
+  async flush() {
+    try {
+      await this.inFlight.flush();
+    } catch (err) {
+      console.warn("[UpstashStore] Failed to flush:", err);
+    }
   }
 }
 
-export function createOptimizedUpstashStore(options: UpstashStoreOptions & { maxWritesPerSecond: number }) {
-  const remote = new UpstashStore(omit(options, ["maxWritesPerSecond"]));
+export function createOptimizedUpstashStore(options: UpstashStoreOptions) {
+  const remote = new UpstashStore(options);
 
   // 10k commands/sec → 3-6 commands/write (or more for high shard count) → 3+ concurrent instances ≅ 300 writes/sec
   const maxWritesPerSecond = 300;
@@ -204,10 +215,13 @@ export function createOptimizedUpstashStore(options: UpstashStoreOptions & { max
       new LruStore(1 << 30), // 1 GB
       new DebouncedStore(new CompressedStore(remote), {
         debounceMs: 500,
-        maxStalenessMs: 2000,
+        maxDelayMs: 2000,
+        maxStalenessMs: 30000, // defend against serverless freeze/thaw cycles
         maxWritesBurst,
         maxWritesPerSecond,
-        onWriteError: (key, err) => console.error(`[UpstashStore] Write error for key ${key}:`, err),
+        onWriteError: (key, err, durationMs) => {
+          console.error(`[UpstashStore] Write error for key ${key} after ${Math.ceil(durationMs / 1000)}s:`, err);
+        },
       }),
     ],
     { populateOnMiss: true },

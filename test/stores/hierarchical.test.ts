@@ -52,7 +52,7 @@ describe("HierarchicalStore", () => {
     expect(await second.get("key")).toBeNull();
   });
 
-  it("continues write even if one store fails", async () => {
+  it("surfaces child contract violations during writes", async () => {
     const failing: Store = {
       get: async () => null,
       set: async () => {
@@ -66,9 +66,7 @@ describe("HierarchicalStore", () => {
     const working = new MemoryStore();
 
     const store = new HierarchicalStore([failing, working]);
-    await store.set("key", "value");
-
-    expect(await working.get("key")).toBe("value");
+    await expect(store.set("key", "value")).rejects.toThrow("write failed");
   });
 
   it("flushes all child stores", async () => {
