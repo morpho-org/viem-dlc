@@ -1,5 +1,3 @@
-type SettledPromise = Promise<void>;
-
 /**
  * Tracks in-flight promises and exposes a barrier for all promises accepted so far.
  *
@@ -7,7 +5,7 @@ type SettledPromise = Promise<void>;
  * - `flush` waits for tracked promises to settle, but never rejects.
  */
 export function createInFlightBarrier() {
-  const inFlight = new Set<SettledPromise>();
+  const inFlight = new Set<Promise<void>>();
 
   return {
     track<T>(promise: Promise<T>): Promise<T> {

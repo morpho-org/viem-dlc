@@ -38,8 +38,12 @@ export class CompressedStore implements Store {
   set(key: string, value: string) {
     return this.inFlight.track(
       (async () => {
-        const compressed = await compress(value, options);
-        return this.store.set(key, compressed.toString("base64"));
+        try {
+          const compressed = await compress(value, options);
+          return this.store.set(key, compressed.toString("base64"));
+        } catch (e) {
+          console.warn(`[CompressedStore] Failed to compress value for key "${key}":`, e);
+        }
       })(),
     );
   }
