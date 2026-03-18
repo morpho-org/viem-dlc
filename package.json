@@ -16,7 +16,9 @@
   "homepage": "https://github.com/morpho-org/viem-dlc",
   "type": "module",
   "sideEffects": false,
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -61,6 +63,9 @@
     "typecheck": "tsc --project tsconfig.json --noEmit --incremental",
     "test:unit": "vitest run",
     "prepare": "pnpm build"
+  },
+  "dependencies": {
+    "valibot": "^1.2.0"
   },
   "peerDependencies": {
     "@upstash/redis": "^1.0.0",

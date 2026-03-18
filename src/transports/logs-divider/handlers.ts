@@ -1,4 +1,4 @@
-import { type EIP1193RequestFn, hexToBigInt, type PublicRpcSchema, type RpcLog, toHex } from "viem";
+import { type EIP1193RequestFn, hexToBigInt, type RpcLog, toHex } from "viem";
 
 import type { BlockRange, EthGetLogsHashlessFilter, RpcSignature } from "../../types.js";
 import {
@@ -8,24 +8,22 @@ import {
   isInBlockRange,
   resolveBlockNumber,
 } from "../../utils/blocks.js";
-import { estimateUtf8Bytes } from "../../utils/json.js";
 import { min } from "../../utils/math.js";
+import type { RateLimiterSchema } from "../rate-limiter/schema.js";
 
 import type { LogsDividerRpcSchema } from "./schema.js";
 import type { LogsDividerConfig, OnLogsResponse } from "./types.js";
 
 /** Internal context passed through the processing pipeline */
 interface ProcessContext {
-  requestFn: EIP1193RequestFn<PublicRpcSchema>;
+  requestFn: EIP1193RequestFn<RateLimiterSchema>;
   onLogsResponse?: OnLogsResponse;
   baseFilter: EthGetLogsHashlessFilter;
-  maxConcurrentChunks: number;
-  maxLogBytes?: number;
   latestBlockNumber: bigint;
 }
 
 /** Fetches logs for a single range with automatic retry and range halving on range-related failure. */
-async function fetchRangeWithRetry({ maxLogBytes, ...ctx }: ProcessContext, range: BlockRange): Promise<RpcLog[]> {
+async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange, priority?: number): Promise<RpcLog[]> {
   // Constrain toBlock to chain tip (range may span past it due to alignment)
   const constrainedRange: BlockRange = {
     fromBlock: range.fromBlock,
@@ -44,14 +42,14 @@ async function fetchRangeWithRetry({ maxLogBytes, ...ctx }: ProcessContext, rang
   };
 
   try {
-    let logs = await ctx.requestFn(
-      { method: "eth_getLogs", params: [filter] },
+    const logs = await ctx.requestFn(
+      {
+        method: "eth_getLogs",
+        params: [filter, { __rateLimiter: true, priority }],
+      },
       // `retryCount: 0` so that we fail fast on block range errors
       { dedupe: true, retryCount: 0 },
     );
-    if (maxLogBytes !== undefined) {
-      logs = logs.filter((log) => estimateUtf8Bytes(log) <= maxLogBytes);
-    }
 
     // Success - invoke callback
     ctx.onLogsResponse?.({
@@ -70,7 +68,7 @@ async function fetchRangeWithRetry({ maxLogBytes, ...ctx }: ProcessContext, rang
 
       if (halves) {
         // Recursively fetch both halves
-        const logs = await Promise.all(halves.map((half) => fetchRangeWithRetry(ctx, half)));
+        const logs = await Promise.all(halves.map((half) => fetchRangeWithRetry(ctx, half, priority)));
         return logs.flat();
       }
     }
@@ -86,54 +84,23 @@ async function fetchRangeWithRetry({ maxLogBytes, ...ctx }: ProcessContext, rang
 }
 
 /**
- * Processes multiple ranges with concurrency limit.
- * Uses a worker pool pattern to limit parallel requests.
- * Maintains result order despite concurrent execution.
- *
- * @dev This is useful even when composed with the `rateLimiter` transport.
- * Take ranges to be [A, B, ..., Z] -- if we request all in parallel, then the
- * *retries* for range A are queued after the *initial* requests for range Z.
- * This isn't a problem for `logsDivider`, since we need to fetch all ranges
- * anyway, but it can produce unexpected mental-model-overhead for `onLogsResponse`
- * consumers. Applying a concurrency limit ensures outer ranges are fully processed
- * roughly in order, even while inner ranges/retries fight for priority.
- */
-async function processRangesWithConcurrency(ctx: ProcessContext, ranges: BlockRange[]): Promise<RpcLog[]> {
-  if (ranges.length === 0) return [];
-
-  const results: RpcLog[][] = new Array(ranges.length);
-  let cursor = 0;
-
-  async function worker() {
-    while (cursor < ranges.length) {
-      const index = cursor++;
-      results[index] = await fetchRangeWithRetry(ctx, ranges[index]!);
-    }
-  }
-
-  const workerCount = Math.min(ctx.maxConcurrentChunks, ranges.length);
-  await Promise.all(Array.from({ length: workerCount }, worker));
-
-  return results.flat();
-}
-
-/**
  * Main handler for eth_getLogs requests.
- * Divides large ranges, manages rate limiting, and handles retries.
+ * Divides large ranges, assigns chunk priorities, and handles retries.
  */
 export async function handleGetLogs(
-  requestFn: EIP1193RequestFn<PublicRpcSchema>,
+  requestFn: EIP1193RequestFn<RateLimiterSchema>,
   [filter, ...params]: RpcSignature<LogsDividerRpcSchema, "eth_getLogs">["Parameters"],
-  config: Required<Omit<LogsDividerConfig, "alignTo" | "maxLogBytes">> &
-    Pick<LogsDividerConfig, "alignTo" | "maxLogBytes">,
+  config: LogsDividerConfig,
 ): Promise<RpcLog[]> {
   // blockHash queries cannot be divided - pass through
   if (filter.blockHash) {
-    return requestFn({ method: "eth_getLogs", params: [filter] }, { dedupe: true });
+    return requestFn({ method: "eth_getLogs", params: params[0] ? [filter, params[0]] : [filter] }, { dedupe: true });
   }
 
+  // Get extra params
+  const priority = params[0]?.priority ?? 0;
   const latestBlockNumber = hexToBigInt(
-    params[0]?.latestBlock ?? (await requestFn({ method: "eth_blockNumber" }, { dedupe: true })),
+    params[1]?.latestBlock ?? (await requestFn({ method: "eth_blockNumber" }, { dedupe: true })),
   );
 
   // Resolve block tags to numbers
@@ -146,19 +113,26 @@ export async function handleGetLogs(
 
   const ctx: ProcessContext = {
     requestFn,
-    onLogsResponse: params[0]?.onLogsResponse,
+    onLogsResponse: params[1]?.onLogsResponse,
     baseFilter: filter,
-    maxConcurrentChunks: config.maxConcurrentChunks,
-    maxLogBytes: config.maxLogBytes,
     latestBlockNumber,
   };
 
   const range: BlockRange = { fromBlock, toBlock };
+  const chunks = divideBlockRange(range, config.maxBlockRange, config.alignTo);
+  const logs = await Promise.all(
+    chunks.map(async (chunk, i) => {
+      // Take chunks to be [A, B, ..., Z] -- if we make requests without specifying priority, the queue
+      // is FIFO, so *retries* for chunk A are queued after the *initial* request for chunk Z. This isn't
+      // a problem here, since we need to fetch all ranges anyway, but it can produce unexpected
+      // mental-model-overhead for `onLogsResponse` consumers. By using the chunk index as the priority,
+      // we ensure that *if we're rate/concurrency limited*, chunks are processed roughly in order.
+      const result = await fetchRangeWithRetry(ctx, chunk, priority + i / chunks.length);
+      // Filter out logs outside original range (in case alignment extended the range).
+      // We do this per-chunk to avoid creating an extra copy of the final flattened array, which could be large.
+      return result.filter(isInBlockRange(range));
+    }),
+  );
 
-  // Divide into chunks and process with concurrency
-  const ranges = divideBlockRange(range, config.maxBlockRange, config.alignTo);
-  const logs = await processRangesWithConcurrency(ctx, ranges);
-
-  // Filter out logs outside original range (if alignment extended the range)
-  return logs.filter(isInBlockRange(range));
+  return logs.flat();
 }

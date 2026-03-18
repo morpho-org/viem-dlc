@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "crypto";
 import { Redis, type RedisConfigNodejs } from "@upstash/redis";
 
 import type { Store } from "../types.js";
-import { omit } from "../utils/omit.js";
+import { createInFlightBarrier } from "../utils/in-flight.js";
 import { shardString } from "../utils/strings.js";
 
 import { CompressedStore } from "./compressed.js";
@@ -66,6 +66,7 @@ end
 export class UpstashStore implements Store {
   private readonly options: UpstashStoreOptions;
   private readonly redis: Redis;
+  private readonly inFlight = createInFlightBarrier();
 
   constructor(options: UpstashStoreOptions) {
     if (!Number.isSafeInteger(options.maxRequestBytes) || options.maxRequestBytes! <= WriteId.LENGTH) {
@@ -96,7 +97,7 @@ export class UpstashStore implements Store {
     const [writeId0, shard0] = WriteId.unpack(shard0WithId);
 
     // Fetch remaining shards individually. This is necessary since shards are near request/response size limit.
-    const shards: string[] = [shard0];
+    let result = shard0;
     for (let i = 1; i < len; i++) {
       // NOTE: We don't `Promise.all` these because we expect values to be large enough to be bandwidth-constrained.
       const shardWithId = (await this.redis.lindex(key, i)) as string | null;
@@ -113,10 +114,10 @@ export class UpstashStore implements Store {
         return { value: null, motivatesRetry: true };
       }
 
-      shards.push(shard);
+      result += shard; // appending like this lets V8 engine defer memory copy until `result` is consumed
     }
 
-    return { value: shards.join(""), motivatesRetry: false };
+    return { value: result, motivatesRetry: false };
   }
 
   async get(key: string, maxRetries = 2): Promise<string | null> {
@@ -135,7 +136,7 @@ export class UpstashStore implements Store {
     return null;
   }
 
-  async set(key: string, value: string) {
+  private async _set(key: string, value: string) {
     // Split `value` into shard(s), each no bigger than `maxRequestBytes - WriteId.LENGTH`.
     const shards = shardString(value, this.options.maxRequestBytes - WriteId.LENGTH);
     const hasMultipleChunks = shards.length > 1;
@@ -173,28 +174,56 @@ export class UpstashStore implements Store {
     await tx.exec();
   }
 
+  async set(key: string, value: string) {
+    try {
+      await this.inFlight.track(this._set(key, value));
+    } catch (err) {
+      console.warn(`[UpstashStore] Failed to set key "${key}":`, err);
+    }
+  }
+
   async delete(key: string) {
-    await this.redis.unlink(key);
+    try {
+      await this.inFlight.track(this.redis.unlink(key));
+    } catch (err) {
+      console.warn(`[UpstashStore] Failed to delete key "${key}":`, err);
+    }
+  }
+
+  async flush() {
+    try {
+      await this.inFlight.flush();
+    } catch (err) {
+      console.warn("[UpstashStore] Failed to flush:", err);
+    }
   }
 }
 
-export function createOptimizedUpstashStore(options: UpstashStoreOptions & { maxWritesPerSecond: number }) {
-  const remote = new UpstashStore(omit(options, ["maxWritesPerSecond"]));
+export function createOptimizedUpstashStore(options: UpstashStoreOptions) {
+  const remote = new UpstashStore(options);
 
   // 10k commands/sec → 3-6 commands/write (or more for high shard count) → 3+ concurrent instances ≅ 300 writes/sec
   const maxWritesPerSecond = 300;
+  // 100 commands/(10ms Upstash job bucket) → 3-6 commands/write → 3+ concurrent instances ≅ 3 writes
+  const maxWritesBurst = 3;
 
   // We use DebouncedStore to coalesce writes and reduce load, while still respecting rate limits.
   // debounceMs=500 gives good coalescing without too much lag.
   // maxStalenessMs=2000 ensures we don't hold data too long.
-  return new HierarchicalStore([
-    new LruStore(1 << 30), // 1 GB
-    new DebouncedStore(new CompressedStore(remote), {
-      debounceMs: 500,
-      maxStalenessMs: 2000,
-      maxWritesBurst: maxWritesPerSecond,
-      maxWritesPerSecond,
-      onWriteError: (key, err) => console.error(`[UpstashStore] Write error for key ${key}:`, err),
-    }),
-  ]);
+  return new HierarchicalStore(
+    [
+      new LruStore(1 << 30), // 1 GB
+      new DebouncedStore(new CompressedStore(remote), {
+        debounceMs: 500,
+        maxDelayMs: 2000,
+        maxStalenessMs: 30000, // defend against serverless freeze/thaw cycles
+        maxWritesBurst,
+        maxWritesPerSecond,
+        onWriteError: (key, err, durationMs) => {
+          console.error(`[UpstashStore] Write error for key ${key} after ${Math.ceil(durationMs / 1000)}s:`, err);
+        },
+      }),
+    ],
+    { populateOnMiss: true },
+  );
 }

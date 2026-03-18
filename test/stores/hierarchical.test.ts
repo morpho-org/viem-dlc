@@ -52,7 +52,7 @@ describe("HierarchicalStore", () => {
     expect(await second.get("key")).toBeNull();
   });
 
-  it("continues write even if one store fails", async () => {
+  it("surfaces child contract violations during writes", async () => {
     const failing: Store = {
       get: async () => null,
       set: async () => {
@@ -61,13 +61,44 @@ describe("HierarchicalStore", () => {
       delete: async () => {
         throw new Error("delete failed");
       },
+      flush: async () => {},
     };
     const working = new MemoryStore();
 
     const store = new HierarchicalStore([failing, working]);
-    await store.set("key", "value");
+    await expect(store.set("key", "value")).rejects.toThrow("write failed");
+  });
 
-    expect(await working.get("key")).toBe("value");
+  it("flushes all child stores", async () => {
+    let resolveFlush: () => void = () => {};
+    const flushGate = new Promise<void>((resolve) => {
+      resolveFlush = resolve;
+    });
+
+    const first: Store = {
+      get: async () => null,
+      set: async () => {},
+      delete: async () => {},
+      flush: async () => {
+        await flushGate;
+      },
+    };
+    const second = new MemoryStore();
+
+    const store = new HierarchicalStore([first, second]);
+    const flushPromise = store.flush();
+
+    let completed = false;
+    void flushPromise.then(() => {
+      completed = true;
+    });
+
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    resolveFlush();
+    await flushPromise;
+    expect(completed).toBe(true);
   });
 
   it("handles empty store list", async () => {
@@ -75,5 +106,6 @@ describe("HierarchicalStore", () => {
     expect(await store.get("key")).toBeNull();
     await store.set("key", "value"); // Should not throw
     await store.delete("key"); // Should not throw
+    await store.flush(); // Should not throw
   });
 });

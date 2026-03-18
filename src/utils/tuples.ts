@@ -28,11 +28,23 @@ export type Inits<T extends Tuple> = T extends readonly [infer H, ...infer R]
                         ELEMENTWISE UNIONS
 //////////////////////////////////////////////////////////////*/
 
-/** Type of `T[0]` **iff its length > 1**. */
-type Head<T extends Tuple> = T extends readonly [infer H, ...any[]] ? H : never;
+/** Type of `T[0]` — handles both required and optional leading elements. */
+type Head<T extends Tuple> = T extends readonly [infer H, ...any[]]
+  ? H
+  : T["length"] extends 0
+    ? never
+    : T extends readonly [(infer H)?, ...any[]]
+      ? H | undefined
+      : never;
 
-/** Union of types of `T.slice(1)` **iff its length > 1**. */
-type Tail<T extends Tuple> = T extends readonly [any, ...infer R] ? R : never;
+/** Rest of `T` after removing the first element — handles both required and optional leading elements. */
+type Tail<T extends Tuple> = T extends readonly [any, ...infer R]
+  ? R
+  : T["length"] extends 0
+    ? never
+    : T extends readonly [any?, ...infer R]
+      ? R
+      : never;
 
 /** Whether `T.length > 1` */
 type HasMultipleElements<T extends Tuple> = Exclude<T, readonly [any, ...any[]]> extends never ? true : false;

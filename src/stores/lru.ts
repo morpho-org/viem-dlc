@@ -1,6 +1,5 @@
 import type { Store } from "../types.js";
-
-const encoder = new TextEncoder();
+import { measureUtf8Bytes } from "../utils/strings.js";
 
 /** LRU cache with byte-based size limit (only values counted, keys assumed negligible). */
 export class LruStore implements Store {
@@ -24,7 +23,7 @@ export class LruStore implements Store {
   set(key: string, value: string) {
     this.delete(key);
 
-    const size = encoder.encode(value).length;
+    const size = measureUtf8Bytes(value);
     if (size > this.maxBytes) {
       console.warn(`[LruStore] Value exceeds maxBytes (${size} > ${this.maxBytes}), skipping`);
       return;
@@ -49,4 +48,6 @@ export class LruStore implements Store {
       this.map.delete(key);
     }
   }
+
+  flush() {}
 }
