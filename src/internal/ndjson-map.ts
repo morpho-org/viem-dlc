@@ -62,17 +62,17 @@ function parseEnvelope<K extends string>(line: string): { key: K; valueStart: nu
  * streaming upsert (decompress → filter → append → recompress).
  */
 export class NdjsonMap<T, K extends string = string> {
-  private readonly buffer: BrotliLineBlob;
+  private readonly blob: BrotliLineBlob;
 
   constructor(
     private readonly codec: Codec<T>,
     compressed?: string | Buffer,
   ) {
-    this.buffer = new BrotliLineBlob(compressed);
+    this.blob = new BrotliLineBlob(compressed);
   }
 
   toBase64(): string {
-    return this.buffer.toBase64();
+    return this.blob.toBase64();
   }
 
   /** Build a full NDJSON line from a pre-stringified JSON key token and a value. */
@@ -89,7 +89,7 @@ export class NdjsonMap<T, K extends string = string> {
 
   /** Async generator that yields each record from the compressed NDJSON. */
   async *records(): AsyncGenerator<Entry<T, K>, void, void> {
-    for await (const line of this.buffer.lines()) {
+    for await (const line of this.blob.lines()) {
       if (line.length === 0) continue;
       const entry = this.parseLine(line);
       if (entry !== undefined) yield entry;
@@ -98,7 +98,7 @@ export class NdjsonMap<T, K extends string = string> {
 
   /** Stream-decompress and fold every entry through `fn`. */
   reduce<Acc>(fn: (acc: Acc, record: Entry<T, K>) => Acc, init: Acc): Promise<Acc> {
-    return this.buffer.reduceLines((acc, line) => {
+    return this.blob.reduceLines((acc, line) => {
       if (line.length === 0) return acc;
       const entry = this.parseLine(line);
       return entry === undefined ? acc : fn(acc, entry);
@@ -127,7 +127,7 @@ export class NdjsonMap<T, K extends string = string> {
     }
     const seen = new Set<string>();
 
-    await this.buffer.rewriteLines(
+    await this.blob.rewriteLines(
       (line, emit) => {
         if (line.length === 0) return;
 
