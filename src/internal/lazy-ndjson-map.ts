@@ -41,7 +41,6 @@ const identity: Codec<string> = {
  * The underlying `NdjsonMap` uses a no-op codec since values are already
  * stringified when they enter the pending buffer.
  */
-
 export class LazyNdjsonMap<T, K extends string = string> {
   private readonly inner: NdjsonMap<string, K>;
   private readonly codec: Codec<T>;

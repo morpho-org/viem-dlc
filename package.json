@@ -61,7 +61,8 @@
     "lint": "pnpm exec biome lint --write",
     "build": "tsc",
     "typecheck": "tsc --project tsconfig.json --noEmit --incremental",
-    "test:unit": "vitest run",
+    "pretest": "pnpm build",
+    "test": "vitest run",
     "prepare": "pnpm build"
   },
   "dependencies": {
