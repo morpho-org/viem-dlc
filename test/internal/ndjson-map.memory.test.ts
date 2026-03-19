@@ -35,7 +35,7 @@ function totalCompressedFootprintMultiple(peakDeltaBytes: number, compressedByte
 function measureNdjsonPeakMemory(config: MeasurementConfig): MemoryMeasurement {
   const child = spawnSync(
     process.execPath,
-    ["--expose-gc", "--experimental-transform-types", "./test/data/ndjson-map.memory.worker.ts"],
+    ["--expose-gc", "--experimental-transform-types", "./test/internal/ndjson-map.memory.worker.ts"],
     {
       cwd: "/Users/haydenshively/Developer/viem-dlc",
       encoding: "utf8",
