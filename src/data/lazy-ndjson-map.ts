@@ -62,7 +62,7 @@ export class LazyNdjsonMap<T, K extends string = string> {
     controller?: AbortController;
   };
 
-  constructor(codec: Codec<T>, options: {autoFlushThresholdBytes: number;}, compressed?: string | Buffer) {
+  constructor(codec: Codec<T>, options: { autoFlushThresholdBytes: number }, compressed?: string | Buffer) {
     this.codec = codec;
     this.autoFlushThresholdBytes = options.autoFlushThresholdBytes;
     this.inner = new NdjsonMap<string, K>(identity, compressed);
@@ -90,7 +90,9 @@ export class LazyNdjsonMap<T, K extends string = string> {
    */
   upsert(entry: Entry<T, K>): void {
     if (this.active?.explicit) {
-      console.warn(`[LazyNdjsonMap] Upserting key '${entry.key}' while explicit flush is in progress. This is an anti-pattern, as it delays the flush.`);
+      console.warn(
+        `[LazyNdjsonMap] Upserting key '${entry.key}' while explicit flush is in progress. This is an anti-pattern, as it delays the flush.`,
+      );
     }
 
     const rawValue = this.codec.toJson(entry.value);
@@ -135,15 +137,17 @@ export class LazyNdjsonMap<T, K extends string = string> {
   reduce<Acc>(fn: (acc: Acc, record: Entry<T, K>) => Acc, init: Acc): Promise<Acc> {
     const pendingSnapshot = new Map(this.pending);
 
-    return this.inner.reduce<Acc>((acc, record) => {
-      if (pendingSnapshot.has(record.key)) return acc;
-      return fn(acc, { key: record.key, value: this.codec.fromJson(record.value) });
-    }, init).then((acc) => {
-      for (const [key, rawValue] of pendingSnapshot) {
-        acc = fn(acc, { key, value: this.codec.fromJson(rawValue) });
-      }
-      return acc;
-    });
+    return this.inner
+      .reduce<Acc>((acc, record) => {
+        if (pendingSnapshot.has(record.key)) return acc;
+        return fn(acc, { key: record.key, value: this.codec.fromJson(record.value) });
+      }, init)
+      .then((acc) => {
+        for (const [key, rawValue] of pendingSnapshot) {
+          acc = fn(acc, { key, value: this.codec.fromJson(rawValue) });
+        }
+        return acc;
+      });
   }
 
   /** Async generator that yields each entry (flushed + pending). */

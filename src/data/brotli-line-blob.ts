@@ -159,7 +159,9 @@ export class BrotliLineBlob {
     });
 
     if (this.data.length === 0) {
-      await pipeline(Readable.from([] as string[]), rewriteStream, createBrotliCompress(brotliOptions), output, { signal });
+      await pipeline(Readable.from([] as string[]), rewriteStream, createBrotliCompress(brotliOptions), output, {
+        signal,
+      });
     } else {
       await pipeline(
         Readable.from(this.data),
