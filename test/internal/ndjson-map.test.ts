@@ -72,12 +72,9 @@ describe("NdjsonMap", () => {
   });
 
   it("lets a malformed value claim a key during rewrite and shadow a later valid duplicate", async () => {
-    const source = [
-      '{"key":"a","value":oops}',
-      serializeLine("a", "real-a"),
-      serializeLine("b", "keep-b"),
-      "",
-    ].join("\n");
+    const source = ['{"key":"a","value":oops}', serializeLine("a", "real-a"), serializeLine("b", "keep-b"), ""].join(
+      "\n",
+    );
     const map = new NdjsonMap<string, string>(codec, brotliCompressSync(Buffer.from(source)));
 
     await map.upsert([{ key: "c", value: "new-c" }]);

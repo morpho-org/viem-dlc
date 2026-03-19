@@ -26,9 +26,12 @@ describe("BrotliLineBlob", () => {
 
     expect(await collectLines(blob)).toEqual([]);
 
-    await blob.rewriteLines(() => {}, (emit) => {
-      emit("tail");
-    });
+    await blob.rewriteLines(
+      () => {},
+      (emit) => {
+        emit("tail");
+      },
+    );
 
     expect(await collectLines(blob)).toEqual(["tail"]);
   });
@@ -56,9 +59,13 @@ describe("BrotliLineBlob", () => {
     controller.abort();
 
     await expect(
-      blob.rewriteLines((line, emit) => {
-        emit(line === "replace" ? "new" : line);
-      }, undefined, controller.signal),
+      blob.rewriteLines(
+        (line, emit) => {
+          emit(line === "replace" ? "new" : line);
+        },
+        undefined,
+        controller.signal,
+      ),
     ).rejects.toMatchObject({ name: "AbortError" });
 
     expect(await collectLines(blob)).toEqual(["keep", "replace"]);

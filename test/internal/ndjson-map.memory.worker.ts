@@ -157,8 +157,7 @@ async function main() {
   const finalMemory = memoryUsage();
   const peakBytes = Math.max(observedPeakBytes, maxRssBytes());
   const peakDeltaBytes = Math.max(0, peakBytes - baselinePeakBytes);
-  const outputCompressedBytes =
-    operation === "upsert" ? base64DecodedBytes(map.toBase64()) : compressedBytes;
+  const outputCompressedBytes = operation === "upsert" ? base64DecodedBytes(map.toBase64()) : compressedBytes;
 
   console.log(
     `${MARKER}${JSON.stringify({
