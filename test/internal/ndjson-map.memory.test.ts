@@ -1,4 +1,5 @@
 import { spawnSync } from "child_process";
+import { fileURLToPath } from "url";
 
 import { describe, expect, it } from "vitest";
 
@@ -27,6 +28,7 @@ type MeasurementConfig = {
 };
 
 const MARKER = "__NDJSON_MEMORY__";
+const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 function totalCompressedFootprintMultiple(peakDeltaBytes: number, compressedBytes: number) {
   return 1 + peakDeltaBytes / compressedBytes;
@@ -37,7 +39,7 @@ function measureNdjsonPeakMemory(config: MeasurementConfig): MemoryMeasurement {
     process.execPath,
     ["--expose-gc", "--experimental-transform-types", "./test/internal/ndjson-map.memory.worker.ts"],
     {
-      cwd: "/Users/haydenshively/Developer/viem-dlc",
+      cwd: repoRoot,
       encoding: "utf8",
       env: {
         ...process.env,
