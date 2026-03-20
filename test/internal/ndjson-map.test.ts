@@ -3,7 +3,7 @@ import { brotliCompressSync } from "zlib";
 
 import { describe, expect, it } from "vitest";
 
-import { BrotliLineBlob, type Codec, type Entry, NdjsonMap } from "../../src/internal/index.js";
+import { BrotliLineBlob, type Codec, createSlot, type Entry, NdjsonMap, type Slot } from "../../src/internal/index.js";
 import { parse, stringify } from "../../src/utils/json.js";
 
 const codec: Codec<string> = {
@@ -23,8 +23,8 @@ async function collectRecords<T, K extends string>(map: NdjsonMap<T, K>) {
   return records;
 }
 
-async function collectRawLines(map: NdjsonMap<string>) {
-  const blob = new BrotliLineBlob(map.toBase64());
+async function collectRawLines(slot: Slot) {
+  const blob = new BrotliLineBlob(createSlot(slot.get()));
   const lines: string[] = [];
   for await (const line of blob.lines()) {
     lines.push(line);
@@ -36,8 +36,8 @@ describe("NdjsonMap", () => {
   it("skips malformed envelopes and still parses keys containing the separator text", async () => {
     const trickyKey = 'prefix ","value": suffix';
     const source = `\nnot-json\n{"key":1,"value":"bad"}\n${serializeLine(trickyKey, "ok")}\n`;
-    const compressed = brotliCompressSync(Buffer.from(source)).toString("base64");
-    const map = new NdjsonMap<string, string>(codec, compressed);
+    const compressed = brotliCompressSync(Buffer.from(source));
+    const map = new NdjsonMap<string, string>(codec, createSlot(compressed));
 
     expect(await collectRecords(map)).toEqual([{ key: trickyKey, value: "ok" }]);
 
@@ -56,7 +56,7 @@ describe("NdjsonMap", () => {
       serializeLine("z", "keep-z"),
       "",
     ].join("\n");
-    const map = new NdjsonMap<string, string>(codec, brotliCompressSync(Buffer.from(source)));
+    const map = new NdjsonMap<string, string>(codec, createSlot(brotliCompressSync(Buffer.from(source))));
 
     await map.upsert([
       { key: "x", value: "new-x" },
@@ -75,11 +75,12 @@ describe("NdjsonMap", () => {
     const source = ['{"key":"a","value":oops}', serializeLine("a", "real-a"), serializeLine("b", "keep-b"), ""].join(
       "\n",
     );
-    const map = new NdjsonMap<string, string>(codec, brotliCompressSync(Buffer.from(source)));
+    const slot = createSlot(brotliCompressSync(Buffer.from(source)));
+    const map = new NdjsonMap<string, string>(codec, slot);
 
     await map.upsert([{ key: "c", value: "new-c" }]);
 
-    expect(await collectRawLines(map)).toEqual([
+    expect(await collectRawLines(slot)).toEqual([
       '{"key":"a","value":oops}',
       serializeLine("b", "keep-b"),
       serializeLine("c", "new-c"),

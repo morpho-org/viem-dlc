@@ -3,7 +3,7 @@ import { brotliCompressSync } from "zlib";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { type Codec, type Entry, LazyNdjsonMap, NdjsonMap } from "../../src/internal/index.js";
+import { type Codec, createSlot, type Entry, LazyNdjsonMap, NdjsonMap } from "../../src/internal/index.js";
 import { parse, stringify } from "../../src/utils/json.js";
 
 const codec: Codec<string> = {
@@ -49,7 +49,7 @@ describe("LazyNdjsonMap", () => {
     const map = new LazyNdjsonMap<string, string>(
       codec,
       { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER },
-      brotliCompressSync(Buffer.from(source)),
+      createSlot(brotliCompressSync(Buffer.from(source))),
     );
 
     map.upsert({ key: "x", value: "new-x" });
@@ -87,7 +87,7 @@ describe("LazyNdjsonMap", () => {
       return result;
     });
 
-    const map = new LazyNdjsonMap<string, string>(codec, { autoFlushThresholdBytes: 1 });
+    const map = new LazyNdjsonMap<string, string>(codec, { autoFlushThresholdBytes: 1 }, createSlot());
 
     map.upsert({ key: "a", value: "alpha" });
     await entered.promise;
@@ -125,7 +125,11 @@ describe("LazyNdjsonMap", () => {
     });
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const map = new LazyNdjsonMap<string, string>(codec, { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER });
+    const map = new LazyNdjsonMap<string, string>(
+      codec,
+      { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER },
+      createSlot(),
+    );
     map.upsert({ key: "a", value: "alpha" });
 
     const firstFlush = map.flush();
@@ -177,7 +181,7 @@ describe("LazyNdjsonMap", () => {
       return originalUpsert.call(this, entries, signal);
     });
 
-    const map = new LazyNdjsonMap<string, string>(codec, { autoFlushThresholdBytes: 1 });
+    const map = new LazyNdjsonMap<string, string>(codec, { autoFlushThresholdBytes: 1 }, createSlot());
     map.upsert({ key: "a", value: "alpha" });
 
     await entered.promise;
