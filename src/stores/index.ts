@@ -1,5 +1,5 @@
-// Do NOT export `compressed.js` to avoid polluting with Node/Bun deps
-// Do NOT export `unstash.js` to avoid polluting with Unstash deps
+// Do NOT export `unstash.js` to avoid polluting with Upstash deps
+export { CompressedStore } from "./compressed.js";
 export { DebouncedStore } from "./debounced.js";
 export { HierarchicalStore } from "./hierarchical.js";
 export { LruStore } from "./lru.js";

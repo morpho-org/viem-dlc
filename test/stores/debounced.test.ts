@@ -37,18 +37,18 @@ describe("DebouncedStore", () => {
   describe("reads", () => {
     it("passes through to the underlying store", async () => {
       const underlying = new MemoryStore();
-      await underlying.set("key", "value");
+      await underlying.set("key", [Buffer.from("value")]);
 
       const store = createStore(underlying);
 
-      expect(await store.get("key")).toBe("value");
+      expect(await store.get("key")).toEqual([Buffer.from("value")]);
     });
 
     it("does not see buffered writes", async () => {
       const underlying = new MemoryStore();
       const store = createStore(underlying);
 
-      await store.set("key", "buffered");
+      await store.set("key", [Buffer.from("buffered")]);
 
       expect(await store.get("key")).toBeNull();
     });
@@ -60,13 +60,13 @@ describe("DebouncedStore", () => {
       const setSpy = vi.spyOn(underlying, "set");
       const store = createStore(underlying, { debounceMs: 100, maxDelayMs: 1_000 });
 
-      await store.set("key", "value");
+      await store.set("key", [Buffer.from("value")]);
 
       await vi.advanceTimersByTimeAsync(99);
       expect(setSpy).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1);
-      expect(setSpy).toHaveBeenCalledWith("key", "value");
+      expect(setSpy).toHaveBeenCalledWith("key", [Buffer.from("value")]);
     });
 
     it("coalesces multiple writes to the same key", async () => {
@@ -74,14 +74,14 @@ describe("DebouncedStore", () => {
       const setSpy = vi.spyOn(underlying, "set");
       const store = createStore(underlying, { debounceMs: 100, maxDelayMs: 1_000 });
 
-      await store.set("key", "first");
-      await store.set("key", "second");
-      await store.set("key", "third");
+      await store.set("key", [Buffer.from("first")]);
+      await store.set("key", [Buffer.from("second")]);
+      await store.set("key", [Buffer.from("third")]);
 
       await vi.advanceTimersByTimeAsync(100);
 
       expect(setSpy).toHaveBeenCalledTimes(1);
-      expect(setSpy).toHaveBeenCalledWith("key", "third");
+      expect(setSpy).toHaveBeenCalledWith("key", [Buffer.from("third")]);
     });
 
     it("lets later deletes overwrite pending sets", async () => {
@@ -90,7 +90,7 @@ describe("DebouncedStore", () => {
       const deleteSpy = vi.spyOn(underlying, "delete");
       const store = createStore(underlying, { debounceMs: 100, maxDelayMs: 1_000 });
 
-      await store.set("key", "value");
+      await store.set("key", [Buffer.from("value")]);
       await store.delete("key");
 
       await vi.advanceTimersByTimeAsync(100);
@@ -106,12 +106,12 @@ describe("DebouncedStore", () => {
       const store = createStore(underlying, { debounceMs: 100, maxDelayMs: 1_000 });
 
       await store.delete("key");
-      await store.set("key", "value");
+      await store.set("key", [Buffer.from("value")]);
 
       await vi.advanceTimersByTimeAsync(100);
 
       expect(deleteSpy).not.toHaveBeenCalled();
-      expect(setSpy).toHaveBeenCalledWith("key", "value");
+      expect(setSpy).toHaveBeenCalledWith("key", [Buffer.from("value")]);
     });
   });
 
@@ -125,20 +125,20 @@ describe("DebouncedStore", () => {
         maxStalenessMs: 1_000,
       });
 
-      await store.set("key", "v1");
+      await store.set("key", [Buffer.from("v1")]);
 
       await vi.advanceTimersByTimeAsync(80);
-      await store.set("key", "v2");
+      await store.set("key", [Buffer.from("v2")]);
 
       await vi.advanceTimersByTimeAsync(80);
-      await store.set("key", "v3");
+      await store.set("key", [Buffer.from("v3")]);
 
       await vi.advanceTimersByTimeAsync(80);
       expect(setSpy).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(10);
       expect(setSpy).toHaveBeenCalledTimes(1);
-      expect(setSpy).toHaveBeenCalledWith("key", "v3");
+      expect(setSpy).toHaveBeenCalledWith("key", [Buffer.from("v3")]);
     });
 
     it("uses the earlier of debounceMs and maxDelayMs", async () => {
@@ -150,13 +150,13 @@ describe("DebouncedStore", () => {
         maxStalenessMs: 1_000,
       });
 
-      await store.set("key", "value");
+      await store.set("key", [Buffer.from("value")]);
 
       await vi.advanceTimersByTimeAsync(199);
       expect(setSpy).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1);
-      expect(setSpy).toHaveBeenCalledWith("key", "value");
+      expect(setSpy).toHaveBeenCalledWith("key", [Buffer.from("value")]);
     });
   });
 
@@ -171,9 +171,9 @@ describe("DebouncedStore", () => {
         maxWritesPerSecond: 2,
       });
 
-      await store.set("a", "1");
-      await store.set("b", "2");
-      await store.set("c", "3");
+      await store.set("a", [Buffer.from("1")]);
+      await store.set("b", [Buffer.from("2")]);
+      await store.set("c", [Buffer.from("3")]);
 
       await vi.advanceTimersByTimeAsync(10);
       expect(setSpy).toHaveBeenCalledTimes(1);
@@ -213,7 +213,7 @@ describe("DebouncedStore", () => {
         },
       );
 
-      await store.set("key", "value");
+      await store.set("key", [Buffer.from("value")]);
       await vi.advanceTimersByTimeAsync(10);
 
       expect(errors).toHaveLength(1);
@@ -231,7 +231,7 @@ describe("DebouncedStore", () => {
 
       const originalSet = underlying.set.bind(underlying);
       underlying.set = async (key, value) => {
-        if (value === "first") return firstWrite;
+        if (Buffer.concat(value).toString() === "first") return firstWrite;
         return originalSet(key, value);
       };
 
@@ -241,15 +241,15 @@ describe("DebouncedStore", () => {
         maxStalenessMs: 20_000,
       });
 
-      await store.set("key", "first");
+      await store.set("key", [Buffer.from("first")]);
       await vi.advanceTimersByTimeAsync(10);
 
-      await store.set("key", "second");
+      await store.set("key", [Buffer.from("second")]);
       rejectWrite(new Error("fail"));
 
       await vi.runAllTimersAsync();
 
-      expect(await underlying.get("key")).toBe("second");
+      expect(await underlying.get("key")).toEqual([Buffer.from("second")]);
     });
 
     it("times out hanging writes", async () => {
@@ -264,7 +264,7 @@ describe("DebouncedStore", () => {
         onWriteError: (key, err) => errors.push({ key, err }),
       });
 
-      await store.set("key", "value");
+      await store.set("key", [Buffer.from("value")]);
       await vi.advanceTimersByTimeAsync(10);
       await vi.advanceTimersByTimeAsync(10_000);
 
@@ -299,9 +299,9 @@ describe("DebouncedStore", () => {
         },
       );
 
-      await store.set("key", "first");
+      await store.set("key", [Buffer.from("first")]);
       await vi.advanceTimersByTimeAsync(10);
-      await store.set("key", "second");
+      await store.set("key", [Buffer.from("second")]);
 
       await vi.runAllTimersAsync();
 
@@ -328,7 +328,7 @@ describe("DebouncedStore", () => {
         maxDelayMs: 10_000,
       });
 
-      await store.set("key", "value");
+      await store.set("key", [Buffer.from("value")]);
 
       let resolved = false;
       const flushPromise = store.flush().then(() => {
@@ -338,7 +338,7 @@ describe("DebouncedStore", () => {
       await flushPromise;
 
       expect(setSpy).toHaveBeenCalledTimes(1);
-      expect(setSpy).toHaveBeenCalledWith("key", "value");
+      expect(setSpy).toHaveBeenCalledWith("key", [Buffer.from("value")]);
     });
 
     it("waits for in-flight writes to complete", async () => {
@@ -357,7 +357,7 @@ describe("DebouncedStore", () => {
         maxDelayMs: 100,
       });
 
-      await store.set("key", "value");
+      await store.set("key", [Buffer.from("value")]);
       await vi.advanceTimersByTimeAsync(10);
 
       const flushPromise = store.flush();
@@ -389,11 +389,11 @@ describe("DebouncedStore", () => {
 
       const originalSet = underlying.set.bind(underlying);
       underlying.set = async (key, value) => {
-        if (value === "first") {
+        if (Buffer.concat(value).toString() === "first") {
           await firstWrite;
           return originalSet(key, value);
         }
-        if (value === "second") {
+        if (Buffer.concat(value).toString() === "second") {
           await secondWrite;
           return originalSet(key, value);
         }
@@ -406,9 +406,9 @@ describe("DebouncedStore", () => {
         maxDelayMs: 100,
       });
 
-      await store.set("key", "first");
+      await store.set("key", [Buffer.from("first")]);
       await vi.advanceTimersByTimeAsync(10);
-      await store.set("key", "second");
+      await store.set("key", [Buffer.from("second")]);
 
       let resolved = false;
       const flushPromise = store.flush().then(() => {
@@ -416,14 +416,18 @@ describe("DebouncedStore", () => {
       });
 
       resolveFirstWrite();
-      await advanceUntil(() => (underlying.get("key") as string | null) === "first");
+      const got = () => {
+        const v = underlying.get("key") as Buffer[] | null;
+        return v !== null && Buffer.concat(v).toString() === "first";
+      };
+      await advanceUntil(got);
       expect(resolved).toBe(false);
 
       resolveSecondWrite();
       await advanceUntil(() => resolved);
       await flushPromise;
 
-      expect(await underlying.get("key")).toBe("second");
+      expect(await underlying.get("key")).toEqual([Buffer.from("second")]);
     });
 
     it("allows writes during an active flush without extending an earlier boundary", async () => {
@@ -456,7 +460,7 @@ describe("DebouncedStore", () => {
         maxDelayMs: 100,
       });
 
-      await store.set("initial", "value");
+      await store.set("initial", [Buffer.from("value")]);
       await vi.advanceTimersByTimeAsync(10);
 
       let firstResolved = false;
@@ -464,7 +468,7 @@ describe("DebouncedStore", () => {
         firstResolved = true;
       });
 
-      await store.set("later", "value");
+      await store.set("later", [Buffer.from("value")]);
 
       let secondResolved = false;
       const secondFlush = store.flush().then(() => {
@@ -485,8 +489,8 @@ describe("DebouncedStore", () => {
       await firstFlush;
       await secondFlush;
 
-      expect(await underlying.get("initial")).toBe("value");
-      expect(await underlying.get("later")).toBe("value");
+      expect(await underlying.get("initial")).toEqual([Buffer.from("value")]);
+      expect(await underlying.get("later")).toEqual([Buffer.from("value")]);
     });
 
     it("still drops stale buffered entries during flush", async () => {
@@ -498,7 +502,7 @@ describe("DebouncedStore", () => {
         maxStalenessMs: 100,
       });
 
-      await store.set("key", "value");
+      await store.set("key", [Buffer.from("value")]);
       await vi.advanceTimersByTimeAsync(101);
 
       let resolved = false;
@@ -522,8 +526,8 @@ describe("DebouncedStore", () => {
         maxWritesPerSecond: 1,
       });
 
-      await store.set("a", "1");
-      await store.set("b", "2");
+      await store.set("a", [Buffer.from("1")]);
+      await store.set("b", [Buffer.from("2")]);
 
       let resolved = false;
       const flushPromise = store.flush().then(() => {
@@ -562,7 +566,7 @@ describe("DebouncedStore", () => {
         maxWritesPerSecond: 100,
       });
 
-      await store.set("key", "value");
+      await store.set("key", [Buffer.from("value")]);
 
       const firstFlush = store.flush();
       const secondFlush = store.flush();
@@ -591,7 +595,7 @@ describe("DebouncedStore", () => {
         maxDelayMs: 100,
       });
 
-      await store.set("key", "value");
+      await store.set("key", [Buffer.from("value")]);
       await vi.advanceTimersByTimeAsync(10);
 
       let resolved = false;
