@@ -1,6 +1,7 @@
 import type { RpcLog } from "viem";
 
-import type { BlockRange, Store } from "../../types.js";
+import type { LazyNdjsonMap } from "../../internal/lazy-ndjson-map.js";
+import type { BlockRange } from "../../types.js";
 import { isInBlockRange, mergeBlockRanges } from "../../utils/blocks.js";
 import { max, min } from "../../utils/math.js";
 import type { OnLogsResponse } from "../logs-divider/types.js";
@@ -12,12 +13,8 @@ export interface SinkConfig {
   chainId: number;
   /** Cache entry size in blocks. Responses are accumulated until each bin is complete. */
   binSize: number;
-  /** Cache instance to write to */
-  store: Store;
-}
-
-export interface SinkContext {
-  blobKey: string;
+  /** LazyNdjsonMap instance to write to */
+  ndjson: LazyNdjsonMap<CachedChunk>;
 }
 
 interface BinAccumulator {
@@ -57,16 +54,13 @@ function getLogKey(log: RpcLog): string {
  *
  * @internal
  */
-export function createSink({ chainId, binSize, store }: SinkConfig, { blobKey }: SinkContext): OnLogsResponse {
+export function createSink({ chainId, binSize, ndjson }: SinkConfig): OnLogsResponse {
   const binSizeBigInt = BigInt(binSize);
 
   // Map from entry key -> accumulator
   const accumulators = new Map<`${bigint}:${bigint}`, BinAccumulator>();
 
   return ({ logs, fromBlock, toBlock, fetchedAt, fetchedAtBlock }) => {
-    // Collect completed bins for batched write
-    const completedBins: { key: `${bigint}:${bigint}`; value: CachedChunk }[] = [];
-
     // A response may span multiple bins - iterate over each affected bin
     let binStart = (fromBlock / binSizeBigInt) * binSizeBigInt;
 
@@ -110,7 +104,7 @@ export function createSink({ chainId, binSize, store }: SinkConfig, { blobKey }:
           return true;
         });
 
-        completedBins.push({
+        ndjson.upsert({
           key: entryKey,
           value: {
             logs: uniqueLogs,
@@ -125,13 +119,6 @@ export function createSink({ chainId, binSize, store }: SinkConfig, { blobKey }:
       }
 
       binStart += binSizeBigInt;
-    }
-
-    // Batch write all completed bins (fire-and-forget)
-    if (completedBins.length > 0) {
-      return keychain.write(store, "eth_getLogs", blobKey, completedBins).catch((err) => {
-        console.error("[logsCache] Cache write failed:", err);
-      });
     }
   };
 }
