@@ -1,3 +1,4 @@
+import { isPlainObject } from "./objects.js";
 import { measureUtf8Bytes } from "./strings.js";
 
 type BigIntTombstone = { __bigint__: string };
@@ -10,7 +11,7 @@ function bigIntReplacer<T = unknown>(_: string, value: T) {
 
 function bigIntReviver<T = unknown>(_: string, value: T) {
   const wasReplaced = (value: unknown): value is BigIntTombstone => {
-    return value !== null && typeof value === "object" && !Array.isArray(value) && "__bigint__" in value;
+    return isPlainObject(value) && "__bigint__" in value;
   };
 
   return wasReplaced(value) ? BigInt(value.__bigint__) : (value as T extends BigIntTombstone ? bigint : T);
