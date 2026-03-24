@@ -1,23 +1,23 @@
 import type { RpcLog } from "viem";
 
-import type { BlockRange, Cache, EthGetLogsHashlessFilter } from "../../types.js";
+import type { BlockRange, Store } from "../../types.js";
 import { isInBlockRange, mergeBlockRanges } from "../../utils/blocks.js";
 import { max, min } from "../../utils/math.js";
 import type { OnLogsResponse } from "../logs-divider/types.js";
 
+import { keychain } from "./keychain.js";
 import type { CachedChunk } from "./types.js";
-import { computeCacheKey } from "./utils.js";
 
 export interface SinkConfig {
   chainId: number;
   /** Cache entry size in blocks. Responses are accumulated until each bin is complete. */
   binSize: number;
   /** Cache instance to write to */
-  cache: Cache<CachedChunk>;
+  store: Store;
 }
 
 export interface SinkContext {
-  filter: Pick<EthGetLogsHashlessFilter, "address" | "topics">;
+  blobKey: string;
 }
 
 interface BinAccumulator {
@@ -57,15 +57,15 @@ function getLogKey(log: RpcLog): string {
  *
  * @internal
  */
-export function createSink({ chainId, binSize, cache }: SinkConfig, { filter }: SinkContext): OnLogsResponse {
+export function createSink({ chainId, binSize, store }: SinkConfig, { blobKey }: SinkContext): OnLogsResponse {
   const binSizeBigInt = BigInt(binSize);
 
-  // Map from cache key -> accumulator
-  const accumulators = new Map<string, BinAccumulator>();
+  // Map from entry key -> accumulator
+  const accumulators = new Map<`${bigint}:${bigint}`, BinAccumulator>();
 
   return ({ logs, fromBlock, toBlock, fetchedAt, fetchedAtBlock }) => {
     // Collect completed bins for batched write
-    const completedBins: { key: string; value: CachedChunk }[] = [];
+    const completedBins: { key: `${bigint}:${bigint}`; value: CachedChunk }[] = [];
 
     // A response may span multiple bins - iterate over each affected bin
     let binStart = (fromBlock / binSizeBigInt) * binSizeBigInt;
@@ -73,16 +73,10 @@ export function createSink({ chainId, binSize, cache }: SinkConfig, { filter }: 
     while (binStart <= toBlock) {
       const binEnd = binStart + binSizeBigInt - 1n;
 
-      const key = computeCacheKey({
-        chainId,
-        address: filter.address,
-        topics: filter.topics,
-        fromBlock: binStart,
-        toBlock: binEnd,
-      });
+      const entryKey = keychain.entryKey(chainId, "eth_getLogs", { fromBlock: binStart, toBlock: binEnd });
 
       // Get or create accumulator for this bin
-      let acc = accumulators.get(key);
+      let acc = accumulators.get(entryKey);
       if (!acc) {
         acc = {
           logs: [],
@@ -91,7 +85,7 @@ export function createSink({ chainId, binSize, cache }: SinkConfig, { filter }: 
           coveredRanges: [],
           alignedRange: { fromBlock: binStart, toBlock: binEnd },
         };
-        accumulators.set(key, acc);
+        accumulators.set(entryKey, acc);
       }
 
       // Add logs that fall within this bin's overlap
@@ -117,7 +111,7 @@ export function createSink({ chainId, binSize, cache }: SinkConfig, { filter }: 
         });
 
         completedBins.push({
-          key,
+          key: entryKey,
           value: {
             logs: uniqueLogs,
             fetchedAt: acc.fetchedAt,
@@ -127,7 +121,7 @@ export function createSink({ chainId, binSize, cache }: SinkConfig, { filter }: 
             fetchedRange: acc.alignedRange,
           },
         });
-        accumulators.delete(key);
+        accumulators.delete(entryKey);
       }
 
       binStart += binSizeBigInt;
@@ -135,7 +129,7 @@ export function createSink({ chainId, binSize, cache }: SinkConfig, { filter }: 
 
     // Batch write all completed bins (fire-and-forget)
     if (completedBins.length > 0) {
-      cache.write(completedBins).catch((err) => {
+      return keychain.write(store, "eth_getLogs", blobKey, completedBins).catch((err) => {
         console.error("[logsCache] Cache write failed:", err);
       });
     }

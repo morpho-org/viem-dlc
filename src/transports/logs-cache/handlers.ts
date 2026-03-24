@@ -1,14 +1,14 @@
 import { type EIP1193RequestFn, hexToBigInt, hexToNumber, type RpcLog, toHex } from "viem";
 
-import type { BlockRange, Cache, RpcSignature } from "../../types.js";
+import type { BlockRange, RpcSignature, Store } from "../../types.js";
 import { divideBlockRange, isInBlockRange, mergeBlockRanges, resolveBlockNumber } from "../../utils/blocks.js";
 import { min } from "../../utils/math.js";
 import type { LogsDividerRpcSchema } from "../logs-divider/schema.js";
 
+import { keychain } from "./keychain.js";
 import type { LogsCacheRpcSchema } from "./schema.js";
 import { createSink } from "./sink.js";
 import type { CachedChunk, InvalidationStrategy } from "./types.js";
-import { computeCacheKey } from "./utils.js";
 
 /**
  * Check if cached data is valid for a chunk.
@@ -45,14 +45,15 @@ export async function handleGetLogs(
   requestFn: EIP1193RequestFn<LogsDividerRpcSchema>,
   chainId: number,
   [filter]: RpcSignature<LogsCacheRpcSchema, "eth_getLogs">["Parameters"],
+  blobKey: string,
   {
     binSize,
     invalidationStrategy,
-    cache,
+    store,
   }: {
     binSize: number;
     invalidationStrategy: InvalidationStrategy;
-    cache: Cache<CachedChunk>;
+    store: Store;
   },
 ): Promise<RpcLog[]> {
   // blockHash queries are not cached - pass through
@@ -72,18 +73,10 @@ export async function handleGetLogs(
   // TODO: handle the above + case where they're above latest, maybe throw errors, both here and in divider.
   // TODO: also maybe update divideBlockRange to allow only alinging fromBlock to help avoid this in divider
 
+  const cache = await store.get(blobKey);
+
   // Generate bin-aligned ranges and try to read from cache
   const ranges = divideBlockRange({ fromBlock, toBlock }, binSize, binSize);
-  const cacheKeys = ranges.map((range) =>
-    computeCacheKey({
-      chainId,
-      address: filter.address,
-      topics: filter.topics,
-      fromBlock: range.fromBlock,
-      toBlock: range.toBlock,
-    }),
-  );
-  const cachedValues = await cache.read(cacheKeys);
 
   // Partition into cached (valid) vs needs-fetch
   const allLogs: RpcLog[] = [];
@@ -91,7 +84,7 @@ export async function handleGetLogs(
 
   for (let i = 0; i < ranges.length; i++) {
     const range = ranges[i]!;
-    const cached = cachedValues[i];
+    const cached = cache?.[keychain.entryKey(chainId, "eth_getLogs", range)];
     const validLogs = cached ? tryUseCachedRange(cached, range, ranges.length, invalidationStrategy) : null;
 
     if (validLogs !== null) {
@@ -106,8 +99,8 @@ export async function handleGetLogs(
   if (gaps.length > 0) {
     const rangesToFetch = mergeBlockRanges(gaps);
 
-    const sinkConfig = { chainId, binSize, cache };
-    const sinkContext = { filter: { address: filter.address, topics: filter.topics } };
+    const sinkConfig = { chainId, binSize, store };
+    const sinkContext = { blobKey };
     const sink = createSink(sinkConfig, sinkContext);
 
     try {
