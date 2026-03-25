@@ -138,7 +138,6 @@ export class UpstashStore implements Store {
   private async _set(key: string, value: Buffer[]) {
     // Split `value` into shard(s), each no bigger than `maxRequestBytes - WriteId.LENGTH`.
     const str = Buffer.concat(value).toString("base64");
-    value = null!; // release memory
     const shards = shardString(str, this.options.maxRequestBytes - WriteId.LENGTH);
     const hasMultipleChunks = shards.length > 1;
 
