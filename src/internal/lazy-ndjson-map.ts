@@ -1,5 +1,6 @@
 import { measureUtf8Bytes } from "../utils/strings.js";
 
+import type { Slot } from "./brotli-line-blob.js";
 import { type Codec, type Entry, NdjsonMap } from "./ndjson-map.js";
 
 /** No-op codec for pre-stringified values. */
@@ -40,6 +41,9 @@ const identity: Codec<string> = {
  *
  * The underlying `NdjsonMap` uses a no-op codec since values are already
  * stringified when they enter the pending buffer.
+ * 
+ * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
+ * should cause `slot` to mutate or return different data.
  */
 export class LazyNdjsonMap<T, K extends string = string> {
   private readonly inner: NdjsonMap<string, K>;
@@ -61,21 +65,15 @@ export class LazyNdjsonMap<T, K extends string = string> {
     controller?: AbortController;
   };
 
-  constructor(codec: Codec<T>, options: { autoFlushThresholdBytes: number }, compressed?: string | Buffer) {
+  constructor(codec: Codec<T>, options: { autoFlushThresholdBytes: number }, slot: Slot) {
     this.codec = codec;
     this.autoFlushThresholdBytes = options.autoFlushThresholdBytes;
-    this.inner = new NdjsonMap<string, K>(identity, compressed);
+    this.inner = new NdjsonMap<string, K>(identity, slot);
   }
 
   /*//////////////////////////////////////////////////////////////
                                 PUBLIC
   //////////////////////////////////////////////////////////////*/
-
-  /** Flush pending entries and return the compressed base64 string. */
-  async toBase64(): Promise<string> {
-    await this.flush();
-    return this.inner.toBase64();
-  }
 
   /**
    * Buffer a single entry for a deferred upsert. The value is stringified

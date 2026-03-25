@@ -1,4 +1,4 @@
-import { BrotliLineBlob } from "./brotli-line-blob.js";
+import { BrotliLineBlob, type Slot } from "./brotli-line-blob.js";
 
 export type Entry<T, K extends string = string> = { key: K; value: T };
 
@@ -60,19 +60,18 @@ function parseEnvelope<K extends string>(line: string): { key: K; valueStart: nu
  *
  * Supports streaming reduce (without materializing the full dataset) and
  * streaming upsert (decompress → filter → append → recompress).
+ * 
+ * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
+ * should cause `slot` to mutate or return different data.
  */
 export class NdjsonMap<T, K extends string = string> {
   private readonly blob: BrotliLineBlob;
 
   constructor(
     private readonly codec: Codec<T>,
-    compressed?: string | Buffer,
+    slot: Slot,
   ) {
-    this.blob = new BrotliLineBlob(compressed);
-  }
-
-  toBase64(): string {
-    return this.blob.toBase64();
+    this.blob = new BrotliLineBlob(slot);
   }
 
   /** Build a full NDJSON line from a pre-stringified JSON key token and a value. */

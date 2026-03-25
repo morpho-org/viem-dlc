@@ -1,6 +1,6 @@
 import { memoryUsage, resourceUsage } from "process";
 
-import { BrotliLineBlob, type Codec, type Entry, NdjsonMap } from "../../dist/internal/index.js";
+import { BrotliLineBlob, type Codec, createSlot, type Entry, NdjsonMap } from "../../dist/internal/index.js";
 import { parse, stringify } from "../../dist/utils/json.js";
 
 const MARKER = "__NDJSON_MEMORY__";
@@ -56,7 +56,8 @@ function serializeLine(key: string, value: string): string {
 
 async function compressFixtureLines(lineCount: number, valueChars: number, payloadMode: PayloadMode) {
   let uncompressedBytes = 0;
-  const blob = new BrotliLineBlob();
+  const slot = createSlot();
+  const blob = new BrotliLineBlob(slot);
 
   await blob.rewriteLines(
     () => {},
@@ -69,7 +70,7 @@ async function compressFixtureLines(lineCount: number, valueChars: number, paylo
     },
   );
 
-  return { compressed: Buffer.from(blob.toBase64(), "base64"), uncompressedBytes };
+  return { compressed: Buffer.concat(slot.get()), uncompressedBytes };
 }
 
 async function buildFixture(lineCount: number, valueChars: number, updateCount: number, payloadMode: PayloadMode) {
@@ -102,11 +103,6 @@ function maxRssBytes() {
   return resourceUsage().maxRSS * 1024;
 }
 
-function base64DecodedBytes(base64: string): number {
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  return (base64.length / 4) * 3 - padding;
-}
-
 async function main() {
   const operation = envOperation();
   const payloadMode = envPayloadMode();
@@ -120,7 +116,8 @@ async function main() {
     updateCount,
     payloadMode,
   );
-  const map = new NdjsonMap<string, string>(codec, compressed);
+  const slot = createSlot(compressed);
+  const map = new NdjsonMap<string, string>(codec, slot);
 
   forceGc();
 
@@ -157,7 +154,7 @@ async function main() {
   const finalMemory = memoryUsage();
   const peakBytes = Math.max(observedPeakBytes, maxRssBytes());
   const peakDeltaBytes = Math.max(0, peakBytes - baselinePeakBytes);
-  const outputCompressedBytes = operation === "upsert" ? base64DecodedBytes(map.toBase64()) : compressedBytes;
+  const outputCompressedBytes = operation === "upsert" ? Buffer.concat(slot.get()).length : compressedBytes;
 
   console.log(
     `${MARKER}${JSON.stringify({
