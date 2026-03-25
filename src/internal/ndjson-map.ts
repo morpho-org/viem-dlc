@@ -60,7 +60,7 @@ function parseEnvelope<K extends string>(line: string): { key: K; valueStart: nu
  *
  * Supports streaming reduce (without materializing the full dataset) and
  * streaming upsert (decompress → filter → append → recompress).
- * 
+ *
  * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
  * should cause `slot` to mutate or return different data.
  */
