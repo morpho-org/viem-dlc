@@ -14,8 +14,10 @@ export type LogsDividerRpcSchema = SafelyExtendRpcSchema<
         {
           /** The return value of `eth_blockNumber`, if known. If omitted, it will be fetched. */
           latestBlock?: Hex;
-          /** Optional callback receiving logs results for each sub-request */
+          /** Optional callback receiving logs results for each sub-request. MUST NOT THROW. */
           onLogsResponse?: OnLogsResponse;
+          /** If true, simply passes responses to `onLogsResponse` and forgets them, skipping internal aggregation. */
+          onLogsResponseOnly?: true;
         },
       ];
     },
