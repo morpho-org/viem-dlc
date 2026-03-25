@@ -1,5 +1,9 @@
 import type { Store } from "../types.js";
 
+function sizeOf(buffers: Buffer[]) {
+  return buffers.reduce((acc, b) => acc + b.byteLength, 0);
+}
+
 /** LRU cache with byte-based size limit (only values counted, keys assumed negligible). */
 export class LruStore implements Store {
   private readonly maxBytes: number;
@@ -22,7 +26,7 @@ export class LruStore implements Store {
   set(key: string, value: Buffer[]) {
     this.delete(key);
 
-    const size = value.reduce((acc, b) => acc + b.byteLength, 0);
+    const size = sizeOf(value);
     if (size > this.maxBytes) {
       console.warn(`[LruStore] Value exceeds maxBytes (${size} > ${this.maxBytes}), skipping`);
       return;
@@ -32,7 +36,7 @@ export class LruStore implements Store {
       // Non-null assertion is safe because map has entries until `this.bytes === 0`,
       // and once it's zero, the loop condition breaks because `size <= this.maxBytes`.
       const [oldestKey, oldest] = this.map.entries().next().value!;
-      this.bytes -= oldest.reduce((acc, b) => acc + b.byteLength, 0);
+      this.bytes -= sizeOf(oldest);
       this.map.delete(oldestKey);
     }
 
@@ -43,7 +47,7 @@ export class LruStore implements Store {
   delete(key: string) {
     const value = this.map.get(key);
     if (value) {
-      this.bytes -= value.reduce((acc, b) => acc + b.byteLength, 0);
+      this.bytes -= sizeOf(value);
       this.map.delete(key);
     }
   }

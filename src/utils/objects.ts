@@ -2,7 +2,7 @@ export function isPlainObject(value: unknown): value is Record<PropertyKey, unkn
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-interface BuildOptions {
+interface DeepTransformOptions {
   sortKeys?: boolean;
   transformKey?: (key: string) => string;
   transformLeaf?: <T>(value: T) => T;
@@ -11,7 +11,7 @@ interface BuildOptions {
 }
 
 /** Recursively copies `value`, applying the given transforms at each level. */
-export function deepTransform<T = unknown>(value: T, options: BuildOptions): T {
+export function deepTransform<T = unknown>(value: T, options: DeepTransformOptions): T {
   if (value === null || typeof value !== "object") {
     return options.transformLeaf ? options.transformLeaf(value) : value;
   }
@@ -48,4 +48,4 @@ export const deepTransformOptions = {
     transformKey: (k: string) => k.toLowerCase(),
     transformLeaf: <T>(v: T) => (typeof v === "string" ? v.toLowerCase() : v) as T,
   },
-} as const satisfies Record<string, BuildOptions>;
+} as const satisfies Record<string, DeepTransformOptions>;

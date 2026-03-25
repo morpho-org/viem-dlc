@@ -5,15 +5,27 @@ import { StringDecoder } from "string_decoder";
 import { type BrotliOptions, createBrotliCompress, createBrotliDecompress, constants as zlib } from "zlib";
 
 export type Slot = {
-  get(): Buffer[],
-  set(value: Buffer[]): void,
-}
+  get(): Buffer[];
+  set(value: Buffer[]): void;
+};
 
 export function createSlot(compressed?: Buffer | Buffer[]): Slot {
-  let chunks: Buffer[] = compressed
-    ? Array.isArray(compressed) ? compressed : compressed.length === 0 ? [] : [compressed]
-    : [];
-  return { get: () => chunks, set: (v) => { chunks = v; } };
+  let chunks: Buffer[] = [];
+
+  if (compressed) {
+    if (Array.isArray(compressed)) {
+      chunks = compressed;
+    } else if (compressed.length > 0) {
+      chunks = [compressed];
+    }
+  }
+
+  return {
+    get: () => chunks,
+    set: (v) => {
+      chunks = v;
+    },
+  };
 }
 
 const brotliOptions: BrotliOptions = {

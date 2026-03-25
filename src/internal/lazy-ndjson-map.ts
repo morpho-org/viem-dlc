@@ -41,7 +41,7 @@ const identity: Codec<string> = {
  *
  * The underlying `NdjsonMap` uses a no-op codec since values are already
  * stringified when they enter the pending buffer.
- * 
+ *
  * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
  * should cause `slot` to mutate or return different data.
  */

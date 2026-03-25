@@ -131,6 +131,10 @@ export type SafelyExtendRpcSchema<T extends RpcSchema, Extension extends RpcSche
  * memory duplication. `Buffer`s MUST NOT be modified in-place -- always use the
  * `get`/`set` interface.
  *
+ * @dev `Buffer`s are used to make `value` pass-by-reference explicit and minimize
+ * memory duplication. `Buffer`s MUST NOT be modified in-place -- always use the
+ * `get`/`set` interface.
+ *
  * @dev `flush` is expected to resolve after pending work is complete. The definition of
  * "pending work" may be Store-specific.
  */

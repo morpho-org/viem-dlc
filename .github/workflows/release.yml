@@ -60,10 +60,7 @@ jobs:
       - name: Publish to NPM
         if: ${{ steps.read-local-version.outputs.version != steps.read-npm-version.outputs.version }}
         run: |
-          pnpm config set //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
-          pnpm publish ${{ steps.pack.outputs.tarball }} --registry https://registry.npmjs.org --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          pnpm publish ${{ steps.pack.outputs.tarball }} --access public --provenance --no-git-checks
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
