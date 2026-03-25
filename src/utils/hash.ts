@@ -58,7 +58,7 @@ export function computePadding(bits: number, radix: number): number {
 }
 
 /** An *insecure* 64-bit hash that's short, fast, and has no dependencies. Output is always 14 characters. */
-export function cyrb64Hash(str: string, radix: number, seed = 0) {
+export function cyrb64Hash(str: string, radix = 36, seed = 777777) {
   const [h2, h1] = cyrb64(str, seed);
   const padding = computePadding(32, radix);
   return h2.toString(radix).padStart(padding, "0") + h1.toString(radix).padStart(padding, "0");

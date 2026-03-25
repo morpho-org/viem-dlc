@@ -1,5 +1,5 @@
 import type { Cache, Store } from "../../types.js";
-import { createKeyedMutex, type KeyedMutex, withKeyedMutex } from "../../utils/with-keyed-mutex.js";
+import { createKeyedMutex } from "../../utils/with-keyed-mutex.js";
 
 type Shard<T> = Record<string, T>;
 
@@ -39,7 +39,7 @@ function splitKey(key: string, separator: string): { group: string; subkey: stri
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export class ShardedCache<T extends {}> implements Cache<T> {
-  private groupMutex: KeyedMutex = createKeyedMutex();
+  private withKeyedMutex = createKeyedMutex().withKeyedMutex;
 
   constructor(
     private readonly store: Store,
@@ -119,7 +119,7 @@ export class ShardedCache<T extends {}> implements Cache<T> {
     // Write each group (with per-group locking to prevent concurrent read-modify-write races)
     await Promise.all(
       Array.from(groups.entries()).map(([groupName, items]) =>
-        withKeyedMutex(groupName, () => this.setGroup(groupName, items), { mutex: this.groupMutex }),
+        this.withKeyedMutex(groupName, () => this.setGroup(groupName, items)),
       ),
     );
   }
