@@ -10,13 +10,16 @@ export type Slot = {
 };
 
 export function createSlot(compressed?: Buffer | Buffer[]): Slot {
-  let chunks: Buffer[] = compressed
-    ? Array.isArray(compressed)
-      ? compressed
-      : compressed.length === 0
-        ? []
-        : [compressed]
-    : [];
+  let chunks: Buffer[] = [];
+
+  if (compressed) {
+    if (Array.isArray(compressed)) {
+      chunks = compressed;
+    } else if (compressed.length > 0) {
+      chunks = [compressed];
+    }
+  }
+
   return {
     get: () => chunks,
     set: (v) => {
