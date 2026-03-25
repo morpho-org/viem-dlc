@@ -51,7 +51,7 @@ export class ShardedCache<T extends {}> implements Cache<T> {
   private async getGroup(group: string, subkeys: string[]): Promise<(T | undefined)[]> {
     if (subkeys.length === 0) return [];
 
-    const mapBufs = (await this.store.get(group));
+    const mapBufs = await this.store.get(group);
     const map = mapBufs !== null ? this.parse(Buffer.concat(mapBufs).toString()) : {};
 
     return subkeys.map((subkey) => map[subkey]);

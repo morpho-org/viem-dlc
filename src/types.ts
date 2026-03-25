@@ -126,7 +126,7 @@ export type SafelyExtendRpcSchema<T extends RpcSchema, Extension extends RpcSche
 /**
  * All methods are best-effort and MUST NOT throw. Stores should be robust to gaps
  * in wall clock time (e.g., freeze/thaw cycles in serverless function environments).
- * 
+ *
  * @dev `Buffer`s are used to make `value` pass-by-reference explicit and minimize
  * memory duplication. `Buffer`s MUST NOT be modified in-place -- always use the
  * `get`/`set` interface.
