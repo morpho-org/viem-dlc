@@ -18,6 +18,7 @@ import type { LogsDividerConfig, OnLogsResponse } from "./types.js";
 interface ProcessContext {
   requestFn: EIP1193RequestFn<RateLimiterSchema>;
   onLogsResponse?: OnLogsResponse;
+  onLogsResponseOnly?: boolean;
   baseFilter: EthGetLogsHashlessFilter;
   latestBlockNumber: bigint;
 }
@@ -60,7 +61,7 @@ async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange, prior
       fetchedAt: Date.now(),
     });
 
-    return logs;
+    return ctx.onLogsResponseOnly ? [] : logs;
   } catch (error) {
     if (isErrorCausedByBlockRange(error)) {
       // Use constrainedRange to avoid halving into invalid ranges
@@ -69,7 +70,7 @@ async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange, prior
       if (halves) {
         // Recursively fetch both halves
         const logs = await Promise.all(halves.map((half) => fetchRangeWithRetry(ctx, half, priority)));
-        return logs.flat();
+        return ctx.onLogsResponseOnly ? [] : logs.flat();
       }
     }
 
@@ -114,6 +115,7 @@ export async function handleGetLogs(
   const ctx: ProcessContext = {
     requestFn,
     onLogsResponse: params[1]?.onLogsResponse,
+    onLogsResponseOnly: params[1]?.onLogsResponseOnly,
     baseFilter: filter,
     latestBlockNumber,
   };
