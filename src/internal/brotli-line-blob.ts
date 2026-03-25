@@ -4,6 +4,30 @@ import { pipeline } from "stream/promises";
 import { StringDecoder } from "string_decoder";
 import { type BrotliOptions, createBrotliCompress, createBrotliDecompress, constants as zlib } from "zlib";
 
+export type Slot = {
+  get(): Buffer[];
+  set(value: Buffer[]): void;
+};
+
+export function createSlot(compressed?: Buffer | Buffer[]): Slot {
+  let chunks: Buffer[] = [];
+
+  if (compressed) {
+    if (Array.isArray(compressed)) {
+      chunks = compressed;
+    } else if (compressed.length > 0) {
+      chunks = [compressed];
+    }
+  }
+
+  return {
+    get: () => chunks,
+    set: (v) => {
+      chunks = v;
+    },
+  };
+}
+
 const brotliOptions: BrotliOptions = {
   params: {
     [zlib.BROTLI_PARAM_QUALITY]: 4,
@@ -60,29 +84,21 @@ type EmitLine = (line: string) => void;
  * When streaming via {@link reduceLines} or {@link rewriteLines}, peak live decompressed memory is
  * proportional to the largest logical line. Rewrites also buffer the full new **compressed blob**
  * as chunks in memory before swapping it into place.
+ *
+ * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
+ * should cause `slot` to mutate or return different data.
  */
 export class BrotliLineBlob {
-  private chunks: Buffer[];
-
-  constructor(compressed?: string | Buffer) {
-    const chunk = compressed
-      ? typeof compressed === "string"
-        ? Buffer.from(compressed, "base64")
-        : compressed
-      : Buffer.alloc(0);
-
-    this.chunks = chunk.length === 0 ? [] : [chunk];
-  }
-
-  toBase64(): string {
-    return Buffer.concat(this.chunks).toString("base64");
+  constructor(private readonly slot: Slot) {
+    const chunks = slot.get();
+    console.assert(chunks.length === 0 || chunks[0]!.length > 0, "Slot contains an empty buffer in array");
   }
 
   /** Stream-decompress and yield logical lines (without trailing newline characters). */
   async *lines(): AsyncGenerator<string, void, void> {
-    if (this.chunks.length === 0) return;
+    if (this.slot.get().length === 0) return;
 
-    const input = Readable.from(this.chunks);
+    const input = Readable.from(this.slot.get());
     const decompressor = createBrotliDecompress();
     const splitter = new SplitLines();
 
@@ -160,13 +176,13 @@ export class BrotliLineBlob {
       },
     });
 
-    if (this.chunks.length === 0) {
+    if (this.slot.get().length === 0) {
       await pipeline(Readable.from([] as string[]), rewriteStream, createBrotliCompress(brotliOptions), output, {
         signal,
       });
     } else {
       await pipeline(
-        Readable.from(this.chunks),
+        Readable.from(this.slot.get()),
         createBrotliDecompress(),
         new SplitLines(),
         rewriteStream,
@@ -176,6 +192,6 @@ export class BrotliLineBlob {
       );
     }
 
-    this.chunks = emittedLineCount === 0 ? [] : outputChunks;
+    this.slot.set(emittedLineCount === 0 ? [] : outputChunks);
   }
 }
