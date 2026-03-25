@@ -35,11 +35,6 @@
       "import": "./dist/stores/index.js",
       "default": "./dist/stores/index.js"
     },
-    "./stores/compressed": {
-      "types": "./dist/stores/compressed.d.ts",
-      "import": "./dist/stores/compressed.js",
-      "default": "./dist/stores/compressed.js"
-    },
     "./stores/upstash": {
       "types": "./dist/stores/upstash.d.ts",
       "import": "./dist/stores/upstash.js",
@@ -49,6 +44,11 @@
       "types": "./dist/transports/index.d.ts",
       "import": "./dist/transports/index.js",
       "default": "./dist/transports/index.js"
+    },
+    "./transports/logs-cache": {
+      "types": "./dist/transports/logs-cache/index.d.ts",
+      "import": "./dist/transports/logs-cache/index.js",
+      "default": "./dist/transports/logs-cache/index.js"
     },
     "./utils": {
       "types": "./dist/utils/index.d.ts",

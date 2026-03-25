@@ -8,22 +8,22 @@ describe("CompressedStore", () => {
     const underlying = new MemoryStore();
     const store = new CompressedStore(underlying);
 
-    await store.set("key", "hello world");
-    expect(await store.get("key")).toBe("hello world");
+    await store.set("key", [Buffer.from("hello world")]);
+    expect(await store.get("key")).toEqual([Buffer.from("hello world")]);
   });
 
   it("stores compressed data in underlying store", async () => {
     const underlying = new MemoryStore();
     const store = new CompressedStore(underlying);
 
-    const original = "hello world";
+    const original = [Buffer.from("hello world")];
     await store.set("key", original);
 
     const compressed = await underlying.get("key");
     expect(compressed).not.toBeNull();
-    expect(compressed).not.toBe(original);
-    // Compressed data is base64 encoded
-    expect(compressed).toMatch(/^[A-Za-z0-9+/]+=*$/);
+    expect(compressed).not.toEqual(original);
+    // Compressed data is raw bytes (not the original value)
+    expect(compressed![0]!.byteLength).toBeGreaterThan(0);
   });
 
   it("returns null for missing keys", async () => {
@@ -37,37 +37,37 @@ describe("CompressedStore", () => {
     const underlying = new MemoryStore();
     const store = new CompressedStore(underlying);
 
-    await store.set("key", "");
-    expect(await store.get("key")).toBe("");
+    await store.set("key", [Buffer.from("")]);
+    expect(await store.get("key")).toEqual([Buffer.from("")]);
   });
 
   it("handles large values", async () => {
     const underlying = new MemoryStore();
     const store = new CompressedStore(underlying);
 
-    const large = "x".repeat(100_000);
+    const large = [Buffer.from("x".repeat(100_000))];
     await store.set("key", large);
-    expect(await store.get("key")).toBe(large);
+    expect(await store.get("key")).toEqual(large);
 
     // Verify compression actually reduced size
     const compressed = await underlying.get("key");
-    expect(compressed!.length).toBeLessThan(large.length);
+    expect(compressed![0]!.byteLength).toBeLessThan(large[0]!.byteLength);
   });
 
   it("handles JSON values", async () => {
     const underlying = new MemoryStore();
     const store = new CompressedStore(underlying);
 
-    const data = JSON.stringify({ foo: "bar", nums: [1, 2, 3] });
+    const data = [Buffer.from(JSON.stringify({ foo: "bar", nums: [1, 2, 3] }))];
     await store.set("key", data);
-    expect(await store.get("key")).toBe(data);
+    expect(await store.get("key")).toEqual(data);
   });
 
   it("deletes from underlying store", async () => {
     const underlying = new MemoryStore();
     const store = new CompressedStore(underlying);
 
-    await store.set("key", "value");
+    await store.set("key", [Buffer.from("value")]);
     await store.delete("key");
 
     expect(await underlying.get("key")).toBeNull();
@@ -78,8 +78,8 @@ describe("CompressedStore", () => {
     const underlying = new MemoryStore();
     const store = new CompressedStore(underlying);
 
-    // Write invalid base64/gzip data directly
-    await underlying.set("key", "not-valid-gzip-data");
+    // Write invalid compressed data directly
+    await underlying.set("key", [Buffer.from("not-valid-compressed-data")]);
 
     const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const result = await store.get("key");
@@ -92,7 +92,7 @@ describe("CompressedStore", () => {
     const underlying = new MemoryStore();
     const store = new CompressedStore(underlying);
 
-    await underlying.set("key", "not-valid-gzip-data");
+    await underlying.set("key", [Buffer.from("not-valid-compressed-data")]);
 
     const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     await store.get("key");
@@ -105,29 +105,29 @@ describe("CompressedStore", () => {
     const underlying = new MemoryStore();
     const compressed = new CompressedStore(underlying);
 
-    const unicode = "你好世界 🌍 émojis";
+    const unicode = [Buffer.from("你好世界 🌍 émojis")];
     await compressed.set("key", unicode);
-    expect(await compressed.get("key")).toBe(unicode);
+    expect(await compressed.get("key")).toEqual(unicode);
   });
 
   it("can be composed with other stores", async () => {
     const underlying = new MemoryStore();
     const compressed = new CompressedStore(underlying);
 
-    await compressed.set("key", "value");
+    await compressed.set("key", [Buffer.from("value")]);
 
     const raw = await underlying.get("key");
-    expect(raw).not.toBe("value");
+    expect(raw).not.toEqual([Buffer.from("value")]);
   });
 
   it("flush waits for fire-and-forget writes accepted before the barrier", async () => {
     const underlying = new MemoryStore();
     const compressed = new CompressedStore(underlying);
 
-    const setPromise = compressed.set("key", "value");
+    const setPromise = compressed.set("key", [Buffer.from("value")]);
     await compressed.flush();
 
-    expect(await compressed.get("key")).toBe("value");
+    expect(await compressed.get("key")).toEqual([Buffer.from("value")]);
     await setPromise;
   });
 

@@ -13,34 +13,35 @@ const options: BrotliOptions = {
   },
 };
 
-/** A store that transparently compresses/decompresses values with brotli. */
+/**
+ * A store that transparently compresses/decompresses values with brotli.
+ *
+ * @deprecated Compression is now handled outside the `Store` stack, so this would be
+ * compressing already-compressed data.
+ */
 export class CompressedStore implements Store {
   private readonly inFlight = createInFlightBarrier();
 
   constructor(private readonly store: Store) {}
 
   async get(key: string) {
-    let value = await this.store.get(key);
-    if (value === null) return null;
+    const compressed = await this.store.get(key);
+    if (compressed === null) return null;
 
     try {
-      let compressed: Buffer | null = Buffer.from(value, "base64");
-      value = null; // release memory
-      const decompressed = await decompress(compressed);
-      compressed = null; // release memory
-      return decompressed.toString("utf8");
+      return [await decompress(Buffer.concat(compressed))];
     } catch (e) {
       console.warn(`[CompressedStore] Failed to decompress value for key "${key}":`, e);
       return null;
     }
   }
 
-  set(key: string, value: string) {
+  set(key: string, value: Buffer[]) {
     return this.inFlight.track(
       (async () => {
         try {
-          const compressed = await compress(value, options);
-          return this.store.set(key, compressed.toString("base64"));
+          const compressed = await compress(Buffer.concat(value), options);
+          return this.store.set(key, [compressed]);
         } catch (e) {
           console.warn(`[CompressedStore] Failed to compress value for key "${key}":`, e);
         }

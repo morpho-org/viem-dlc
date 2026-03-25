@@ -7,7 +7,6 @@ import type { Store } from "../types.js";
 import { createInFlightBarrier } from "../utils/in-flight.js";
 import { shardString } from "../utils/strings.js";
 
-import { CompressedStore } from "./compressed.js";
 import { DebouncedStore } from "./debounced.js";
 import { HierarchicalStore } from "./hierarchical.js";
 import { LruStore } from "./lru.js";
@@ -85,7 +84,7 @@ export class UpstashStore implements Store {
       : Redis.fromEnv({ automaticDeserialization: false });
   }
 
-  private async _get(key: string): Promise<{ value: string | null; motivatesRetry: boolean }> {
+  private async _get(key: string): Promise<{ value: Buffer[] | null; motivatesRetry: boolean }> {
     // Read array length and first shard in one request. If length is 0, shard is null.
     const [len, shard0WithId] = await this.redis.evalRo<[], [number, string | null]>(SMART_READ_SCRIPT, [key], []);
 
@@ -117,10 +116,10 @@ export class UpstashStore implements Store {
       result += shard; // appending like this lets V8 engine defer memory copy until `result` is consumed
     }
 
-    return { value: result, motivatesRetry: false };
+    return { value: [Buffer.from(result, "base64")], motivatesRetry: false };
   }
 
-  async get(key: string, maxRetries = 2): Promise<string | null> {
+  async get(key: string, maxRetries = 2): Promise<Buffer[] | null> {
     // Allow retries in cases of network error or non-atomic inconsistency.
     for (let i = 0; i < maxRetries; i++) {
       try {
@@ -136,9 +135,10 @@ export class UpstashStore implements Store {
     return null;
   }
 
-  private async _set(key: string, value: string) {
+  private async _set(key: string, value: Buffer[]) {
     // Split `value` into shard(s), each no bigger than `maxRequestBytes - WriteId.LENGTH`.
-    const shards = shardString(value, this.options.maxRequestBytes - WriteId.LENGTH);
+    const str = Buffer.concat(value).toString("base64");
+    const shards = shardString(str, this.options.maxRequestBytes - WriteId.LENGTH);
     const hasMultipleChunks = shards.length > 1;
 
     // Write directly to `key` if there's only one shard, otherwise build tmp value for atomicity.
@@ -174,7 +174,7 @@ export class UpstashStore implements Store {
     await tx.exec();
   }
 
-  async set(key: string, value: string) {
+  async set(key: string, value: Buffer[]) {
     try {
       await this.inFlight.track(this._set(key, value));
     } catch (err) {
@@ -212,8 +212,8 @@ export function createOptimizedUpstashStore(options: UpstashStoreOptions) {
   // maxStalenessMs=2000 ensures we don't hold data too long.
   return new HierarchicalStore(
     [
-      new LruStore(1 << 30), // 1 GB
-      new DebouncedStore(new CompressedStore(remote), {
+      new LruStore(1 << 28), // 256 MB
+      new DebouncedStore(remote, {
         debounceMs: 500,
         maxDelayMs: 2000,
         maxStalenessMs: 30000, // defend against serverless freeze/thaw cycles

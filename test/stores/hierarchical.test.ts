@@ -12,20 +12,20 @@ describe("HierarchicalStore", () => {
   it("returns value from first store that has it", async () => {
     const first = new MemoryStore();
     const second = new MemoryStore();
-    await second.set("key", "from-second");
+    await second.set("key", [Buffer.from("from-second")]);
 
     const store = new HierarchicalStore([first, second]);
-    expect(await store.get("key")).toBe("from-second");
+    expect(await store.get("key")).toEqual([Buffer.from("from-second")]);
   });
 
   it("prioritizes earlier stores", async () => {
     const first = new MemoryStore();
     const second = new MemoryStore();
-    await first.set("key", "from-first");
-    await second.set("key", "from-second");
+    await first.set("key", [Buffer.from("from-first")]);
+    await second.set("key", [Buffer.from("from-second")]);
 
     const store = new HierarchicalStore([first, second]);
-    expect(await store.get("key")).toBe("from-first");
+    expect(await store.get("key")).toEqual([Buffer.from("from-first")]);
   });
 
   it("writes to all stores", async () => {
@@ -33,17 +33,17 @@ describe("HierarchicalStore", () => {
     const second = new MemoryStore();
     const store = new HierarchicalStore([first, second]);
 
-    await store.set("key", "value");
+    await store.set("key", [Buffer.from("value")]);
 
-    expect(await first.get("key")).toBe("value");
-    expect(await second.get("key")).toBe("value");
+    expect(await first.get("key")).toEqual([Buffer.from("value")]);
+    expect(await second.get("key")).toEqual([Buffer.from("value")]);
   });
 
   it("deletes from all stores", async () => {
     const first = new MemoryStore();
     const second = new MemoryStore();
-    await first.set("key", "value");
-    await second.set("key", "value");
+    await first.set("key", [Buffer.from("value")]);
+    await second.set("key", [Buffer.from("value")]);
 
     const store = new HierarchicalStore([first, second]);
     await store.delete("key");
@@ -66,7 +66,7 @@ describe("HierarchicalStore", () => {
     const working = new MemoryStore();
 
     const store = new HierarchicalStore([failing, working]);
-    await expect(store.set("key", "value")).rejects.toThrow("write failed");
+    await expect(store.set("key", [Buffer.from("value")])).rejects.toThrow("write failed");
   });
 
   it("flushes all child stores", async () => {
@@ -104,7 +104,7 @@ describe("HierarchicalStore", () => {
   it("handles empty store list", async () => {
     const store = new HierarchicalStore([]);
     expect(await store.get("key")).toBeNull();
-    await store.set("key", "value"); // Should not throw
+    await store.set("key", [Buffer.from("value")]); // Should not throw
     await store.delete("key"); // Should not throw
     await store.flush(); // Should not throw
   });

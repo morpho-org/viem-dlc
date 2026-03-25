@@ -127,12 +127,16 @@ export type SafelyExtendRpcSchema<T extends RpcSchema, Extension extends RpcSche
  * All methods are best-effort and MUST NOT throw. Stores should be robust to gaps
  * in wall clock time (e.g., freeze/thaw cycles in serverless function environments).
  *
+ * @dev `Buffer`s are used to make `value` pass-by-reference explicit and minimize
+ * memory duplication. `Buffer`s MUST NOT be modified in-place -- always use the
+ * `get`/`set` interface.
+ *
  * @dev `flush` is expected to resolve after pending work is complete. The definition of
  * "pending work" may be Store-specific.
  */
 export interface Store {
-  get(key: string): MaybePromise<string | null>;
-  set(key: string, value: string): MaybePromise<void>;
+  get(key: string): MaybePromise<Buffer[] | null>;
+  set(key: string, value: Buffer[]): MaybePromise<void>;
   delete(key: string): MaybePromise<void>;
   flush(): MaybePromise<void>;
 }
