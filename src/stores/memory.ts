@@ -7,13 +7,13 @@ import type { Store } from "../types.js";
  * @deprecated `LruStore` is the safer option and incurs a negligible performance hit.
  */
 export class MemoryStore implements Store {
-  private readonly map = new Map<string, string>();
+  private readonly map = new Map<string, Buffer[]>();
 
   get(key: string) {
     return this.map.get(key) ?? null;
   }
 
-  set(key: string, value: string) {
+  set(key: string, value: Buffer[]) {
     this.map.set(key, value);
   }
 

@@ -4,7 +4,7 @@ import type { Store } from "../types.js";
 import { sleep } from "../utils/sleep.js";
 import { createTokenBucket, type TokenBucket, timeUntilToken, tryConsume } from "../utils/with-rate-limit.js";
 
-type PendingOp = { kind: "set"; value: string } | { kind: "delete" };
+type PendingOp = { kind: "set"; value: Buffer[] } | { kind: "delete" };
 
 type PendingEntry = {
   op: PendingOp;
@@ -133,7 +133,7 @@ export class DebouncedStore implements Store {
   }
 
   /** Schedules `key` to be set on the underlying store. */
-  async set(key: string, value: string) {
+  async set(key: string, value: Buffer[]) {
     this.buffer(key, { kind: "set", value });
     void this.pump();
   }

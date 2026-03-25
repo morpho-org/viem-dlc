@@ -51,8 +51,8 @@ export class ShardedCache<T extends {}> implements Cache<T> {
   private async getGroup(group: string, subkeys: string[]): Promise<(T | undefined)[]> {
     if (subkeys.length === 0) return [];
 
-    const mapRaw = await this.store.get(group);
-    const map = mapRaw !== null ? this.parse(mapRaw) : {};
+    const mapBufs = (await this.store.get(group));
+    const map = mapBufs !== null ? this.parse(Buffer.concat(mapBufs).toString()) : {};
 
     return subkeys.map((subkey) => map[subkey]);
   }
@@ -60,14 +60,14 @@ export class ShardedCache<T extends {}> implements Cache<T> {
   private async setGroup(group: string, items: { subkey: string; value: T }[]): Promise<void> {
     if (items.length === 0) return;
 
-    const mapRaw = await this.store.get(group);
-    const map = mapRaw !== null ? this.parse(mapRaw) : {};
+    const mapBufs = await this.store.get(group);
+    const map = mapBufs !== null ? this.parse(Buffer.concat(mapBufs).toString()) : {};
 
     for (const item of items) {
       map[item.subkey] = item.value;
     }
 
-    await this.store.set(group, this.stringify(map));
+    await this.store.set(group, [Buffer.from(this.stringify(map))]);
   }
 
   async read(keys: string[]): Promise<(T | undefined)[]> {

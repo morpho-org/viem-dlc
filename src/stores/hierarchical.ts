@@ -27,7 +27,7 @@ export class HierarchicalStore implements Store {
     return null;
   }
 
-  async set(key: string, value: string) {
+  async set(key: string, value: Buffer[]) {
     await Promise.all(this.stores.map((store) => store.set(key, value)));
   }
 
