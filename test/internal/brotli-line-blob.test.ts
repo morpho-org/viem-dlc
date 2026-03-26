@@ -42,6 +42,7 @@ describe("BrotliLineBlob", () => {
 
     expect(slot.get()).toEqual([]);
     expect(await collectLines(blob)).toEqual([]);
+    expect(await blob.reduceLines((acc, line) => acc + line.length, 7)).toBe(7);
   });
 
   it("clears the stored blob when a rewrite emits no replacement lines", async () => {

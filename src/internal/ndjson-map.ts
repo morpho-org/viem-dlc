@@ -51,23 +51,6 @@ function parseEnvelope<K extends string>(line: string): { key: K; valueStart: nu
   return { key, valueStart: KEY_START + rawKey.length + SEPARATOR.length };
 }
 
-/** Produce the raw JSON key token for a given key. Inverse of JSON.parse on the token. */
-export function toRawKey(key: string): string {
-  return JSON.stringify(key);
-}
-
-function compareRawKeys(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-export function sortEntriesByRawKey<K extends string, V>(
-  entries: Iterable<readonly [key: K, value: V]>,
-): [rawKey: string, key: K, value: V][] {
-  return [...entries]
-    .map(([key, value]) => [toRawKey(key), key, value] as [string, K, V])
-    .sort(([a], [b]) => compareRawKeys(a, b));
-}
-
 /**
  * Streaming NDJSON container backed by a brotli-compressed buffer (base64-encoded).
  *
@@ -75,10 +58,8 @@ export function sortEntriesByRawKey<K extends string, V>(
  * envelope (key serialization via `JSON.stringify`); the codec handles only the
  * value portion of type `T`.
  *
- * Lines are maintained in lexicographic sorted order by raw JSON key;
- * see {@link upsert}. Supports streaming reduce (without materializing
- * the full dataset) and streaming upsert (decompress → merge-insert →
- * recompress).
+ * Supports streaming reduce (without materializing the full dataset) and
+ * streaming upsert (decompress → filter → append → recompress).
  *
  * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
  * should cause `slot` to mutate or return different data.
@@ -115,83 +96,61 @@ export class NdjsonMap<T, K extends string = string> {
   }
 
   /** Stream-decompress and fold every entry through `fn`. */
-  async reduce<Acc>(fn: (acc: Acc, record: Entry<T, K>) => Acc, init: Acc): Promise<Acc> {
-    let acc = init;
-    for await (const record of this.records()) {
-      acc = fn(acc, record);
-    }
-    return acc;
+  reduce<Acc>(fn: (acc: Acc, record: Entry<T, K>) => Acc, init: Acc): Promise<Acc> {
+    return this.blob.reduceLines((acc, line) => {
+      if (line.length === 0) return acc;
+      const entry = this.parseLine(line);
+      return entry === undefined ? acc : fn(acc, entry);
+    }, init);
   }
 
   /**
-   * Stream-decompress existing data, merge-insert entries by key, and recompress.
+   * Stream-decompress existing data, replace or append entries by key, and recompress.
    *
-   * Maintains lexicographic sorted order by raw JSON key: pending entries are
-   * sorted, then interleaved with existing (already-sorted) lines during
-   * rewrite. Entries whose keys match an upsert are replaced in-place; new
-   * keys are inserted at their sorted position. Always outputs brotli q=4.
+   * Entries whose keys match an upsert are replaced at their first occurrence;
+   * later duplicates are dropped. Existing duplicate keys are also collapsed so
+   * the rewritten blob contains at most one line per key. Unmatched upserts are
+   * appended at the end. Always outputs brotli q=4.
    *
    * Mutates internal state — call {@link toBase64} afterwards to retrieve the result.
    * Callers must not overlap `upsert()` calls on the same instance; concurrent
    * upserts are unsafe and may lose writes.
-   *
-   * @dev Assumes the existing blob is already sorted by key with no duplicates.
-   * If that invariant is violated, the offending line and the remaining suffix
-   * are treated as garbage: a warning is logged and rewrite continues with only
-   * the already-emitted prefix plus any remaining pending entries.
    */
   async upsert(entries: Entry<T, K>[], signal?: AbortSignal): Promise<void> {
     if (entries.length === 0) return;
 
     const serializeLine = this.serializeLine.bind(this);
-    // Deduplicate (last write wins) then sort by raw JSON key for merge-insert
-    const byKey = new Map<K, T>();
+    const pending = new Map<string, T>();
     for (const entry of entries) {
-      byKey.set(entry.key, entry.value);
+      pending.set(JSON.stringify(entry.key), entry.value);
     }
-    const sorted = sortEntriesByRawKey(byKey);
-    let idx = 0;
-
-    let prevRawKey: string | undefined;
-    let corrupted = false;
+    const seen = new Set<string>();
 
     await this.blob.rewriteLines(
       (line, emit) => {
-        if (corrupted || line.length === 0) return;
+        if (line.length === 0) return;
 
+        // Best-effort rewrite: we intentionally avoid fully parsing the value
+        // here for speed. That means a line with a valid key envelope but malformed
+        // value can still claim the key during dedupe and shadow a later valid line.
+        // This tradeoff is acceptable since the data should never be malformed.
         const rawKey = extractRawKey(line);
         if (rawKey === undefined) return;
 
-        if (prevRawKey !== undefined) {
-          const ordering = compareRawKeys(rawKey, prevRawKey);
-          if (ordering <= 0) {
-            const reason = ordering === 0 ? "Duplicate" : "Unsorted";
-            console.warn(
-              `[NdjsonMap] ${reason} key in blob: ${rawKey}${ordering === 0 ? "" : ` after ${prevRawKey}`}. Discarding remaining blob lines.`,
-            );
-            corrupted = true;
-            return;
-          }
-        }
-        prevRawKey = rawKey;
+        if (seen.has(rawKey)) return;
+        seen.add(rawKey);
 
-        // Merge-insert: emit sorted pending entries that belong before this key
-        while (idx < sorted.length && compareRawKeys(sorted[idx]![0], rawKey) < 0) {
-          const [pKey, , pValue] = sorted[idx++]!;
-          emit(serializeLine(pKey, pValue));
-        }
-
-        // Replace in-place if this key is being upserted, otherwise keep existing line
-        if (idx < sorted.length && sorted[idx]![0] === rawKey) {
-          emit(serializeLine(rawKey, sorted[idx++]![2]));
+        if (pending.has(rawKey)) {
+          const value = pending.get(rawKey)!;
+          pending.delete(rawKey);
+          emit(serializeLine(rawKey, value));
         } else {
           emit(line);
         }
       },
       (emit) => {
-        while (idx < sorted.length) {
-          const [pKey, , pValue] = sorted[idx++]!;
-          emit(serializeLine(pKey, pValue));
+        for (const [rawKey, value] of pending) {
+          emit(serializeLine(rawKey, value));
         }
       },
       signal,

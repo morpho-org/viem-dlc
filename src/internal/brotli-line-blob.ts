@@ -116,6 +116,15 @@ export class BrotliLineBlob {
     }
   }
 
+  /** Fold each logical line through `fn` without materializing the full decompressed payload. */
+  async reduceLines<Acc>(fn: (acc: Acc, line: string) => Acc, init: Acc): Promise<Acc> {
+    let acc = init;
+    for await (const line of this.lines()) {
+      acc = fn(acc, line);
+    }
+    return acc;
+  }
+
   /**
    * Rewrite the buffer line-by-line.
    *

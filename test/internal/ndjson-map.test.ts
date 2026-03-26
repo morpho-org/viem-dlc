@@ -1,7 +1,7 @@
 import { Buffer } from "buffer";
 import { brotliCompressSync } from "zlib";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { BrotliLineBlob, type Codec, createSlot, type Entry, NdjsonMap, type Slot } from "../../src/internal/index.js";
 import { parse, stringify } from "../../src/utils/json.js";
@@ -32,10 +32,6 @@ async function collectRawLines(slot: Slot) {
   return lines;
 }
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
 describe("NdjsonMap", () => {
   it("skips malformed envelopes and still parses keys containing the separator text", async () => {
     const trickyKey = 'prefix ","value": suffix';
@@ -52,10 +48,11 @@ describe("NdjsonMap", () => {
     expect(keys).toEqual([trickyKey]);
   });
 
-  it("merge-inserts new keys in sorted order, replaces existing keys in-place, and deduplicates", async () => {
+  it("replaces the first matching occurrence, drops later duplicates, and appends unmatched upserts", async () => {
     const source = [
-      serializeLine("x", "old-x"),
+      serializeLine("x", "old-1"),
       serializeLine("y", "keep-y"),
+      serializeLine("x", "old-2"),
       serializeLine("z", "keep-z"),
       "",
     ].join("\n");
@@ -63,19 +60,21 @@ describe("NdjsonMap", () => {
 
     await map.upsert([
       { key: "x", value: "new-x" },
-      { key: "a", value: "insert-a" },
+      { key: "a", value: "append-a" },
     ]);
 
     expect(await collectRecords(map)).toEqual([
-      { key: "a", value: "insert-a" },
       { key: "x", value: "new-x" },
       { key: "y", value: "keep-y" },
       { key: "z", value: "keep-z" },
+      { key: "a", value: "append-a" },
     ]);
   });
 
-  it("preserves a line with a malformed value during rewrite", async () => {
-    const source = ['{"key":"a","value":oops}', serializeLine("b", "keep-b"), ""].join("\n");
+  it("lets a malformed value claim a key during rewrite and shadow a later valid duplicate", async () => {
+    const source = ['{"key":"a","value":oops}', serializeLine("a", "real-a"), serializeLine("b", "keep-b"), ""].join(
+      "\n",
+    );
     const slot = createSlot(brotliCompressSync(Buffer.from(source)));
     const map = new NdjsonMap<string, string>(codec, slot);
 
@@ -86,38 +85,5 @@ describe("NdjsonMap", () => {
       serializeLine("b", "keep-b"),
       serializeLine("c", "new-c"),
     ]);
-  });
-
-  it("drops the corrupted suffix after a duplicate stored key is encountered", async () => {
-    const source = [serializeLine("a", "old-a"), serializeLine("a", "stale-a"), serializeLine("b", "stale-b"), ""].join(
-      "\n",
-    );
-    const slot = createSlot(brotliCompressSync(Buffer.from(source)));
-    const map = new NdjsonMap<string, string>(codec, slot);
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await map.upsert([
-      { key: "a", value: "new-a" },
-      { key: "c", value: "new-c" },
-    ]);
-
-    expect(await collectRawLines(slot)).toEqual([serializeLine("a", "new-a"), serializeLine("c", "new-c")]);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(String(warnSpy.mock.calls[0]?.[0])).toContain("Duplicate key in blob");
-  });
-
-  it("drops the corrupted suffix after an unsorted stored key is encountered", async () => {
-    const source = [serializeLine("b", "keep-b"), serializeLine("a", "stale-a"), serializeLine("c", "stale-c"), ""].join(
-      "\n",
-    );
-    const slot = createSlot(brotliCompressSync(Buffer.from(source)));
-    const map = new NdjsonMap<string, string>(codec, slot);
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await map.upsert([{ key: "d", value: "new-d" }]);
-
-    expect(await collectRawLines(slot)).toEqual([serializeLine("b", "keep-b"), serializeLine("d", "new-d")]);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(String(warnSpy.mock.calls[0]?.[0])).toContain("Unsorted key in blob");
   });
 });

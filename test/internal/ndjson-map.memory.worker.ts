@@ -55,14 +55,6 @@ function serializeLine(key: string, value: string): string {
 }
 
 async function compressFixtureLines(lineCount: number, valueChars: number, payloadMode: PayloadMode) {
-  // Sort indices so keys are emitted in lexicographic order (NdjsonMap invariant)
-  const indices = Array.from({ length: lineCount }, (_, i) => i);
-  indices.sort((a, b) => {
-    const ka = `k${a}`;
-    const kb = `k${b}`;
-    return ka < kb ? -1 : ka > kb ? 1 : 0;
-  });
-
   let uncompressedBytes = 0;
   const slot = createSlot();
   const blob = new BrotliLineBlob(slot);
@@ -70,7 +62,7 @@ async function compressFixtureLines(lineCount: number, valueChars: number, paylo
   await blob.rewriteLines(
     () => {},
     (emit) => {
-      for (const i of indices) {
+      for (let i = 0; i < lineCount; i += 1) {
         const line = serializeLine(`k${i}`, makePayload(payloadMode, i, valueChars));
         uncompressedBytes += Buffer.byteLength(`${line}\n`);
         emit(line);
