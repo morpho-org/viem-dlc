@@ -39,6 +39,10 @@ const identity: Codec<string> = {
  * While an explicit flush is running, {@link upsert} warns but still buffers
  * the write. The flush loop will pick it up in a subsequent pass.
  *
+ * @dev Unlike {@link Store.flush}, which snapshots pending work and returns
+ * after a single attempt, this flush drains until `pending` is empty. That
+ * means continuous writes during a flush will keep it alive indefinitely.
+ *
  * The underlying `NdjsonMap` uses a no-op codec since values are already
  * stringified when they enter the pending buffer.
  *

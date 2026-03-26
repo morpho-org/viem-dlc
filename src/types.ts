@@ -135,8 +135,10 @@ export type SafelyExtendRpcSchema<T extends RpcSchema, Extension extends RpcSche
  * memory duplication. `Buffer`s MUST NOT be modified in-place -- always use the
  * `get`/`set` interface.
  *
- * @dev `flush` is expected to resolve after pending work is complete. The definition of
- * "pending work" may be Store-specific.
+ * @dev `flush` snapshots current pending work and resolves only after at least
+ * attempting to persist it. It DOES NOT guarantee success -- only that the
+ * attempt was made. What "persist" means is Store-specific (e.g. no-op for
+ * in-memory stores, HTTP call for remote stores).
  */
 export interface Store {
   get(key: string): MaybePromise<Buffer[] | null>;

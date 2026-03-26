@@ -110,33 +110,27 @@ export async function handleGetLogs(
     }
   };
 
-  // LazyNdjsonMap only exposes streamed reads, so match requested bins against the
-  // blob in a single pass and leave unmatched bins behind as gaps.
-  const { gaps, desiredRanges } = await ndjson.reduce(
-    (acc, record) => {
-      const desired = acc.desiredRanges.get(record.key);
-      if (!desired) {
-        return acc;
-      }
-
-      acc.desiredRanges.delete(record.key);
-
-      const validLogs = tryUseCachedRange(record.value, desired, ranges.length, invalidationStrategy);
-      if (validLogs !== null) {
-        consumeLogs(validLogs);
-      } else {
-        acc.gaps.push(desired);
-      }
-
-      return acc;
-    },
-    {
-      gaps: [] as BlockRange[],
-      desiredRanges: new Map<string, BlockRange>(
-        ranges.map((range) => [keychain.entryKey(chainId, "eth_getLogs", range), range]),
-      ),
-    },
+  // Match requested bins against the blob, collecting cache misses as gaps.
+  const desiredRanges = new Map<string, BlockRange>(
+    ranges.map((range) => [keychain.entryKey(chainId, "eth_getLogs", range), range]),
   );
+  const gaps: BlockRange[] = [];
+
+  for await (const record of ndjson.records()) {
+    if (desiredRanges.size === 0) break;
+
+    const desired = desiredRanges.get(record.key);
+    if (!desired) continue;
+
+    desiredRanges.delete(record.key);
+
+    const validLogs = tryUseCachedRange(record.value, desired, ranges.length, invalidationStrategy);
+    if (validLogs !== null) {
+      consumeLogs(validLogs);
+    } else {
+      gaps.push(desired);
+    }
+  }
 
   for (const range of desiredRanges.values()) {
     gaps.push(range);
