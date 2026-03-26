@@ -2,7 +2,6 @@ import type { Address, Hex } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
 import { deepTransform, deepTransformOptions as dt } from "../../utils/objects.js";
-import { pick } from "../../utils/pick.js";
 import type { Tuple } from "../../utils/tuples.js";
 
 import type { CachedMethod, LogsCacheRpcSchema } from "./schema.js";
@@ -87,22 +86,16 @@ function normalizeTuple<const T extends Tuple>(tuple: T, normalizers: TupleNorma
 //////////////////////////////////////////////////////////////*/
 
 /** Normalizes EIP1193 request parameters; should be called before request deduplication. */
-export function normalize(args: EIP1193Parameters<LogsCacheRpcSchema>) {
-  args.params = deepTransform(args.params, { ...dt.sortKeys, ...dt.lowercaseHex, ...dt.deleteUndefined });
+export function normalize(req: EIP1193Parameters<LogsCacheRpcSchema>) {
+  req.params = deepTransform(req.params, { ...dt.sortKeys, ...dt.lowercaseHex, ...dt.deleteUndefined });
 
-  switch (args.method) {
+  switch (req.method) {
     case "eth_call":
-      return {
-        method: args.method,
-        params: normalizeTuple(args.params, {
-          0: (transaction) => pick(transaction, ["data", "to"]),
-          3: (_blockOverrides) => undefined,
-        }),
-      };
+      return req;
     case "eth_getLogs":
       return {
-        method: args.method,
-        params: normalizeTuple(args.params, {
+        method: req.method,
+        params: normalizeTuple(req.params, {
           0: (filter) => ({
             ...filter,
             address: EthGetLogs.normalizeFilterAddresses(filter.address),
@@ -111,8 +104,8 @@ export function normalize(args: EIP1193Parameters<LogsCacheRpcSchema>) {
         }),
       };
     default: {
-      const _: never = args.method as Extract<typeof args.method, CachedMethod>;
-      return args;
+      const _: never = req.method as Extract<typeof req.method, CachedMethod>;
+      return req;
     }
   }
 }
