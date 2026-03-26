@@ -1,13 +1,16 @@
 import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
 import type { EIP1193Parameters, EIP1193RequestOptions } from "../../types.js";
+import { cyrb64Hash } from "../../utils/hash.js";
 import { parse, stringify } from "../../utils/json.js";
+import { withDedupe } from "../../utils/with-dedupe.js";
 import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
 import type { LogsSieveConfig } from "../logs-sieve/types.js";
 import type { RateLimiterConfig } from "../rate-limiter/index.js";
 
 import { ShardedCache } from "./cache.js";
-import { handleGetLogs } from "./handlers.js";
+import { handleGetLogs } from "./handlers/eth-get-logs.js";
+import { normalize } from "./normalization.js";
 import type { LogsCacheRpcSchema } from "./schema.js";
 import type { CachedChunk, InvalidationStrategy, LogsCacheConfig } from "./types.js";
 import { CACHE_KEY_SEPARATOR } from "./utils.js";
@@ -126,16 +129,27 @@ export function logsCache(
     );
 
     const request = (args: EIP1193Parameters<LogsCacheRpcSchema>, options?: EIP1193RequestOptions) => {
-      if (args.method !== "eth_getLogs") {
-        return transport.request(args, options);
-      }
+      args = normalize(args);
 
-      // TODO: (@haydenshively future-work) `handleGetLogs` could respect `options`
-      return handleGetLogs(transport.request, chainId, args.params, {
-        binSize,
-        invalidationStrategy,
-        cache,
-      });
+      // Compute hash of normalized request args, for use as dedupe id
+      const requestHash = cyrb64Hash(JSON.stringify([chainId, args]));
+
+      // Dedupe all requests
+      return withDedupe(
+        () => {
+          if (args.method !== "eth_getLogs") {
+            return transport.request(args, options);
+          }
+
+          // TODO: (@haydenshively future-work) `handleGetLogs` could respect `options`
+          return handleGetLogs(transport.request, chainId, args.params, {
+            binSize,
+            invalidationStrategy,
+            cache,
+          });
+        },
+        { enabled: true, id: requestHash },
+      );
     };
 
     return custom({ request })(params);

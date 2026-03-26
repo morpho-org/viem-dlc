@@ -1,14 +1,13 @@
 import { type EIP1193RequestFn, hexToBigInt, hexToNumber, type RpcLog, toHex } from "viem";
 
-import type { BlockRange, Cache, RpcSignature } from "../../types.js";
-import { divideBlockRange, isInBlockRange, mergeBlockRanges, resolveBlockNumber } from "../../utils/blocks.js";
-import { min } from "../../utils/math.js";
-import type { LogsDividerRpcSchema } from "../logs-divider/schema.js";
-
-import type { LogsCacheRpcSchema } from "./schema.js";
-import { createSink } from "./sink.js";
-import type { CachedChunk, InvalidationStrategy } from "./types.js";
-import { computeCacheKey } from "./utils.js";
+import type { BlockRange, Cache, RpcSignature } from "../../../types.js";
+import { divideBlockRange, isInBlockRange, mergeBlockRanges, resolveBlockNumber } from "../../../utils/blocks.js";
+import { min } from "../../../utils/math.js";
+import type { LogsDividerRpcSchema } from "../../logs-divider/schema.js";
+import type { LogsCacheRpcSchema } from "../schema.js";
+import { createSink } from "../sink.js";
+import type { CachedChunk, InvalidationStrategy } from "../types.js";
+import { computeCacheKey } from "../utils.js";
 
 /**
  * Check if cached data is valid for a chunk.

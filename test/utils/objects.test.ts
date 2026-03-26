@@ -93,44 +93,54 @@ describe("deepTransform + deleteUndefined", () => {
   });
 });
 
-describe("deepTransform + lowercase", () => {
-  it("lowercases a plain string", () => {
-    expect(deepTransform("Hello World", dt.lowercase)).toBe("hello world");
+describe("deepTransform + lowercaseHex", () => {
+  it("lowercases a hex string", () => {
+    expect(deepTransform("0xABCDEF", dt.lowercaseHex)).toBe("0xabcdef");
   });
 
-  it("lowercases object keys", () => {
-    expect(deepTransform({ Foo: 1, BAR: 2 }, dt.lowercase)).toEqual({ foo: 1, bar: 2 });
+  it("leaves non-hex strings unchanged", () => {
+    expect(deepTransform("Hello World", dt.lowercaseHex)).toBe("Hello World");
   });
 
-  it("lowercases object string values", () => {
-    expect(deepTransform({ a: "HELLO" }, dt.lowercase)).toEqual({ a: "hello" });
+  it("lowercases hex object keys", () => {
+    expect(deepTransform({ "0xABC": 1, foo: 2 }, dt.lowercaseHex)).toEqual({ "0xabc": 1, foo: 2 });
   });
 
-  it("lowercases both keys and values recursively", () => {
-    expect(deepTransform({ Outer: { Inner: "VALUE" } }, dt.lowercase)).toEqual({ outer: { inner: "value" } });
+  it("lowercases hex object string values", () => {
+    expect(deepTransform({ a: "0xDEAD" }, dt.lowercaseHex)).toEqual({ a: "0xdead" });
   });
 
-  it("lowercases array elements", () => {
-    expect(deepTransform(["Hello", "WORLD"], dt.lowercase)).toEqual(["hello", "world"]);
+  it("leaves non-hex keys and values unchanged", () => {
+    expect(deepTransform({ Foo: "BAR" }, dt.lowercaseHex)).toEqual({ Foo: "BAR" });
+  });
+
+  it("lowercases hex keys and values recursively", () => {
+    expect(deepTransform({ "0xOuter": { "0xInner": "0xVALUE" } }, dt.lowercaseHex)).toEqual({
+      "0xouter": { "0xinner": "0xvalue" },
+    });
+  });
+
+  it("lowercases hex array elements", () => {
+    expect(deepTransform(["0xAA", "hello"], dt.lowercaseHex)).toEqual(["0xaa", "hello"]);
   });
 
   it("handles nested arrays in objects", () => {
-    expect(deepTransform({ Tags: ["Foo", "BAR"] }, dt.lowercase)).toEqual({ tags: ["foo", "bar"] });
+    expect(deepTransform({ tags: ["0xFoo", "BAR"] }, dt.lowercaseHex)).toEqual({ tags: ["0xfoo", "BAR"] });
   });
 
   it("leaves numbers, booleans, and null unchanged", () => {
-    expect(deepTransform({ a: 42, b: true, c: null }, dt.lowercase)).toEqual({ a: 42, b: true, c: null });
+    expect(deepTransform({ a: 42, b: true, c: null }, dt.lowercaseHex)).toEqual({ a: 42, b: true, c: null });
   });
 
   it("returns primitives unchanged", () => {
-    expect(deepTransform(42, dt.lowercase)).toBe(42);
-    expect(deepTransform(null, dt.lowercase)).toBe(null);
-    expect(deepTransform(true, dt.lowercase)).toBe(true);
+    expect(deepTransform(42, dt.lowercaseHex)).toBe(42);
+    expect(deepTransform(null, dt.lowercaseHex)).toBe(null);
+    expect(deepTransform(true, dt.lowercaseHex)).toBe(true);
   });
 
   it("returns a copy, not the original", () => {
-    const obj = { Key: "Value" };
-    const result = deepTransform(obj, dt.lowercase);
+    const obj = { "0xKey": "0xValue" };
+    const result = deepTransform(obj, dt.lowercaseHex);
     expect(result).not.toBe(obj);
   });
 });
