@@ -53,12 +53,9 @@ describe("NdjsonMap", () => {
   });
 
   it("merge-inserts new keys in sorted order, replaces existing keys in-place, and deduplicates", async () => {
-    const source = [
-      serializeLine("x", "old-x"),
-      serializeLine("y", "keep-y"),
-      serializeLine("z", "keep-z"),
-      "",
-    ].join("\n");
+    const source = [serializeLine("x", "old-x"), serializeLine("y", "keep-y"), serializeLine("z", "keep-z"), ""].join(
+      "\n",
+    );
     const map = new NdjsonMap<string, string>(codec, createSlot(brotliCompressSync(Buffer.from(source))));
 
     await map.upsert([
@@ -107,9 +104,12 @@ describe("NdjsonMap", () => {
   });
 
   it("drops the corrupted suffix after an unsorted stored key is encountered", async () => {
-    const source = [serializeLine("b", "keep-b"), serializeLine("a", "stale-a"), serializeLine("c", "stale-c"), ""].join(
-      "\n",
-    );
+    const source = [
+      serializeLine("b", "keep-b"),
+      serializeLine("a", "stale-a"),
+      serializeLine("c", "stale-c"),
+      "",
+    ].join("\n");
     const slot = createSlot(brotliCompressSync(Buffer.from(source)));
     const map = new NdjsonMap<string, string>(codec, slot);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
