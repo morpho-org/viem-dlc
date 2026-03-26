@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe("LazyNdjsonMap", () => {
-  it("overlays pending writes on flushed data and appends new pending keys after flushed entries", async () => {
+  it("merge-sorts pending writes with flushed data in sorted key order", async () => {
     const source = [serializeLine("x", "old-x"), serializeLine("y", "keep-y"), ""].join("\n");
     const map = new LazyNdjsonMap<string, string>(
       codec,
@@ -56,8 +56,8 @@ describe("LazyNdjsonMap", () => {
     map.upsert({ key: "z", value: "tail-z" });
 
     expect(await collectRecords(map)).toEqual([
-      { key: "y", value: "keep-y" },
       { key: "x", value: "new-x" },
+      { key: "y", value: "keep-y" },
       { key: "z", value: "tail-z" },
     ]);
 
@@ -65,7 +65,31 @@ describe("LazyNdjsonMap", () => {
       acc.push(`${record.key}:${record.value}`);
       return acc;
     }, []);
-    expect(reduced).toEqual(["y:keep-y", "x:new-x", "z:tail-z"]);
+    expect(reduced).toEqual(["x:new-x", "y:keep-y", "z:tail-z"]);
+  });
+
+  it("interleaves pending keys that sort before all flushed keys", async () => {
+    const source = [serializeLine("m", "old-m"), serializeLine("z", "keep-z"), ""].join("\n");
+    const map = new LazyNdjsonMap<string, string>(
+      codec,
+      { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER },
+      createSlot(brotliCompressSync(Buffer.from(source))),
+    );
+
+    map.upsert({ key: "a", value: "new-a" });
+    map.upsert({ key: "m", value: "new-m" });
+
+    expect(await collectRecords(map)).toEqual([
+      { key: "a", value: "new-a" },
+      { key: "m", value: "new-m" },
+      { key: "z", value: "keep-z" },
+    ]);
+
+    const reduced = await map.reduce<string[]>((acc, record) => {
+      acc.push(`${record.key}:${record.value}`);
+      return acc;
+    }, []);
+    expect(reduced).toEqual(["a:new-a", "m:new-m", "z:keep-z"]);
   });
 
   it("auto-flush snapshots the current pending set and leaves later writes pending for a later flush", async () => {
