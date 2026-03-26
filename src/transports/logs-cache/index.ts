@@ -132,7 +132,7 @@ export function logsCache(
       args = normalize(args);
 
       // Compute hash of normalized request args, for use as dedupe id
-      const requestHash = cyrb64Hash(JSON.stringify(args));
+      const requestHash = cyrb64Hash(JSON.stringify([chainId, args]));
 
       // Dedupe all requests
       return withDedupe(
