@@ -1,7 +1,7 @@
 import { measureUtf8Bytes } from "../utils/strings.js";
 
 import type { Slot } from "./brotli-line-blob.js";
-import { type Codec, type Entry, NdjsonMap } from "./ndjson-map.js";
+import { type Codec, type Entry, NdjsonMap, sortEntriesByRawKey, toRawKey } from "./ndjson-map.js";
 
 /** No-op codec for pre-stringified values. */
 const identity: Codec<string> = {
@@ -19,9 +19,9 @@ const identity: Codec<string> = {
  * - (b) the caller requests serialization via {@link flush} or {@link toBase64}
  *
  * {@link records} and {@link reduce} provide read-your-writes semantics by
- * snapshotting pending entries at call time and overlaying them on flushed
- * data. Pending entries that update existing keys suppress the flushed
- * version; new pending keys appear after all flushed entries.
+ * snapshotting pending entries at call time and merge-sorting them with
+ * underlying data. Pending entries that update existing keys take precedence,
+ * and new pending keys are interleaved at their sorted position.
  *
  * Auto-flush is best-effort: if pending bytes cross the threshold while no
  * flush is active, a background flush starts. It snapshots the current pending
@@ -134,33 +134,35 @@ export class LazyNdjsonMap<T, K extends string = string> {
     return promise;
   }
 
-  /** Stream-decompress and fold every entry (flushed + pending) through `fn`. */
-  reduce<Acc>(fn: (acc: Acc, record: Entry<T, K>) => Acc, init: Acc): Promise<Acc> {
-    const pendingSnapshot = new Map(this.pending);
-
-    return this.inner
-      .reduce<Acc>((acc, record) => {
-        if (pendingSnapshot.has(record.key)) return acc;
-        return fn(acc, { key: record.key, value: this.codec.fromJson(record.value) });
-      }, init)
-      .then((acc) => {
-        for (const [key, rawValue] of pendingSnapshot) {
-          acc = fn(acc, { key, value: this.codec.fromJson(rawValue) });
-        }
-        return acc;
-      });
+  /** Stream-decompress and fold every entry (flushed + pending) through `fn`, in sorted key order. */
+  async reduce<Acc>(fn: (acc: Acc, record: Entry<T, K>) => Acc, init: Acc): Promise<Acc> {
+    let acc = init;
+    for await (const record of this.records()) {
+      acc = fn(acc, record);
+    }
+    return acc;
   }
 
-  /** Async generator that yields each entry (flushed + pending). */
+  /** Async generator that yields each entry (flushed + pending) in sorted key order. */
   async *records(): AsyncGenerator<Entry<T, K>, void, void> {
     const pendingSnapshot = new Map(this.pending);
+    const sorted = sortEntriesByRawKey(pendingSnapshot);
+    let idx = 0;
 
     for await (const record of this.inner.records()) {
+      // Merge-insert: yield sorted pending entries that belong before this key
+      const rawKey = toRawKey(record.key);
+      while (idx < sorted.length && sorted[idx]![0] < rawKey) {
+        const [, key, rawValue] = sorted[idx++]!;
+        yield { key, value: this.codec.fromJson(rawValue) };
+      }
+
       if (pendingSnapshot.has(record.key)) continue;
       yield { key: record.key, value: this.codec.fromJson(record.value) };
     }
 
-    for (const [key, rawValue] of pendingSnapshot) {
+    while (idx < sorted.length) {
+      const [, key, rawValue] = sorted[idx++]!;
       yield { key, value: this.codec.fromJson(rawValue) };
     }
   }
