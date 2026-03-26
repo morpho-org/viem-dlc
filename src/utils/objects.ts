@@ -43,9 +43,9 @@ export const deepTransformOptions = {
     shouldInclude: (_: string, v: unknown) =>
       v !== undefined && !(isPlainObject(v) && Object.keys(v as Record<string, unknown>).length === 0),
   },
-  /** Lowercases all string keys and string leaf values. */
-  lowercase: {
-    transformKey: (k: string) => k.toLowerCase(),
-    transformLeaf: <T>(v: T) => (typeof v === "string" ? v.toLowerCase() : v) as T,
+  /** Lowercases all hex-like keys and leaf values. */
+  lowercaseHex: {
+    transformKey: (k: string) => (k.startsWith("0x") ? k.toLowerCase() : k),
+    transformLeaf: <T>(v: T) => (typeof v === "string" && v.startsWith("0x") ? v.toLowerCase() : v) as T,
   },
 } as const satisfies Record<string, DeepTransformOptions>;

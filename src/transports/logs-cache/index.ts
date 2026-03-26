@@ -134,7 +134,7 @@ export function logsCache(
 
       // Compute hash of normalized request args, for use as dedupe id
       const hasCallback = args.method === "eth_getLogs" && args.params[1]?.reduce !== undefined;
-      const requestHash = cyrb64Hash(JSON.stringify(args));
+      const requestHash = cyrb64Hash(JSON.stringify([chainId, args]));
 
       // Dedupe all requests
       return withDedupe(

@@ -1,7 +1,7 @@
 import { type Address, type Hex, type LogTopic, type RpcLog, toHex } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { handleGetLogs } from "../../src/transports/logs-cache/handlers.js";
+import { handleGetLogs } from "../../src/transports/logs-cache/handlers/eth-get-logs.js";
 import { createSink } from "../../src/transports/logs-cache/sink.js";
 import type { CachedChunk, InvalidationStrategy } from "../../src/transports/logs-cache/types.js";
 import { CACHE_KEY_SEPARATOR, computeCacheKey } from "../../src/transports/logs-cache/utils.js";
