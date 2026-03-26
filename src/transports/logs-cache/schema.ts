@@ -7,14 +7,17 @@ export type LogsCacheRpcSchema = SafelyExtendRpcSchema<
   [
     {
       Method: "eth_call";
-      AdditionalParameters: [{ blobKey: string }];
+      AdditionalParameters: [{
+        /** @dev Case-insensitive. */
+        blobKey: string
+      }];
     },
     {
       Method: "eth_getLogs";
       AdditionalParameters: [
         {
           /** @dev This offers no ordering guarantees. */
-          reduce<T>(fn: (acc: T, v: RpcLog) => T, init: T): T;
+          reduce?: (logs: RpcLog[], log: RpcLog) => RpcLog[];
         },
       ];
     },

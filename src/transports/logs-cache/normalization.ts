@@ -88,28 +88,31 @@ function normalizeTuple<const T extends Tuple>(tuple: T, normalizers: TupleNorma
 
 /** Normalizes EIP1193 request parameters; should be called before request deduplication. */
 export function normalize(args: EIP1193Parameters<LogsCacheRpcSchema>) {
-  args.params = deepTransform(args.params, { ...dt.sortKeys, ...dt.lowercase, ...dt.deleteUndefined });
-
   switch (args.method) {
-    case "eth_call":
+    case "eth_call": {
+      const params = deepTransform(args.params, { ...dt.sortKeys, ...dt.lowercase, ...dt.deleteUndefined });
       return {
         method: args.method,
-        params: normalizeTuple(args.params, {
+        params: normalizeTuple(params, {
           0: (transaction) => pick(transaction, ["data", "to"]),
           3: (_blockOverrides) => undefined,
         }),
       };
-    case "eth_getLogs":
+    }
+    case "eth_getLogs": {
+      const params = deepTransform(args.params, { ...dt.sortKeys, ...dt.lowercase, ...dt.deleteUndefined });
       return {
         method: args.method,
-        params: normalizeTuple(args.params, {
+        params: normalizeTuple(params, {
           0: (filter) => ({
             ...filter,
             address: EthGetLogs.normalizeFilterAddresses(filter.address),
             topics: EthGetLogs.normalizeFilterTopics(filter.topics),
           }),
+          1: (_reduce) => args.params[1], // preserve original callback sans normalization
         }),
       };
+    }
     default: {
       const _: never = args.method as Extract<typeof args.method, CachedMethod>;
       return args;

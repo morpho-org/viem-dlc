@@ -8,7 +8,7 @@ import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
 import type { LogsSieveConfig } from "../logs-sieve/types.js";
 import type { RateLimiterConfig } from "../rate-limiter/index.js";
 
-import { handleGetLogs } from "./handlers.js";
+import { handleGetLogs } from "./handlers/eth-get-logs.js";
 import { keychain } from "./keychain.js";
 import { normalize } from "./normalization.js";
 import type { CachedMethod, LogsCacheRpcSchema } from "./schema.js";
@@ -133,6 +133,7 @@ export function logsCache(
       // TODO: compare args against allowlist
 
       // Compute hash of normalized request args, for use as dedupe id
+      const hasCallback = args.method === "eth_getLogs" && args.params[1]?.reduce !== undefined;
       const requestHash = cyrb64Hash(JSON.stringify(args));
 
       // Dedupe all requests
@@ -167,7 +168,7 @@ export function logsCache(
             }
           }
         },
-        { enabled: true, id: requestHash },
+        { enabled: !hasCallback, id: requestHash },
       );
     };
 

@@ -1,16 +1,16 @@
 import { type EIP1193RequestFn, hexToBigInt, hexToNumber, type RpcLog, toHex } from "viem";
 
-import { LazyNdjsonMap } from "../../internal/lazy-ndjson-map.js";
-import type { BlockRange, RpcSignature, Store } from "../../types.js";
-import { divideBlockRange, isInBlockRange, mergeBlockRanges, resolveBlockNumber } from "../../utils/blocks.js";
-import { parse, stringify } from "../../utils/json.js";
-import { min } from "../../utils/math.js";
-import type { LogsDividerRpcSchema } from "../logs-divider/schema.js";
-
-import { keychain } from "./keychain.js";
-import type { LogsCacheRpcSchema } from "./schema.js";
-import { createSink } from "./sink.js";
-import type { CachedChunk, InvalidationStrategy } from "./types.js";
+import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
+import type { BlockRange, RpcSignature, Store } from "../../../types.js";
+import { divideBlockRange, isInBlockRange, mergeBlockRanges, resolveBlockNumber } from "../../../utils/blocks.js";
+import { parse, stringify } from "../../../utils/json.js";
+import { min } from "../../../utils/math.js";
+import type { LogsDividerRpcSchema } from "../../logs-divider/schema.js";
+import type { LogsResponse } from "../../logs-divider/types.js";
+import { keychain } from "../keychain.js";
+import type { LogsCacheRpcSchema } from "../schema.js";
+import { createSink } from "../sink.js";
+import type { CachedChunk, InvalidationStrategy } from "../types.js";
 
 /**
  * Check if cached data is valid for a chunk.
@@ -46,7 +46,7 @@ function tryUseCachedRange(
 export async function handleGetLogs(
   requestFn: EIP1193RequestFn<LogsDividerRpcSchema>,
   chainId: number,
-  [filter]: RpcSignature<LogsCacheRpcSchema, "eth_getLogs">["Parameters"],
+  [filter, options]: RpcSignature<LogsCacheRpcSchema, "eth_getLogs">["Parameters"],
   blobKey: string,
   {
     binSize,
@@ -58,9 +58,11 @@ export async function handleGetLogs(
     store: Store;
   },
 ): Promise<RpcLog[]> {
+  const reduce = options?.reduce;
+
   // blockHash queries are not cached - pass through
   if (filter.blockHash) {
-    return requestFn({ method: "eth_getLogs", params: [filter] }, { dedupe: true });
+    throw new Error(`[logsCache] eth_getLogs blockHash queries are not supported.`);
   }
 
   const latestBlockNumber = hexToBigInt(await requestFn({ method: "eth_blockNumber" }, { dedupe: true }));
@@ -91,10 +93,26 @@ export async function handleGetLogs(
 
   // Generate bin-aligned ranges and try to read from cache
   const ranges = divideBlockRange({ fromBlock, toBlock }, binSize, binSize);
+  const isRequestedLog = isInBlockRange({ fromBlock, toBlock });
+  const allLogs: RpcLog[] = [];
+  let reduced: RpcLog[] = [];
+
+  const consumeLogs = (logs: RpcLog[]) => {
+    for (const log of logs) {
+      if (!isRequestedLog(log)) continue;
+
+      if (reduce) {
+        // TODO: Readonly or .freeze to protect logs from mutation
+        reduced = reduce(reduced, log);
+      } else {
+        allLogs.push(log);
+      }
+    }
+  };
 
   // LazyNdjsonMap only exposes streamed reads, so match requested bins against the
   // blob in a single pass and leave unmatched bins behind as gaps.
-  const { allLogs, gaps, desiredRanges } = await ndjson.reduce(
+  const { gaps, desiredRanges } = await ndjson.reduce(
     (acc, record) => {
       const desired = acc.desiredRanges.get(record.key);
       if (!desired) {
@@ -105,7 +123,7 @@ export async function handleGetLogs(
 
       const validLogs = tryUseCachedRange(record.value, desired, ranges.length, invalidationStrategy);
       if (validLogs !== null) {
-        for (const log of validLogs) acc.allLogs.push(log); // NOTE: avoiding `...validLogs` spread due to engine arg limits
+        consumeLogs(validLogs);
       } else {
         acc.gaps.push(desired);
       }
@@ -113,7 +131,6 @@ export async function handleGetLogs(
       return acc;
     },
     {
-      allLogs: [] as RpcLog[],
       gaps: [] as BlockRange[],
       desiredRanges: new Map<string, BlockRange>(
         ranges.map((range) => [keychain.entryKey(chainId, "eth_getLogs", range), range]),
@@ -131,9 +148,13 @@ export async function handleGetLogs(
     const rangesToFetch = mergeBlockRanges(gaps);
 
     const sink = createSink({ chainId, binSize, ndjson });
+    const onLogsResponse = (response: LogsResponse) => {
+      sink(response);
+      consumeLogs(response.logs);
+    };
 
     try {
-      const fetches = await Promise.all(
+      await Promise.all(
         rangesToFetch.map((range) =>
           requestFn(
             {
@@ -148,7 +169,8 @@ export async function handleGetLogs(
                 undefined,
                 {
                   latestBlock: toHex(latestBlockNumber),
-                  onLogsResponse: sink,
+                  onLogsResponse,
+                  onLogsResponseOnly: true,
                 },
               ],
             },
@@ -156,15 +178,6 @@ export async function handleGetLogs(
           ),
         ),
       );
-
-      // NOTE: Individual `.push(item)` is safer than `.push(...arr)` for large `arr` because
-      // the spread turns each item into a function arg, which can hit engine limits. Nested
-      // for loop is safer than `.flat()` because that would create a copy.
-      for (const logs of fetches) {
-        for (const log of logs) {
-          allLogs.push(log);
-        }
-      }
     } catch (error) {
       const context = `[logsCache] Gap fetch failed for ${rangesToFetch.length} range(s): ${rangesToFetch.map((r) => `[${r.fromBlock}n, ${r.toBlock}n]`).join(", ")}`;
       if (error instanceof Error) {
@@ -177,7 +190,9 @@ export async function handleGetLogs(
     }
   }
 
-  return allLogs
-    .filter(isInBlockRange({ fromBlock, toBlock }))
-    .sort((a, b) => hexToNumber(a.blockNumber!) - hexToNumber(b.blockNumber!));
+  if (reduce) {
+    return reduced;
+  }
+
+  return allLogs.sort((a, b) => hexToNumber(a.blockNumber!) - hexToNumber(b.blockNumber!));
 }
