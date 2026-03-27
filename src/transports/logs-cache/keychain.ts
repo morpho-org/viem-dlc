@@ -1,4 +1,4 @@
-import type { Hex, RpcSchema } from "viem";
+import type { RpcSchema } from "viem";
 
 import type { BlockRange, EIP1193Parameters } from "../../types.js";
 import { cyrb64Hash } from "../../utils/hash.js";
@@ -52,8 +52,8 @@ export const keychain = createKeychain<LogsCacheRpcSchema, CachedMethod>()({
       const custom = req.params[4]?.blobKey;
       return custom ? `${chainId}:${req.method}:${hash(custom)}` : null;
     },
-    entryKey(_chainId, _method, inputs: { block: "latest"; data: Hex }) {
-      return { data: `${1}:${inputs.block}:${inputs.data}` as const };
+    entryKey(_chainId, _method, inputs: Record<string, unknown>) {
+      return { data: `${0}:${hash(inputs)}` as const };
     },
   },
   eth_getLogs: {

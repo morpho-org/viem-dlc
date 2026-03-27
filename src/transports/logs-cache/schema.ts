@@ -7,7 +7,7 @@ export type LogsCacheRpcSchema = SafelyExtendRpcSchema<
   [
     {
       Method: "eth_call";
-      AdditionalParameters: [{ blobKey: string }];
+      AdditionalParameters: [{ blobKey: string; ttl: number }];
     },
     {
       Method: "eth_getLogs";

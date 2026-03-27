@@ -8,6 +8,7 @@ import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
 import type { LogsSieveConfig } from "../logs-sieve/types.js";
 import type { RateLimiterConfig } from "../rate-limiter/index.js";
 
+import { handleEthCall } from "./eth-call/handler.js";
 import { handleGetLogs } from "./eth-get-logs/handler.js";
 import { keychain } from "./keychain.js";
 import { normalize } from "./normalization.js";
@@ -142,13 +143,15 @@ export function logsCache(
           switch (args.method) {
             case "eth_call": {
               const blobKey = keychain.blobKey(chainId, args);
-              const run = () =>
-                transport.request(
+              if (!blobKey) {
+                return transport.request(
                   { method: args.method, params: [args.params[0], args.params[1], args.params[2], args.params[3]] },
                   options,
                 );
-
-              return blobKey ? withKeyedMutex(blobKey, run) : run();
+              }
+              return withKeyedMutex(blobKey, () =>
+                handleEthCall(transport.request, chainId, args.params, blobKey, { store }),
+              );
             }
             case "eth_getLogs": {
               const blobKey = keychain.blobKey(chainId, args);
