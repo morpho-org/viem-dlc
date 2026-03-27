@@ -2,22 +2,21 @@ import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } f
 
 import type { EIP1193Parameters, EIP1193RequestOptions } from "../../types.js";
 import { cyrb64Hash } from "../../utils/hash.js";
-import { parse, stringify } from "../../utils/json.js";
 import { withDedupe } from "../../utils/with-dedupe.js";
+import { createKeyedMutex } from "../../utils/with-keyed-mutex.js";
 import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
 import type { LogsSieveConfig } from "../logs-sieve/types.js";
 import type { RateLimiterConfig } from "../rate-limiter/index.js";
 
-import { ShardedCache } from "./cache.js";
-import { handleGetLogs } from "./handlers/eth-get-logs.js";
+import { handleEthCall } from "./eth-call/handler.js";
+import { handleGetLogs } from "./eth-get-logs/handler.js";
+import { keychain } from "./keychain.js";
 import { normalize } from "./normalization.js";
-import type { LogsCacheRpcSchema } from "./schema.js";
-import type { CachedChunk, InvalidationStrategy, LogsCacheConfig } from "./types.js";
-import { CACHE_KEY_SEPARATOR } from "./utils.js";
+import type { CachedMethod, LogsCacheRpcSchema } from "./schema.js";
+import type { InvalidationStrategy, LogsCacheConfig } from "./types.js";
 
 export type * from "./schema.js";
 export type * from "./types.js";
-export { CACHE_KEY_SEPARATOR, computeCacheKey } from "./utils.js";
 
 /**
  * @param alphaAge Exponential growth rate w.r.t cache entry age (in time). @default 1/8
@@ -123,35 +122,60 @@ export function logsCache(
     }
     const chainId = params.chain.id;
 
-    const cache = new ShardedCache<CachedChunk>(store, stringify, parse, CACHE_KEY_SEPARATOR);
     const transport = logsDivider(baseTransportFn, [{ ...logsDividerConfig, alignTo: binSize }, ...otherConfigs])(
       params,
     );
 
+    const { withKeyedMutex } = createKeyedMutex();
+
+    // TODO: I think `options` are always undefined because of viem internals. document? what to do with them if real?
     const request = (args: EIP1193Parameters<LogsCacheRpcSchema>, options?: EIP1193RequestOptions) => {
       args = normalize(args);
+      // TODO: compare args against allowlist
 
       // Compute hash of normalized request args, for use as dedupe id
+      const hasCallback = args.method === "eth_getLogs" && args.params[1]?.reduce !== undefined;
       const requestHash = cyrb64Hash(JSON.stringify([chainId, args]));
 
       // Dedupe all requests
       return withDedupe(
         () => {
-          if (args.method !== "eth_getLogs") {
-            return transport.request(args, options);
-          }
+          switch (args.method) {
+            case "eth_call": {
+              const blobKey = keychain.blobKey(chainId, args);
+              if (!blobKey) {
+                return transport.request(
+                  { method: args.method, params: [args.params[0], args.params[1], args.params[2], args.params[3]] },
+                  options,
+                );
+              }
+              return withKeyedMutex(blobKey, () =>
+                handleEthCall(transport.request, chainId, args.params, blobKey, { store }),
+              );
+            }
+            case "eth_getLogs": {
+              const blobKey = keychain.blobKey(chainId, args);
+              const run = () =>
+                handleGetLogs(transport.request, chainId, args.params, blobKey, {
+                  binSize,
+                  invalidationStrategy,
+                  store,
+                });
 
-          // TODO: (@haydenshively future-work) `handleGetLogs` could respect `options`
-          return handleGetLogs(transport.request, chainId, args.params, {
-            binSize,
-            invalidationStrategy,
-            cache,
-          });
+              return withKeyedMutex(blobKey, run);
+            }
+            default: {
+              // Assert that all `CachedMethod` are handled explicitly
+              const _: never = args.method as Extract<typeof args.method, CachedMethod>;
+              return transport.request(args, options);
+            }
+          }
         },
-        { enabled: true, id: requestHash },
+        { enabled: !hasCallback, id: requestHash },
       );
     };
 
+    // TODO: have a better way of creating the transport so we can apply custom name and other props.
     return custom({ request })(params);
   };
 }

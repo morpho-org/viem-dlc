@@ -126,25 +126,23 @@ export type SafelyExtendRpcSchema<T extends RpcSchema, Extension extends RpcSche
 /**
  * All methods are best-effort and MUST NOT throw. Stores should be robust to gaps
  * in wall clock time (e.g., freeze/thaw cycles in serverless function environments).
- *
+ * 
+ * @dev `get`/`set` should be atomic. `value` MUST NOT be partially retrieved or persisted.
+ * 
  * @dev `Buffer`s are used to make `value` pass-by-reference explicit and minimize
  * memory duplication. `Buffer`s MUST NOT be modified in-place -- always use the
  * `get`/`set` interface.
  *
- * @dev `flush` is expected to resolve after pending work is complete. The definition of
- * "pending work" may be Store-specific.
+ * @dev `flush` snapshots current pending work and resolves only after at least
+ * attempting to persist it. It DOES NOT guarantee success -- only that the
+ * attempt was made. What "persist" means is Store-specific (e.g. no-op for
+ * in-memory stores, HTTP call for remote stores).
  */
 export interface Store {
   get(key: string): MaybePromise<Buffer[] | null>;
   set(key: string, value: Buffer[]): MaybePromise<void>;
   delete(key: string): MaybePromise<void>;
   flush(): MaybePromise<void>;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface Cache<T extends {}> {
-  read(keys: string[]): Promise<(T | undefined)[]>;
-  write(items: { key: string; value: T }[]): Promise<void>;
 }
 
 export type BlockNumberish = BlockNumber | BlockTag | Hex;

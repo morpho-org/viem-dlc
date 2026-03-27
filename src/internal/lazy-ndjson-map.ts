@@ -1,6 +1,6 @@
 import { measureUtf8Bytes } from "../utils/strings.js";
 
-import type { Slot } from "./brotli-line-blob.js";
+import type { Slot } from "./compressed-lines-blob.js";
 import { type Codec, type Entry, NdjsonMap, sortEntriesByRawKey, toRawKey } from "./ndjson-map.js";
 
 /** No-op codec for pre-stringified values. */
@@ -80,28 +80,34 @@ export class LazyNdjsonMap<T, K extends string = string> {
   //////////////////////////////////////////////////////////////*/
 
   /**
-   * Buffer a single entry for a deferred upsert. The value is stringified
-   * immediately so its byte cost is tracked; duplicate keys within the
-   * pending buffer are collapsed (last write wins).
+   * Buffer entries for a deferred upsert. Values are stringified immediately
+   * so their byte cost is tracked; duplicate keys within the pending buffer
+   * are collapsed (last write wins).
+   *
+   * All entries in a batch are added to `pending` atomically before the
+   * auto-flush threshold is checked, so batched entries are guaranteed to
+   * be flushed together.
    *
    * If pending value bytes exceed `autoFlushThresholdBytes` and no flush is
    * already active, a background auto-flush is started. The threshold is
    * best-effort, not absolute. Auto-flush errors are silently dropped — they
    * surface only through {@link flush} or {@link toBase64}.
    */
-  upsert(entry: Entry<T, K>): void {
+  upsert(entries: Entry<T, K>[]): void {
     if (this.active?.explicit) {
       console.warn(
-        `[LazyNdjsonMap] Upserting key '${entry.key}' while explicit flush is in progress. This is an anti-pattern, as it delays the flush.`,
+        `[LazyNdjsonMap] Upserting ${entries.length} key(s) while explicit flush is in progress. This is an anti-pattern, as it delays the flush.`,
       );
     }
 
-    const rawValue = this.codec.toJson(entry.value);
+    for (const entry of entries) {
+      const rawValue = this.codec.toJson(entry.value);
 
-    const existing = this.pending.get(entry.key);
-    if (existing !== undefined) this.pendingBytes -= measureUtf8Bytes(existing);
-    this.pending.set(entry.key, rawValue);
-    this.pendingBytes += measureUtf8Bytes(rawValue);
+      const existing = this.pending.get(entry.key);
+      if (existing !== undefined) this.pendingBytes -= measureUtf8Bytes(existing);
+      this.pending.set(entry.key, rawValue);
+      this.pendingBytes += measureUtf8Bytes(rawValue);
+    }
 
     if (this.pendingBytes >= this.autoFlushThresholdBytes && !this.active) {
       this.startAutoFlush();
@@ -134,6 +140,66 @@ export class LazyNdjsonMap<T, K extends string = string> {
     return promise;
   }
 
+  /**
+   * Flush all pending entries and fold through every entry (existing + pending)
+   * in sorted key order during the rewrite pass. Returns the fold accumulator.
+   *
+   * When there are no pending entries, degenerates to a pure {@link reduce}
+   * (no rewrite). Concurrent calls are serialized: a second call waits for
+   * the first to settle, then runs its own pass.
+   *
+   * The fold callback only **observes** entries — it does not control what
+   * gets written to the blob. Both reduce and filter are special cases of fold.
+   */
+  async flushAndFold<Acc>(fn: (acc: Acc, record: Entry<T, K>) => Acc, init: Acc): Promise<Acc> {
+    if (this.pending.size === 0) {
+      return this.reduce(fn, init);
+    }
+
+    // Abort any in-progress auto-flush; capture it so we can await settlement.
+    const dying = this.active;
+    dying?.controller?.abort();
+
+    let result!: Acc;
+
+    const promise = (async () => {
+      await dying?.promise;
+
+      // Snapshot pending entries
+      const snapshot = new Map(this.pending);
+      const entries: Entry<string, K>[] = [];
+      for (const [key, rawValue] of snapshot) {
+        entries.push({ key, value: rawValue });
+      }
+
+      // Flush + fold in a single decompression pass
+      result = await this.inner.upsertAndFold(
+        entries,
+        (acc: Acc, entry: Entry<string, K>) => fn(acc, { key: entry.key, value: this.codec.fromJson(entry.value) }),
+        init,
+      );
+
+      // Clean up flushed entries (same as drainOnce)
+      for (const [key, rawValue] of snapshot) {
+        if (this.pending.get(key) === rawValue) {
+          this.pending.delete(key);
+          this.pendingBytes -= measureUtf8Bytes(rawValue);
+        }
+      }
+
+      // Drain any remaining pending entries (defensive, for concurrent writes)
+      while (this.pending.size > 0) {
+        await this.drainOnce();
+      }
+    })().finally(() => {
+      if (this.active?.promise === promise) this.active = undefined;
+    });
+
+    this.active = { promise, explicit: true };
+    await promise;
+    return result;
+  }
+
   /** Stream-decompress and fold every entry (flushed + pending) through `fn`, in sorted key order. */
   async reduce<Acc>(fn: (acc: Acc, record: Entry<T, K>) => Acc, init: Acc): Promise<Acc> {
     let acc = init;
@@ -145,6 +211,7 @@ export class LazyNdjsonMap<T, K extends string = string> {
 
   /** Async generator that yields each entry (flushed + pending) in sorted key order. */
   async *records(): AsyncGenerator<Entry<T, K>, void, void> {
+    // TODO: micro-optimization: streamline 3 layers of async generators in this stack
     const pendingSnapshot = new Map(this.pending);
     const sorted = sortEntriesByRawKey(pendingSnapshot);
     let idx = 0;

@@ -2,7 +2,7 @@
 import { Readable, Transform, type TransformCallback, Writable } from "stream";
 import { pipeline } from "stream/promises";
 import { StringDecoder } from "string_decoder";
-import { type BrotliOptions, createBrotliCompress, createBrotliDecompress, constants as zlib } from "zlib";
+import { createZstdCompress, createZstdDecompress, type ZstdOptions, constants as zlib } from "zlib";
 
 export type Slot = {
   get(): Buffer[];
@@ -28,9 +28,10 @@ export function createSlot(compressed?: Buffer | Buffer[]): Slot {
   };
 }
 
-const brotliOptions: BrotliOptions = {
+// NOTE: Default sliding window for level 1 is 512KB
+const zstdOptions: ZstdOptions = {
   params: {
-    [zlib.BROTLI_PARAM_QUALITY]: 4,
+    [zlib.ZSTD_c_compressionLevel]: 1,
   },
 };
 
@@ -76,9 +77,9 @@ class SplitLines extends Transform {
 type EmitLine = (line: string) => void;
 
 /**
- * Brotli-compressed line buffer.
+ * zstd-compressed line buffer.
  *
- * Stores newline-delimited UTF-8 text in brotli-compressed form and exposes a small streaming API
+ * Stores newline-delimited UTF-8 text in zstd-compressed form and exposes a small streaming API
  * for reading, reducing, and rewriting logical lines.
  *
  * When streaming via {@link reduceLines} or {@link rewriteLines}, peak live decompressed memory is
@@ -88,7 +89,7 @@ type EmitLine = (line: string) => void;
  * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
  * should cause `slot` to mutate or return different data.
  */
-export class BrotliLineBlob {
+export class CompressedLinesBlob {
   constructor(private readonly slot: Slot) {
     const chunks = slot.get();
     console.assert(chunks.length === 0 || chunks[0]!.length > 0, "Slot contains an empty buffer in array");
@@ -99,7 +100,7 @@ export class BrotliLineBlob {
     if (this.slot.get().length === 0) return;
 
     const input = Readable.from(this.slot.get());
-    const decompressor = createBrotliDecompress();
+    const decompressor = createZstdDecompress();
     const splitter = new SplitLines();
 
     // pipeline() wires error propagation + cleanup across the chain.
@@ -168,16 +169,16 @@ export class BrotliLineBlob {
     });
 
     if (this.slot.get().length === 0) {
-      await pipeline(Readable.from([] as string[]), rewriteStream, createBrotliCompress(brotliOptions), output, {
+      await pipeline(Readable.from([] as string[]), rewriteStream, createZstdCompress(zstdOptions), output, {
         signal,
       });
     } else {
       await pipeline(
         Readable.from(this.slot.get()),
-        createBrotliDecompress(),
+        createZstdDecompress(),
         new SplitLines(),
         rewriteStream,
-        createBrotliCompress(brotliOptions),
+        createZstdCompress(zstdOptions),
         output,
         { signal },
       );
