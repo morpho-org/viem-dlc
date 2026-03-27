@@ -8,7 +8,7 @@ import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
 import type { LogsSieveConfig } from "../logs-sieve/types.js";
 import type { RateLimiterConfig } from "../rate-limiter/index.js";
 
-import { handleGetLogs } from "./handlers/eth-get-logs.js";
+import { handleGetLogs } from "./eth-get-logs/handler.js";
 import { keychain } from "./keychain.js";
 import { normalize } from "./normalization.js";
 import type { CachedMethod, LogsCacheRpcSchema } from "./schema.js";

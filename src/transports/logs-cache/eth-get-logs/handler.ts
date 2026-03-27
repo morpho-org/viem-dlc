@@ -9,8 +9,10 @@ import type { LogsDividerRpcSchema } from "../../logs-divider/schema.js";
 import type { LogsResponse } from "../../logs-divider/types.js";
 import { keychain } from "../keychain.js";
 import type { LogsCacheRpcSchema } from "../schema.js";
-import { createSink } from "../sink.js";
-import type { CachedChunk, InvalidationStrategy } from "../types.js";
+import type { InvalidationStrategy } from "../types.js";
+
+import { createSink } from "./sink.js";
+import type { CachedChunk } from "./types.js";
 
 /**
  * Check if cached data is valid for a chunk.
@@ -81,7 +83,7 @@ export async function handleGetLogs(
   let buffers = (await store.get(blobKey)) ?? [];
   const ndjson = new LazyNdjsonMap<CachedChunk>(
     { toJson: stringify, fromJson: parse },
-    { autoFlushThresholdBytes: 1 << 20 },
+    { autoFlushThresholdBytes: 1 << 24 }, // 16 MB
     {
       get: () => buffers,
       set: (value) => {
@@ -180,7 +182,7 @@ export async function handleGetLogs(
       }
       throw new Error(`${context} ${String(error)}`);
     } finally {
-      ndjson.flush(); // TODO: decide whether to await this
+      await ndjson.flush(); // TODO: decide whether to await this
     }
   }
 
@@ -188,5 +190,6 @@ export async function handleGetLogs(
     return reduced;
   }
 
+  // TODO: bigint-native sort comparator
   return allLogs.sort((a, b) => hexToNumber(a.blockNumber!) - hexToNumber(b.blockNumber!));
 }

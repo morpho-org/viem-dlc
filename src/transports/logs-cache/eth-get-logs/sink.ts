@@ -1,12 +1,12 @@
 import type { RpcLog } from "viem";
 
-import type { LazyNdjsonMap } from "../../internal/lazy-ndjson-map.js";
-import type { BlockRange } from "../../types.js";
-import { isInBlockRange, mergeBlockRanges } from "../../utils/blocks.js";
-import { max, min } from "../../utils/math.js";
-import type { OnLogsResponse } from "../logs-divider/types.js";
+import type { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
+import type { BlockRange } from "../../../types.js";
+import { isInBlockRange, mergeBlockRanges } from "../../../utils/blocks.js";
+import { max, min } from "../../../utils/math.js";
+import type { OnLogsResponse } from "../../logs-divider/types.js";
+import { keychain } from "../keychain.js";
 
-import { keychain } from "./keychain.js";
 import type { CachedChunk } from "./types.js";
 
 export interface SinkConfig {

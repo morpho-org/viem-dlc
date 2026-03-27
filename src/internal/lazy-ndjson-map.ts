@@ -1,6 +1,6 @@
 import { measureUtf8Bytes } from "../utils/strings.js";
 
-import type { Slot } from "./brotli-line-blob.js";
+import type { Slot } from "./compressed-lines-blob.js";
 import { type Codec, type Entry, NdjsonMap, sortEntriesByRawKey, toRawKey } from "./ndjson-map.js";
 
 /** No-op codec for pre-stringified values. */

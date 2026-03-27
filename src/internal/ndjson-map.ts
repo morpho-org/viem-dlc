@@ -1,4 +1,4 @@
-import { BrotliLineBlob, type Slot } from "./brotli-line-blob.js";
+import { CompressedLinesBlob, type Slot } from "./compressed-lines-blob.js";
 
 export type Entry<T, K extends string = string> = { key: K; value: T };
 
@@ -84,13 +84,13 @@ export function sortEntriesByRawKey<K extends string, V>(
  * should cause `slot` to mutate or return different data.
  */
 export class NdjsonMap<T, K extends string = string> {
-  private readonly blob: BrotliLineBlob;
+  private readonly blob: CompressedLinesBlob;
 
   constructor(
     private readonly codec: Codec<T>,
     slot: Slot,
   ) {
-    this.blob = new BrotliLineBlob(slot);
+    this.blob = new CompressedLinesBlob(slot);
   }
 
   /** Build a full NDJSON line from a pre-stringified JSON key token and a value. */

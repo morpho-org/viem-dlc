@@ -27,9 +27,11 @@ function createKeychain<Schema extends RpcSchema, Methods extends Schema[number]
   >(
     fns: Fns,
   ) => ({
+    /** Identifies which key of the `Store` will hold data for this `req`. MUST be used exactly, no suffix. */
     blobKey<M extends Methods>(chainId: number, req: EIP1193Parameters<Schema, M>): ReturnType<Fns[M]["blobKey"]> {
       return fns[req.method].blobKey(chainId, req) as ReturnType<Fns[M]["blobKey"]>;
     },
+    /** Identifies the subkey *within* a blob where [part of] the data may be found. Suffixes may be applied. */
     entryKey<M extends Methods>(
       chainId: number,
       method: M,
