@@ -1,33 +1,30 @@
 import { type EIP1193RequestFn, hexToBigInt, hexToNumber, type RpcLog, toHex } from "viem";
 
 import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
+import type { Entry } from "../../../internal/ndjson-map.js";
 import type { BlockRange, RpcSignature, Store } from "../../../types.js";
 import { divideBlockRange, isInBlockRange, mergeBlockRanges, resolveBlockNumber } from "../../../utils/blocks.js";
 import { parse, stringify } from "../../../utils/json.js";
 import { min } from "../../../utils/math.js";
 import type { LogsDividerRpcSchema } from "../../logs-divider/schema.js";
-import type { LogsResponse } from "../../logs-divider/types.js";
 import { keychain } from "../keychain.js";
 import type { LogsCacheRpcSchema } from "../schema.js";
 import type { InvalidationStrategy } from "../types.js";
 
 import { createSink } from "./sink.js";
-import type { CachedChunk } from "./types.js";
+import type { CachedChunk, CachedLogs, CachedMetadata } from "./types.js";
 
-/**
- * Check if cached data is valid for a chunk.
- * Returns the cached logs if valid, null otherwise.
- */
-function tryUseCachedRange(
-  cached: CachedChunk,
+/** Returns true if the cached range should be re-fetched. */
+function shouldFetchRange(
+  cached: CachedMetadata,
   desired: BlockRange,
   totalChunks: number,
   invalidationStrategy: InvalidationStrategy,
-): RpcLog[] | null {
+) {
   // Check if cached data covers the fetch range.
   // NOTE: Currently this is extra defensive since the logs sink only writes complete bins.
   if (cached.fetchedRange.toBlock < desired.toBlock) {
-    return null;
+    return true;
   }
 
   // Check probabilistic invalidation
@@ -38,11 +35,8 @@ function tryUseCachedRange(
     cacheAgeMs: Date.now() - cached.fetchedAt,
     totalChunks,
   });
-  if (Math.random() < probability) {
-    return null;
-  }
 
-  return cached.logs;
+  return Math.random() < probability;
 }
 
 export async function handleGetLogs(
@@ -67,6 +61,7 @@ export async function handleGetLogs(
     throw new Error(`[logsCache] eth_getLogs blockHash queries are not supported.`);
   }
 
+  // TODO: could put this in a promise.all with `store.get`
   const latestBlockNumber = hexToBigInt(await requestFn({ method: "eth_blockNumber" }, { dedupe: true }));
 
   // Resolve block tags to numbers
@@ -95,41 +90,26 @@ export async function handleGetLogs(
 
   // Generate bin-aligned ranges and try to read from cache
   const ranges = divideBlockRange({ fromBlock, toBlock }, binSize, binSize);
-  const isRequestedLog = isInBlockRange({ fromBlock, toBlock });
-  const allLogs: RpcLog[] = [];
-  let reduced: RpcLog[] = [];
-
-  const consumeLogs = (logs: RpcLog[]) => {
-    for (const log of logs) {
-      if (!isRequestedLog(log)) continue;
-
-      if (reduce) {
-        // TODO: Readonly or .freeze to protect logs from mutation
-        reduced = reduce(reduced, log);
-      } else {
-        allLogs.push(log);
-      }
-    }
-  };
 
   // Match requested bins against the blob, collecting cache misses as gaps.
   const desiredRanges = new Map<string, BlockRange>(
-    ranges.map((range) => [keychain.entryKey(chainId, "eth_getLogs", range), range]),
+    ranges.map((range) => [keychain.entryKey(chainId, "eth_getLogs", range).metadata, range]),
   );
   const gaps: BlockRange[] = [];
 
   for await (const record of ndjson.records()) {
-    if (desiredRanges.size === 0) break;
+    // Stop if we found all `desiredRanges` or if key's prefix indicates it's something other than metadata
+    if (desiredRanges.size === 0 || !record.key.startsWith("0:")) break;
 
     const desired = desiredRanges.get(record.key);
     if (!desired) continue;
 
     desiredRanges.delete(record.key);
 
-    const validLogs = tryUseCachedRange(record.value, desired, ranges.length, invalidationStrategy);
-    if (validLogs !== null) {
-      consumeLogs(validLogs);
-    } else {
+    if (
+      record.value.__type === "metadata" &&
+      shouldFetchRange(record.value, desired, ranges.length, invalidationStrategy)
+    ) {
       gaps.push(desired);
     }
   }
@@ -138,16 +118,12 @@ export async function handleGetLogs(
     gaps.push(range);
   }
 
-  // Fetch missing chunks - process gaps sequentially
+  // Fetch missing chunks
   // (Inner transport handles concurrency for each gap range)
   if (gaps.length > 0) {
     const rangesToFetch = mergeBlockRanges(gaps);
 
     const sink = createSink({ chainId, binSize, ndjson });
-    const onLogsResponse = (response: LogsResponse) => {
-      sink(response);
-      consumeLogs(response.logs);
-    };
 
     try {
       await Promise.all(
@@ -165,7 +141,7 @@ export async function handleGetLogs(
                 undefined,
                 {
                   latestBlock: toHex(latestBlockNumber),
-                  onLogsResponse,
+                  onLogsResponse: sink,
                   onLogsResponseOnly: true,
                 },
               ],
@@ -175,21 +151,35 @@ export async function handleGetLogs(
         ),
       );
     } catch (error) {
+      await ndjson.flush().catch(() => {});
       const context = `[logsCache] Gap fetch failed for ${rangesToFetch.length} range(s): ${rangesToFetch.map((r) => `[${r.fromBlock}n, ${r.toBlock}n]`).join(", ")}`;
       if (error instanceof Error) {
         error.message = `${context} ${error.message}`;
         throw error;
       }
       throw new Error(`${context} ${String(error)}`);
-    } finally {
-      await ndjson.flush(); // TODO: decide whether to await this
     }
   }
 
-  if (reduce) {
-    return reduced;
-  }
+  // Fold callback shared by both the flush+fold path (gaps) and the pure-read path (no gaps).
+  // Skips metadata entries (0: prefix) and processes logs entries (1: prefix).
+  const isRequestedLog = isInBlockRange({ fromBlock, toBlock });
+  const processEntry = (acc: RpcLog[], entry: Entry<CachedChunk>): RpcLog[] => {
+    if (!entry.key.startsWith("1:")) return acc;
+    const logs = entry.value as CachedLogs;
+    for (const log of logs) {
+      if (!isRequestedLog(log)) continue;
+      if (reduce) {
+        acc = reduce(acc, log);
+      } else {
+        acc.push(log);
+      }
+    }
+    return acc;
+  };
 
-  // TODO: bigint-native sort comparator
-  return allLogs.sort((a, b) => hexToNumber(a.blockNumber!) - hexToNumber(b.blockNumber!));
+  // Flush pending writes (if any) + fold through all entries in a single decompression pass.
+  // When there are no pending writes (no gaps, or empty responses), this degenerates to a pure read.
+  const result = await ndjson.flushAndFold(processEntry, [] as RpcLog[]);
+  return reduce ? result : result.sort((a, b) => hexToNumber(a.blockNumber!) - hexToNumber(b.blockNumber!));
 }

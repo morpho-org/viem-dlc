@@ -1,6 +1,6 @@
 import { memoryUsage, resourceUsage } from "process";
 
-import { BrotliLineBlob, type Codec, createSlot, type Entry, NdjsonMap } from "../../dist/internal/index.js";
+import { CompressedLinesBlob, type Codec, createSlot, type Entry, NdjsonMap } from "../../dist/internal/index.js";
 import { parse, stringify } from "../../dist/utils/json.js";
 
 const MARKER = "__NDJSON_MEMORY__";
@@ -65,7 +65,7 @@ async function compressFixtureLines(lineCount: number, valueChars: number, paylo
 
   let uncompressedBytes = 0;
   const slot = createSlot();
-  const blob = new BrotliLineBlob(slot);
+  const blob = new CompressedLinesBlob(slot);
 
   await blob.rewriteLines(
     () => {},

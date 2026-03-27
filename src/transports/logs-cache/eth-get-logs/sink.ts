@@ -1,4 +1,4 @@
-import type { RpcLog } from "viem";
+import { hexToNumber, type RpcLog } from "viem";
 
 import type { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
 import type { BlockRange } from "../../../types.js";
@@ -7,7 +7,7 @@ import { max, min } from "../../../utils/math.js";
 import type { OnLogsResponse } from "../../logs-divider/types.js";
 import { keychain } from "../keychain.js";
 
-import type { CachedChunk } from "./types.js";
+import type { CachedChunk, CachedLogs } from "./types.js";
 
 export interface SinkConfig {
   chainId: number;
@@ -34,14 +34,6 @@ function isBinComplete(ranges: BlockRange[], binStart: bigint, binEnd: bigint): 
 }
 
 /**
- * Returns a unique key for a log entry.
- * Used to deduplicate logs from concurrent requests hitting the same bin.
- */
-function getLogKey(log: RpcLog): string {
-  return `${log.blockHash}:${log.logIndex}`;
-}
-
-/**
  * Creates a callback that accumulates logs responses and writes complete bins to cache.
  * Used internally by `logsCache` as the `onLogsResponse` handler for `logsDivider`.
  *
@@ -58,7 +50,7 @@ export function createSink({ chainId, binSize, ndjson }: SinkConfig): OnLogsResp
   const binSizeBigInt = BigInt(binSize);
 
   // Map from entry key -> accumulator
-  const accumulators = new Map<`${bigint}:${bigint}`, BinAccumulator>();
+  const accumulators = new Map<string, BinAccumulator>();
 
   return ({ logs, fromBlock, toBlock, fetchedAt, fetchedAtBlock }) => {
     // A response may span multiple bins - iterate over each affected bin
@@ -67,10 +59,11 @@ export function createSink({ chainId, binSize, ndjson }: SinkConfig): OnLogsResp
     while (binStart <= toBlock) {
       const binEnd = binStart + binSizeBigInt - 1n;
 
-      const entryKey = keychain.entryKey(chainId, "eth_getLogs", { fromBlock: binStart, toBlock: binEnd });
+      const range = { fromBlock: binStart, toBlock: binEnd };
+      const entryKey = keychain.entryKey(chainId, "eth_getLogs", range);
 
       // Get or create accumulator for this bin
-      let acc = accumulators.get(entryKey);
+      let acc = accumulators.get(entryKey.data);
       if (!acc) {
         acc = {
           logs: [],
@@ -79,7 +72,7 @@ export function createSink({ chainId, binSize, ndjson }: SinkConfig): OnLogsResp
           coveredRanges: [],
           alignedRange: { fromBlock: binStart, toBlock: binEnd },
         };
-        accumulators.set(entryKey, acc);
+        accumulators.set(entryKey.data, acc);
       }
 
       // Add logs that fall within this bin's overlap
@@ -94,28 +87,31 @@ export function createSink({ chainId, binSize, ndjson }: SinkConfig): OnLogsResp
 
       // Check if bin is complete (covered ranges span the full bin)
       if (isBinComplete(acc.coveredRanges, binStart, binEnd)) {
-        // Deduplicate logs (concurrent requests for the same bin can produce duplicates)
-        const seen = new Set<string>();
-        // NOTE: We can skip sorting here because sorting is done in `handlers.ts`
-        const uniqueLogs = acc.logs.filter((log) => {
-          const logKey = getLogKey(log);
-          if (seen.has(logKey)) return false;
-          seen.add(logKey);
-          return true;
+        // Sort logs within the bin for guaranteed ordering
+        acc.logs.sort((a, b) => {
+          const blockDiff = hexToNumber(a.blockNumber!) - hexToNumber(b.blockNumber!);
+          return blockDiff !== 0 ? blockDiff : hexToNumber(a.logIndex!) - hexToNumber(b.logIndex!);
         });
 
-        ndjson.upsert({
-          key: entryKey,
-          value: {
-            logs: uniqueLogs,
-            fetchedAt: acc.fetchedAt,
-            fetchedAtBlock: acc.fetchedAtBlock,
-            alignedRange: acc.alignedRange,
-            // NOTE: Currently we only store completed bins, so fetchedRange === alignedRange
-            fetchedRange: acc.alignedRange,
+        // Write metadata and logs as a batch to guarantee they're flushed together
+        ndjson.upsert([
+          {
+            key: entryKey.metadata,
+            value: {
+              __type: "metadata" as const,
+              fetchedAt: acc.fetchedAt,
+              fetchedAtBlock: acc.fetchedAtBlock,
+              alignedRange: acc.alignedRange,
+              // NOTE: Currently we only store completed bins, so fetchedRange === alignedRange
+              fetchedRange: acc.alignedRange,
+            } satisfies CachedChunk,
           },
-        });
-        accumulators.delete(entryKey);
+          {
+            key: entryKey.data,
+            value: acc.logs as CachedLogs satisfies CachedChunk,
+          },
+        ]);
+        accumulators.delete(entryKey.data);
       }
 
       binStart += binSizeBigInt;

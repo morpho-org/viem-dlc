@@ -8,7 +8,7 @@ import type { CachedMethod, LogsCacheRpcSchema } from "./schema.js";
 
 /**
  * Creates a keychain with proper typing for the `Schema` and `Methods`.
- * 
+ *
  * @dev Curried generic factory -- works around TypeScript's lack of partial type argument inference.
  * The outer call `createKeychain<Schema, Methods>()` explicitly fixes the schema-level types,
  * while the inner call `(fns)` lets TS infer `Fns` from the implementation object. Without
@@ -21,17 +21,17 @@ function createKeychain<Schema extends RpcSchema, Methods extends Schema[number]
       [M in Methods]: {
         blobKey: (chainId: number, req: EIP1193Parameters<Schema, M>) => `${number}:${M}:${string}` | null;
         // biome-ignore lint/suspicious/noExplicitAny: necessary to infer types
-        entryKey: (chainId: number, method: M, inputs: any) => string;
+        entryKey: (chainId: number, method: M, inputs: any) => Record<string, string>;
       };
     },
   >(
     fns: Fns,
   ) => ({
-    /** Identifies which key of the `Store` will hold data for this `req`. MUST be used exactly, no suffix. */
+    /** Identifies which key of the `Store` will hold data for this `req`. MUST be used exactly, no prefix/suffix. */
     blobKey<M extends Methods>(chainId: number, req: EIP1193Parameters<Schema, M>): ReturnType<Fns[M]["blobKey"]> {
       return fns[req.method].blobKey(chainId, req) as ReturnType<Fns[M]["blobKey"]>;
     },
-    /** Identifies the subkey *within* a blob where [part of] the data may be found. Suffixes may be applied. */
+    /** Identifies the subkeys *within* a blob that are relevant to `inputs`. Semantics vary by `method`. */
     entryKey<M extends Methods>(
       chainId: number,
       method: M,
@@ -53,7 +53,7 @@ export const keychain = createKeychain<LogsCacheRpcSchema, CachedMethod>()({
       return custom ? `${chainId}:${req.method}:${hash(custom)}` : null;
     },
     entryKey(_chainId, _method, inputs: { block: "latest"; data: Hex }) {
-      return `${inputs.block}:${inputs.data}` as const;
+      return { data: `${1}:${inputs.block}:${inputs.data}` as const };
     },
   },
   eth_getLogs: {
@@ -62,7 +62,12 @@ export const keychain = createKeychain<LogsCacheRpcSchema, CachedMethod>()({
       return `${chainId}:${req.method}:${suffix}`;
     },
     entryKey(_chainId, _method, inputs: BlockRange) {
-      return `${inputs.fromBlock}:${inputs.toBlock}` as const;
+      const fromBlock = inputs.fromBlock.toString().padStart(20, "0");
+      const toBlock = inputs.toBlock.toString().padStart(20, "0");
+      return {
+        metadata: `${0}:${fromBlock}:${toBlock}` as const,
+        data: `${1}:${fromBlock}:${toBlock}` as const,
+      };
     },
   },
 });

@@ -142,8 +142,46 @@ export class NdjsonMap<T, K extends string = string> {
    */
   async upsert(entries: Entry<T, K>[], signal?: AbortSignal): Promise<void> {
     if (entries.length === 0) return;
+    return this.mergeAndRewrite(entries, signal);
+  }
 
+  /**
+   * Like {@link upsert}, but also folds through every entry (existing + new)
+   * in sorted key order during the rewrite pass. When `entries` is empty,
+   * degenerates to a pure {@link reduce} (no rewrite).
+   */
+  async upsertAndFold<Acc>(
+    entries: Entry<T, K>[],
+    fn: (acc: Acc, entry: Entry<T, K>) => Acc,
+    init: Acc,
+    signal?: AbortSignal,
+  ): Promise<Acc> {
+    if (entries.length === 0) return this.reduce(fn, init);
+    let acc = init;
+    await this.mergeAndRewrite(entries, signal, (entry) => {
+      acc = fn(acc, entry);
+    });
+    return acc;
+  }
+
+  /*//////////////////////////////////////////////////////////////
+                              PRIVATE
+  //////////////////////////////////////////////////////////////*/
+
+  /**
+   * Core merge-insert-rewrite logic shared by {@link upsert} and {@link upsertAndFold}.
+   * If `onEntry` is provided, it is called synchronously for each emitted entry
+   * (existing lines kept as-is, replaced lines, and newly inserted lines) in
+   * sorted key order.
+   */
+  private async mergeAndRewrite(
+    entries: Entry<T, K>[],
+    signal?: AbortSignal,
+    onEntry?: (entry: Entry<T, K>) => void,
+  ): Promise<void> {
     const serializeLine = this.serializeLine.bind(this);
+    const parseLine = onEntry ? this.parseLine.bind(this) : undefined;
+
     // Deduplicate (last write wins) then sort by raw JSON key for merge-insert
     const byKey = new Map<K, T>();
     for (const entry of entries) {
@@ -177,21 +215,29 @@ export class NdjsonMap<T, K extends string = string> {
 
         // Merge-insert: emit sorted pending entries that belong before this key
         while (idx < sorted.length && compareRawKeys(sorted[idx]![0], rawKey) < 0) {
-          const [pKey, , pValue] = sorted[idx++]!;
+          const [pKey, pOrigKey, pValue] = sorted[idx++]!;
           emit(serializeLine(pKey, pValue));
+          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
         }
 
         // Replace in-place if this key is being upserted, otherwise keep existing line
         if (idx < sorted.length && sorted[idx]![0] === rawKey) {
-          emit(serializeLine(rawKey, sorted[idx++]![2]));
+          const [, pOrigKey, pValue] = sorted[idx++]!;
+          emit(serializeLine(rawKey, pValue));
+          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
         } else {
           emit(line);
+          if (parseLine) {
+            const entry = parseLine(line);
+            if (entry) onEntry!(entry);
+          }
         }
       },
       (emit) => {
         while (idx < sorted.length) {
-          const [pKey, , pValue] = sorted[idx++]!;
+          const [pKey, pOrigKey, pValue] = sorted[idx++]!;
           emit(serializeLine(pKey, pValue));
+          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
         }
       },
       signal,

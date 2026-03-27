@@ -1,5 +1,5 @@
 import { Buffer } from "buffer";
-import { brotliCompressSync } from "zlib";
+import { zstdCompressSync } from "zlib";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -49,11 +49,11 @@ describe("LazyNdjsonMap", () => {
     const map = new LazyNdjsonMap<string, string>(
       codec,
       { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER },
-      createSlot(brotliCompressSync(Buffer.from(source))),
+      createSlot(zstdCompressSync(Buffer.from(source))),
     );
 
-    map.upsert({ key: "x", value: "new-x" });
-    map.upsert({ key: "z", value: "tail-z" });
+    map.upsert([{ key: "x", value: "new-x" }]);
+    map.upsert([{ key: "z", value: "tail-z" }]);
 
     expect(await collectRecords(map)).toEqual([
       { key: "x", value: "new-x" },
@@ -73,11 +73,11 @@ describe("LazyNdjsonMap", () => {
     const map = new LazyNdjsonMap<string, string>(
       codec,
       { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER },
-      createSlot(brotliCompressSync(Buffer.from(source))),
+      createSlot(zstdCompressSync(Buffer.from(source))),
     );
 
-    map.upsert({ key: "a", value: "new-a" });
-    map.upsert({ key: "m", value: "new-m" });
+    map.upsert([{ key: "a", value: "new-a" }]);
+    map.upsert([{ key: "m", value: "new-m" }]);
 
     expect(await collectRecords(map)).toEqual([
       { key: "a", value: "new-a" },
@@ -113,10 +113,10 @@ describe("LazyNdjsonMap", () => {
 
     const map = new LazyNdjsonMap<string, string>(codec, { autoFlushThresholdBytes: 1 }, createSlot());
 
-    map.upsert({ key: "a", value: "alpha" });
+    map.upsert([{ key: "a", value: "alpha" }]);
     await entered.promise;
 
-    map.upsert({ key: "b", value: "beta" });
+    map.upsert([{ key: "b", value: "beta" }]);
     release.resolve();
     await completed.promise;
 
@@ -154,7 +154,7 @@ describe("LazyNdjsonMap", () => {
       { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER },
       createSlot(),
     );
-    map.upsert({ key: "a", value: "alpha" });
+    map.upsert([{ key: "a", value: "alpha" }]);
 
     const firstFlush = map.flush();
     const secondFlush = map.flush();
@@ -162,13 +162,13 @@ describe("LazyNdjsonMap", () => {
     expect(secondFlush).toBe(firstFlush);
 
     await entered.promise;
-    map.upsert({ key: "b", value: "beta" });
+    map.upsert([{ key: "b", value: "beta" }]);
     release.resolve();
 
     await firstFlush;
 
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(String(warnSpy.mock.calls[0]?.[0])).toContain("Upserting key 'b' while explicit flush is in progress");
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain("while explicit flush is in progress");
     expect(upsertSpy.mock.calls.map(([entries]) => entries.map(({ key }) => key))).toEqual([["a"], ["b"]]);
     expect(await collectRecords(map)).toEqual([
       { key: "a", value: "alpha" },
@@ -206,7 +206,7 @@ describe("LazyNdjsonMap", () => {
     });
 
     const map = new LazyNdjsonMap<string, string>(codec, { autoFlushThresholdBytes: 1 }, createSlot());
-    map.upsert({ key: "a", value: "alpha" });
+    map.upsert([{ key: "a", value: "alpha" }]);
 
     await entered.promise;
     await map.flush();
