@@ -61,10 +61,11 @@ export async function handleGetLogs(
     throw new Error(`[logsCache] eth_getLogs blockHash queries are not supported.`);
   }
 
-  // TODO: could put this in a promise.all with `store.get`
-  const latestBlockNumber = hexToBigInt(await requestFn({ method: "eth_blockNumber" }, { dedupe: true }));
+  // Optimistically kickoff `latestBlockNumber` and `buffers` promises in parallel
+  const preflight = [requestFn({ method: "eth_blockNumber" }, { dedupe: true }), store.get(blobKey)] as const;
 
   // Resolve block tags to numbers
+  const latestBlockNumber = hexToBigInt(await preflight[0]);
   const fromBlock = resolveBlockNumber(filter.fromBlock ?? "earliest", latestBlockNumber);
   const toBlock = min(resolveBlockNumber(filter.toBlock ?? "latest", latestBlockNumber), latestBlockNumber);
 
@@ -72,13 +73,13 @@ export async function handleGetLogs(
     return [];
   }
   // TODO: handle the above + case where they're above latest, maybe throw errors, both here and in divider.
-  // TODO: also maybe update divideBlockRange to allow only alinging fromBlock to help avoid this in divider
+  // TODO: also maybe update divideBlockRange to allow only aligning fromBlock to help avoid this in divider
 
-  // Create LazyNdjsonMap streaming wrapper around store data. Thanks to mutex, we own buffers here.
-  let buffers = (await store.get(blobKey)) ?? [];
+  // Create LazyNdjsonMap streaming wrapper around data from the store. Thanks to mutex, we own buffers here.
+  let buffers = (await preflight[1]) ?? [];
   const ndjson = new LazyNdjsonMap<CachedChunk>(
     { toJson: stringify, fromJson: parse },
-    { autoFlushThresholdBytes: 1 << 24 }, // 16 MB
+    { autoFlushThresholdBytes: 1 << 26 }, // 64MB (flushing too often strains CPU, flushing too late strains memory)
     {
       get: () => buffers,
       set: (value) => {
@@ -89,37 +90,47 @@ export async function handleGetLogs(
   );
 
   // Generate bin-aligned ranges and try to read from cache
-  const ranges = divideBlockRange({ fromBlock, toBlock }, binSize, binSize);
+  // const ranges = divideBlockRange({ fromBlock, toBlock }, binSize, binSize);
 
-  // Match requested bins against the blob, collecting cache misses as gaps.
-  const desiredRanges = new Map<string, BlockRange>(
-    ranges.map((range) => [keychain.entryKey(chainId, "eth_getLogs", range).metadata, range]),
-  );
+  // // Match requested bins against the blob, collecting cache misses as gaps.
+  // const desiredRanges = new Map<string, BlockRange>(
+  //   ranges.map((range) => [keychain.entryKey(chainId, "eth_getLogs", range).metadata, range]),
+  // );
+
+  const expectedMetadataRanges = new Map<string, BlockRange>();
+  const expectedDataKeys = new Set<string>();
+
+  // Generate bin-aligned ranges and populate expectation maps
+  for (const range of divideBlockRange({ fromBlock, toBlock }, binSize, binSize)) {
+    const ek = keychain.entryKey(chainId, "eth_getLogs", range);
+    expectedMetadataRanges.set(ek.metadata, range);
+    expectedDataKeys.add(ek.data);
+  }
+
+  // Determine which ranges are stale and/or missing
   const gaps: BlockRange[] = [];
 
   for await (const record of ndjson.records()) {
-    // Stop if we found all `desiredRanges` or if key's prefix indicates it's something other than metadata
-    if (desiredRanges.size === 0 || !record.key.startsWith("0:")) break;
+    // Stop if we found all ranges *or* if key's prefix indicates we've passed all metadata
+    if (expectedMetadataRanges.size === 0 || !record.key.startsWith("0:")) break;
 
-    const desired = desiredRanges.get(record.key);
-    if (!desired) continue;
-
-    desiredRanges.delete(record.key);
+    const range = expectedMetadataRanges.get(record.key);
+    if (!range) continue;
+    expectedMetadataRanges.delete(record.key);
 
     if (
       record.value.__type === "metadata" &&
-      shouldFetchRange(record.value, desired, ranges.length, invalidationStrategy)
+      shouldFetchRange(record.value, range, expectedDataKeys.size, invalidationStrategy)
     ) {
-      gaps.push(desired);
+      gaps.push(range);
     }
   }
 
-  for (const range of desiredRanges.values()) {
+  for (const range of expectedMetadataRanges.values()) {
     gaps.push(range);
   }
 
-  // Fetch missing chunks
-  // (Inner transport handles concurrency for each gap range)
+  // Start fetching all gaps. `logsDivider` and `rateLimiter` handle splitting, concurrency, and rate limits.
   if (gaps.length > 0) {
     const rangesToFetch = mergeBlockRanges(gaps);
 
@@ -166,6 +177,8 @@ export async function handleGetLogs(
   const isRequestedLog = isInBlockRange({ fromBlock, toBlock });
   const processEntry = (acc: RpcLog[], entry: Entry<CachedChunk>): RpcLog[] => {
     if (!entry.key.startsWith("1:")) return acc;
+    expectedDataKeys.delete(entry.key);
+
     const logs = entry.value as CachedLogs;
     for (const log of logs) {
       if (!isRequestedLog(log)) continue;
@@ -181,5 +194,11 @@ export async function handleGetLogs(
   // Flush pending writes (if any) + fold through all entries in a single decompression pass.
   // When there are no pending writes (no gaps, or empty responses), this degenerates to a pure read.
   const result = await ndjson.flushAndFold(processEntry, [] as RpcLog[]);
+
+  if (expectedDataKeys.size > 0) {
+    // This should not happen. If it does, data stack atomicity is broken or we got hit with bit flips.
+    console.warn(`[logsCache] eth_getLogs handler detected missing keys in data blob: ${expectedDataKeys}`)
+  }
+
   return reduce ? result : result.sort((a, b) => hexToNumber(a.blockNumber!) - hexToNumber(b.blockNumber!));
 }
