@@ -197,7 +197,7 @@ export async function handleGetLogs(
 
   if (expectedDataKeys.size > 0) {
     // This should not happen. If it does, data stack atomicity is broken or we got hit with bit flips.
-    console.warn(`[logsCache] eth_getLogs handler detected missing keys in data blob: ${expectedDataKeys}`)
+    console.warn(`[logsCache] eth_getLogs handler detected missing keys in data blob: ${expectedDataKeys}`);
   }
 
   return reduce ? result : result.sort((a, b) => hexToNumber(a.blockNumber!) - hexToNumber(b.blockNumber!));
