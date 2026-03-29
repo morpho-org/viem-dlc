@@ -1,29 +1,29 @@
 import { describe, expect, it } from "vitest";
 
+import { createCoalescingMutex } from "../../src/utils/coalescing-mutex.js";
 import { sleep } from "../../src/utils/sleep.js";
-import { createCoalescing } from "../../src/utils/with-coalescing.js";
 
 describe("createCoalescing", () => {
   it("returns an object with coalesce", () => {
-    const { coalesce } = createCoalescing();
+    const { coalesce } = createCoalescingMutex();
     expect(typeof coalesce).toBe("function");
   });
 });
 
 describe("coalesce", () => {
   it("executes handler and returns the leader result", async () => {
-    const { coalesce } = createCoalescing<string, string>();
+    const { coalesce } = createCoalescingMutex();
 
     const result = await coalesce("key", "args", async (args, collectFollowers) => {
       expect(collectFollowers()).toEqual([]);
-      return { leader: `result:${args}` };
+      return { leader: { action: "resolve", result: `result:${args}` } };
     });
 
     expect(result).toBe("result:args");
   });
 
   it("propagates leader errors", async () => {
-    const { coalesce } = createCoalescing<string, string>();
+    const { coalesce } = createCoalescingMutex();
 
     await expect(
       coalesce("key", "args", async () => {
@@ -33,23 +33,23 @@ describe("coalesce", () => {
   });
 
   it("cleans up after completion", async () => {
-    const { coalesce } = createCoalescing<string, string>();
+    const { coalesce } = createCoalescingMutex();
 
     await coalesce("key", "a", async (_args, collectFollowers) => {
       collectFollowers();
-      return { leader: "first" };
+      return { leader: { action: "resolve", result: "first" } };
     });
 
     const result = await coalesce("key", "b", async (_args, collectFollowers) => {
       collectFollowers();
-      return { leader: "second" };
+      return { leader: { action: "resolve", result: "second" } };
     });
 
     expect(result).toBe("second");
   });
 
   it("cleans up after error", async () => {
-    const { coalesce } = createCoalescing<string, string>();
+    const { coalesce } = createCoalescingMutex();
 
     await expect(
       coalesce("key", "a", async () => {
@@ -59,7 +59,7 @@ describe("coalesce", () => {
 
     const result = await coalesce("key", "b", async (_args, collectFollowers) => {
       collectFollowers();
-      return { leader: "recovered" };
+      return { leader: { action: "resolve", result: "recovered" } };
     });
 
     expect(result).toBe("recovered");
@@ -67,7 +67,7 @@ describe("coalesce", () => {
 
   describe("key isolation", () => {
     it("allows concurrent leaders on different keys", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+      const { coalesce } = createCoalescingMutex();
       const order: string[] = [];
 
       const p1 = coalesce("keyA", "a", async (_args, collectFollowers) => {
@@ -75,7 +75,7 @@ describe("coalesce", () => {
         await sleep(50);
         collectFollowers();
         order.push("A-end");
-        return { leader: "A" };
+        return { leader: { action: "resolve", result: "A" } };
       });
 
       const p2 = coalesce("keyB", "b", async (_args, collectFollowers) => {
@@ -83,7 +83,7 @@ describe("coalesce", () => {
         await sleep(20);
         collectFollowers();
         order.push("B-end");
-        return { leader: "B" };
+        return { leader: { action: "resolve", result: "B" } };
       });
 
       const [r1, r2] = await Promise.all([p1, p2]);
@@ -96,13 +96,13 @@ describe("coalesce", () => {
 
   describe("follower outcomes", () => {
     it("resolves followers individually by slot", async () => {
-      const { coalesce } = createCoalescing<number, number>();
+      const { coalesce } = createCoalescingMutex();
 
       const p1 = coalesce("key", 0, async (_args, collectFollowers) => {
         await sleep(30);
         const followers = collectFollowers();
         return {
-          leader: 1,
+          leader: { action: "resolve", result: 1 },
           followers: followers.map((f) => ({
             slot: f.slot,
             action: "resolve" as const,
@@ -126,13 +126,13 @@ describe("coalesce", () => {
     });
 
     it("rejects followers individually by slot", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+      const { coalesce } = createCoalescingMutex();
 
       const p1 = coalesce("key", "leader", async (_args, collectFollowers) => {
         await sleep(20);
         const followers = collectFollowers();
         return {
-          leader: "leader",
+          leader: { action: "resolve", result: "leader" },
           followers: followers.map((f) => ({
             slot: f.slot,
             action: "reject" as const,
@@ -158,7 +158,7 @@ describe("coalesce", () => {
     });
 
     it("passes follower args and slots through to the leader", async () => {
-      const { coalesce } = createCoalescing<{ id: string; value: number }, string>();
+      const { coalesce } = createCoalescingMutex();
 
       const p1 = coalesce("key", { id: "leader", value: 1 }, async (_args, collectFollowers) => {
         await sleep(20);
@@ -167,7 +167,7 @@ describe("coalesce", () => {
         expect(followers).toEqual([{ slot: 0, args: { id: "f1", value: 42 } }]);
 
         return {
-          leader: "leader",
+          leader: { action: "resolve", result: "leader" },
           followers: followers.map((f) => ({
             slot: f.slot,
             action: "resolve" as const,
@@ -187,11 +187,11 @@ describe("coalesce", () => {
     });
 
     it("returns an empty array when no followers arrived", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+      const { coalesce } = createCoalescingMutex();
 
       const result = await coalesce("key", "solo", async (_args, collectFollowers) => {
         expect(collectFollowers()).toEqual([]);
-        return { leader: "alone" };
+        return { leader: { action: "resolve", result: "alone" } };
       });
 
       expect(result).toBe("alone");
@@ -200,7 +200,7 @@ describe("coalesce", () => {
 
   describe("implicit deferral", () => {
     it("omitted follower slots are deferred to the next leader", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+      const { coalesce } = createCoalescingMutex();
       const order: string[] = [];
 
       const p1 = coalesce("key", "A", async (_args, collectFollowers) => {
@@ -210,7 +210,7 @@ describe("coalesce", () => {
         order.push(`L1-collected:${followers.length}`);
 
         return {
-          leader: "L1",
+          leader: { action: "resolve", result: "L1" },
           followers: [{ slot: followers[0]!.slot, action: "resolve", result: "from-L1" }],
         };
       });
@@ -223,7 +223,7 @@ describe("coalesce", () => {
         order.push("L2-start");
         expect(collectFollowers()).toEqual([]);
         order.push("L2-end");
-        return { leader: "L2-ran-as-leader" };
+        return { leader: { action: "resolve", result: "L2-ran-as-leader" } };
       });
 
       const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
@@ -235,14 +235,14 @@ describe("coalesce", () => {
     });
 
     it("deferred followers preserve FIFO order", async () => {
-      const { coalesce } = createCoalescing<number, number>();
+      const { coalesce } = createCoalescingMutex();
       const leaderOrder: number[] = [];
 
       const handler = async (args: number, collectFollowers: () => { slot: number; args: number }[]) => {
         leaderOrder.push(args);
         await sleep(20);
         collectFollowers();
-        return { leader: args };
+        return { leader: { action: "resolve" as const, result: args } };
       };
 
       const p1 = coalesce("key", 1, handler);
@@ -255,7 +255,7 @@ describe("coalesce", () => {
     });
 
     it("deferred followers stay ahead of late arrivals", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+      const { coalesce } = createCoalescingMutex();
       const order: string[] = [];
 
       const p1 = coalesce("key", "A", async (_args, collectFollowers) => {
@@ -265,7 +265,7 @@ describe("coalesce", () => {
         order.push("L1-collected");
         await sleep(30);
         order.push("L1-end");
-        return { leader: "L1" };
+        return { leader: { action: "resolve", result: "L1" } };
       });
 
       await sleep(5);
@@ -273,7 +273,7 @@ describe("coalesce", () => {
         order.push("L2-start");
         collectFollowers();
         order.push("L2-end");
-        return { leader: "L2" };
+        return { leader: { action: "resolve", result: "L2" } };
       });
 
       await sleep(25);
@@ -281,7 +281,7 @@ describe("coalesce", () => {
         order.push("L3-start");
         collectFollowers();
         order.push("L3-end");
-        return { leader: "L3" };
+        return { leader: { action: "resolve", result: "L3" } };
       });
 
       const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
@@ -295,19 +295,19 @@ describe("coalesce", () => {
 
   describe("collectFollowers", () => {
     it("may be called at most once", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+      const { coalesce } = createCoalescingMutex();
 
       const p1 = coalesce("key", "A", async (_args, collectFollowers) => {
         await sleep(20);
         const followers = collectFollowers();
         expect(followers).toHaveLength(1);
         collectFollowers();
-        return { leader: "unreachable" };
+        return { leader: { action: "resolve", result: "unreachable" } };
       });
 
       const p2 = coalesce("key", "B", async (_args, collectFollowers) => {
         expect(collectFollowers()).toEqual([]);
-        return { leader: "B-ran-as-leader" };
+        return { leader: { action: "resolve", result: "B-ran-as-leader" } };
       });
 
       const results = await Promise.allSettled([p1, p2]);
@@ -321,8 +321,8 @@ describe("coalesce", () => {
   });
 
   describe("error handling", () => {
-    it("leader error does not reject collected followers; they are deferred", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+    it("leader throw defers all collected followers", async () => {
+      const { coalesce } = createCoalescingMutex();
       const order: string[] = [];
 
       const p1 = coalesce("key", "A", async (_args, collectFollowers) => {
@@ -335,7 +335,7 @@ describe("coalesce", () => {
       const p2 = coalesce("key", "B", async (_args, collectFollowers) => {
         order.push("L2-start");
         expect(collectFollowers()).toEqual([]);
-        return { leader: "L2-ok" };
+        return { leader: { action: "resolve", result: "L2-ok" } };
       });
 
       const results = await Promise.allSettled([p1, p2]);
@@ -346,8 +346,8 @@ describe("coalesce", () => {
       expect(order).toEqual(["L1-start", "L2-start"]);
     });
 
-    it("followers deferred by leader error can later be resolved", async () => {
-      const { coalesce } = createCoalescing<number, number>();
+    it("followers deferred by leader throw can later be resolved", async () => {
+      const { coalesce } = createCoalescingMutex();
       let attempt = 0;
 
       const handler = async (args: number, collectFollowers: () => { slot: number; args: number }[]) => {
@@ -360,7 +360,7 @@ describe("coalesce", () => {
         }
 
         return {
-          leader: args,
+          leader: { action: "resolve" as const, result: args },
           followers: followers.map((f) => ({
             slot: f.slot,
             action: "resolve" as const,
@@ -369,31 +369,97 @@ describe("coalesce", () => {
         };
       };
 
-      const results = await Promise.allSettled([
-        coalesce("key", 1, handler),
-        coalesce("key", 2, handler),
-      ]);
+      const results = await Promise.allSettled([coalesce("key", 1, handler), coalesce("key", 2, handler)]);
 
       expect(results[0]).toMatchObject({ status: "rejected" });
       expect(results[1]).toEqual({ status: "fulfilled", value: 2 });
+    });
+
+    it("leader graceful reject still honors follower outcomes", async () => {
+      const { coalesce } = createCoalescingMutex();
+
+      const p1 = coalesce("key", "A", async (_args, collectFollowers) => {
+        await sleep(20);
+        const followers = collectFollowers();
+        return {
+          leader: { action: "reject", error: new Error("leader cannot serve itself") },
+          followers: followers.map((f) => ({
+            slot: f.slot,
+            action: "resolve" as const,
+            result: `served:${f.args}`,
+          })),
+        };
+      });
+
+      const p2 = coalesce("key", "B", async () => {
+        throw new Error("should not run");
+      });
+      const p3 = coalesce("key", "C", async () => {
+        throw new Error("should not run");
+      });
+
+      const results = await Promise.allSettled([p1, p2, p3]);
+
+      expect(results[0]).toMatchObject({ status: "rejected" });
+      expect((results[0] as PromiseRejectedResult).reason.message).toBe("leader cannot serve itself");
+      expect(results[1]).toEqual({ status: "fulfilled", value: "served:B" });
+      expect(results[2]).toEqual({ status: "fulfilled", value: "served:C" });
+    });
+
+    it("leader graceful reject with mixed follower outcomes and deferrals", async () => {
+      const { coalesce } = createCoalescingMutex();
+
+      const p1 = coalesce("key", "A", async (_args, collectFollowers) => {
+        await sleep(20);
+        const followers = collectFollowers();
+        // Resolve first follower, reject second, defer third
+        return {
+          leader: { action: "reject", error: new Error("leader failed gracefully") },
+          followers: [
+            { slot: followers[0]!.slot, action: "resolve", result: "resolved-B" },
+            { slot: followers[1]!.slot, action: "reject", error: new Error("rejected-C") },
+          ],
+        };
+      });
+
+      const p2 = coalesce("key", "B", async () => {
+        throw new Error("should not run");
+      });
+      const p3 = coalesce("key", "C", async () => {
+        throw new Error("should not run");
+      });
+      const p4 = coalesce("key", "D", async (_args, collectFollowers) => {
+        expect(collectFollowers()).toEqual([]);
+        return { leader: { action: "resolve", result: "D-ran-as-leader" } };
+      });
+
+      const results = await Promise.allSettled([p1, p2, p3, p4]);
+
+      expect(results[0]).toMatchObject({ status: "rejected" });
+      expect((results[0] as PromiseRejectedResult).reason.message).toBe("leader failed gracefully");
+      expect(results[1]).toEqual({ status: "fulfilled", value: "resolved-B" });
+      expect(results[2]).toMatchObject({ status: "rejected" });
+      expect((results[2] as PromiseRejectedResult).reason.message).toBe("rejected-C");
+      // D was deferred (omitted from follower outcomes) and ran as leader
+      expect(results[3]).toEqual({ status: "fulfilled", value: "D-ran-as-leader" });
     });
   });
 
   describe("validation", () => {
     it("rejects the leader for invalid follower slots and defers followers", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+      const { coalesce } = createCoalescingMutex();
 
       const p1 = coalesce("key", "A", async (_args, collectFollowers) => {
         collectFollowers();
         return {
-          leader: "unreachable",
+          leader: { action: "resolve", result: "unreachable" },
           followers: [{ slot: 1, action: "resolve", result: "bad-slot" }],
         };
       });
 
       const p2 = coalesce("key", "B", async (_args, collectFollowers) => {
         expect(collectFollowers()).toEqual([]);
-        return { leader: "B-ran-as-leader" };
+        return { leader: { action: "resolve", result: "B-ran-as-leader" } };
       });
 
       const results = await Promise.allSettled([p1, p2]);
@@ -404,13 +470,13 @@ describe("coalesce", () => {
     });
 
     it("rejects the leader for duplicate follower slots", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+      const { coalesce } = createCoalescingMutex();
 
       const p1 = coalesce("key", "A", async (_args, collectFollowers) => {
         await sleep(20);
         const followers = collectFollowers();
         return {
-          leader: "unreachable",
+          leader: { action: "resolve", result: "unreachable" },
           followers: [
             { slot: followers[0]!.slot, action: "resolve", result: "first" },
             { slot: followers[0]!.slot, action: "resolve", result: "second" },
@@ -420,7 +486,7 @@ describe("coalesce", () => {
 
       const p2 = coalesce("key", "B", async (_args, collectFollowers) => {
         expect(collectFollowers()).toEqual([]);
-        return { leader: "B-ran-as-leader" };
+        return { leader: { action: "resolve", result: "B-ran-as-leader" } };
       });
 
       const results = await Promise.allSettled([p1, p2]);
@@ -433,7 +499,7 @@ describe("coalesce", () => {
 
   describe("mutual exclusion", () => {
     it("serializes leaders on the same key", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+      const { coalesce } = createCoalescingMutex();
       const order: string[] = [];
 
       const handler = async (args: string, collectFollowers: () => { slot: number; args: string }[]) => {
@@ -441,7 +507,7 @@ describe("coalesce", () => {
         await sleep(20);
         collectFollowers();
         order.push(`${args}-end`);
-        return { leader: args };
+        return { leader: { action: "resolve" as const, result: args } };
       };
 
       const p1 = coalesce("key", "A", handler);
@@ -454,7 +520,7 @@ describe("coalesce", () => {
     });
 
     it("allows concurrent leaders on different keys", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+      const { coalesce } = createCoalescingMutex();
       const order: string[] = [];
 
       const p1 = coalesce("x", "A", async (args, collectFollowers) => {
@@ -462,7 +528,7 @@ describe("coalesce", () => {
         await sleep(40);
         collectFollowers();
         order.push(`${args}-end`);
-        return { leader: args };
+        return { leader: { action: "resolve", result: args } };
       });
 
       const p2 = coalesce("y", "B", async (args, collectFollowers) => {
@@ -470,7 +536,7 @@ describe("coalesce", () => {
         await sleep(10);
         collectFollowers();
         order.push(`${args}-end`);
-        return { leader: args };
+        return { leader: { action: "resolve", result: args } };
       });
 
       await Promise.all([p1, p2]);
@@ -481,24 +547,24 @@ describe("coalesce", () => {
 
   describe("edge cases", () => {
     it("handles a single operation", async () => {
-      const { coalesce } = createCoalescing<string, number>();
+      const { coalesce } = createCoalescingMutex();
 
       const result = await coalesce("key", "x", async (_args, collectFollowers) => {
         expect(collectFollowers()).toEqual([]);
-        return { leader: 42 };
+        return { leader: { action: "resolve", result: 42 } };
       });
 
       expect(result).toBe(42);
     });
 
     it("handles rapid sequential operations", async () => {
-      const { coalesce } = createCoalescing<number, number>();
+      const { coalesce } = createCoalescingMutex();
       const results: number[] = [];
 
       for (let i = 1; i <= 5; i++) {
         const result = await coalesce("key", i, async (args, collectFollowers) => {
           collectFollowers();
-          return { leader: args * 2 };
+          return { leader: { action: "resolve", result: args * 2 } };
         });
         results.push(result);
       }
@@ -507,19 +573,19 @@ describe("coalesce", () => {
     });
 
     it("handler that never calls collectFollowers leaves followers queued", async () => {
-      const { coalesce } = createCoalescing<string, string>();
+      const { coalesce } = createCoalescingMutex();
       const order: string[] = [];
 
       const p1 = coalesce("key", "A", async () => {
         order.push("L1");
         await sleep(20);
-        return { leader: "L1" };
+        return { leader: { action: "resolve", result: "L1" } };
       });
 
       const p2 = coalesce("key", "B", async (_args, collectFollowers) => {
         order.push("L2");
         expect(collectFollowers()).toEqual([]);
-        return { leader: "L2" };
+        return { leader: { action: "resolve", result: "L2" } };
       });
 
       const [r1, r2] = await Promise.all([p1, p2]);
@@ -530,13 +596,13 @@ describe("coalesce", () => {
     });
 
     it("resolves followers with undefined", async () => {
-      const { coalesce } = createCoalescing<string, undefined>();
+      const { coalesce } = createCoalescingMutex();
 
       const p1 = coalesce("key", "leader", async (_args, collectFollowers) => {
         await sleep(10);
         const followers = collectFollowers();
         return {
-          leader: undefined,
+          leader: { action: "resolve", result: undefined },
           followers: followers.map((f) => ({ slot: f.slot, action: "resolve" as const, result: undefined })),
         };
       });

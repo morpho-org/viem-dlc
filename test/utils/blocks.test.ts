@@ -9,19 +9,19 @@ import {
 
 describe("resolveBlockNumber", () => {
   it("returns bigint values unchanged", () => {
-    expect(resolveBlockNumber(100n)).toBe(100n);
-    expect(resolveBlockNumber(0n)).toBe(0n);
-    expect(resolveBlockNumber(999999999999n)).toBe(999999999999n);
+    expect(resolveBlockNumber(100n, 0n)).toBe(100n);
+    expect(resolveBlockNumber(0n, 0n)).toBe(0n);
+    expect(resolveBlockNumber(999999999999n, 0n)).toBe(999999999999n);
   });
 
   it("converts hex strings to bigint", () => {
-    expect(resolveBlockNumber("0x64")).toBe(100n);
-    expect(resolveBlockNumber("0x0")).toBe(0n);
-    expect(resolveBlockNumber("0xf4240")).toBe(1000000n);
+    expect(resolveBlockNumber("0x64", 0n)).toBe(100n);
+    expect(resolveBlockNumber("0x0", 0n)).toBe(0n);
+    expect(resolveBlockNumber("0xf4240", 0n)).toBe(1000000n);
   });
 
   it('resolves "earliest" to 0n', () => {
-    expect(resolveBlockNumber("earliest")).toBe(0n);
+    expect(resolveBlockNumber("earliest", 0n)).toBe(0n);
     expect(resolveBlockNumber("earliest", 12345n)).toBe(0n);
   });
 
@@ -30,14 +30,10 @@ describe("resolveBlockNumber", () => {
     expect(resolveBlockNumber("latest", 0n)).toBe(0n);
   });
 
-  it('resolves "latest" to 0n when no latest provided', () => {
-    expect(resolveBlockNumber("latest")).toBe(0n);
-  });
-
   it("throws for unsupported block tags", () => {
-    expect(() => resolveBlockNumber("safe")).toThrow("unsupported block tag");
-    expect(() => resolveBlockNumber("finalized")).toThrow("unsupported block tag");
-    expect(() => resolveBlockNumber("pending")).toThrow("unsupported block tag");
+    expect(() => resolveBlockNumber("safe", 0n)).toThrow("unsupported block tag");
+    expect(() => resolveBlockNumber("finalized", 0n)).toThrow("unsupported block tag");
+    expect(() => resolveBlockNumber("pending", 0n)).toThrow("unsupported block tag");
   });
 });
 

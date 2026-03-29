@@ -1,13 +1,13 @@
 import { hexToBigInt, isHex, type RpcLog } from "viem";
 import type { RequestErrorType } from "viem/utils";
 
-import type { BlockNumberish, BlockRange } from "../types.js";
+import type { BlockNumberish, BlockRange, EthGetLogsHashlessFilter } from "../types.js";
 
 import { max, min } from "./math.js";
 import { pick } from "./pick.js";
 
 /** Resolves a `BlockNumberish` value to a `bigint`. */
-export function resolveBlockNumber(b: BlockNumberish, latest = 0n): bigint {
+export function resolveBlockNumber(b: BlockNumberish, latest: bigint): bigint {
   if (typeof b === "bigint") return b;
 
   if (isHex(b)) return hexToBigInt(b);
@@ -23,6 +23,13 @@ export function resolveBlockNumber(b: BlockNumberish, latest = 0n): bigint {
     default:
       throw new Error(`Attempted to resolve unsupported block tag: '${b}'`);
   }
+}
+
+export function extractRangeFromFilter(filter: EthGetLogsHashlessFilter, latest: bigint): BlockRange {
+  return {
+    fromBlock: resolveBlockNumber(filter.fromBlock ?? "earliest", latest),
+    toBlock: min(resolveBlockNumber(filter.toBlock ?? "latest", latest), latest),
+  };
 }
 
 /** Returns a filter function that keeps logs in the range [fromBlock, toBlock]. */
