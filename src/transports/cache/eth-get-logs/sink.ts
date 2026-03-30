@@ -59,8 +59,8 @@ export function createSink({ chainId, binSize, ndjson }: SinkConfig): OnLogsResp
     while (binStart <= toBlock) {
       const binEnd = binStart + binSizeBigInt - 1n;
 
-      const range = { fromBlock: binStart, toBlock: binEnd };
-      const entryKey = keychain.entryKey(chainId, "eth_getLogs", range);
+      const alignedRange = { fromBlock: binStart, toBlock: binEnd };
+      const entryKey = keychain.entryKey(chainId, "eth_getLogs", alignedRange);
 
       // Get or create accumulator for this bin
       let acc = accumulators.get(entryKey.data);
@@ -70,13 +70,13 @@ export function createSink({ chainId, binSize, ndjson }: SinkConfig): OnLogsResp
           fetchedAt,
           fetchedAtBlock,
           coveredRanges: [],
-          alignedRange: { fromBlock: binStart, toBlock: binEnd },
+          alignedRange,
         };
         accumulators.set(entryKey.data, acc);
       }
 
       // Add logs that fall within this bin's overlap
-      const binLogs = logs.filter(isInBlockRange({ fromBlock: binStart, toBlock: binEnd }));
+      const binLogs = logs.filter(isInBlockRange(alignedRange));
       for (const log of binLogs) acc.logs.push(log); // NOTE: avoiding `...binLogs` spread due to engine arg limits
       acc.coveredRanges.push({
         fromBlock: max(binStart, fromBlock),
@@ -85,8 +85,11 @@ export function createSink({ chainId, binSize, ndjson }: SinkConfig): OnLogsResp
       acc.fetchedAt = Math.max(acc.fetchedAt, fetchedAt);
       acc.fetchedAtBlock = max(acc.fetchedAtBlock, fetchedAtBlock);
 
-      // Check if bin is complete (covered ranges span the full bin)
-      if (isBinComplete(acc.coveredRanges, binStart, binEnd)) {
+      // A bin is "complete" when covered ranges span [binStart, effectiveBinEnd].
+      // For the last bin at the chain tip, the aligned boundary may exceed the
+      // latest block, so we cap at `fetchedAtBlock`.
+      const effectiveBinEnd = min(binEnd, acc.fetchedAtBlock);
+      if (isBinComplete(acc.coveredRanges, binStart, effectiveBinEnd)) {
         // Sort logs within the bin for guaranteed ordering
         acc.logs.sort((a, b) => {
           const blockDiff = hexToNumber(a.blockNumber!) - hexToNumber(b.blockNumber!);
@@ -102,8 +105,7 @@ export function createSink({ chainId, binSize, ndjson }: SinkConfig): OnLogsResp
               fetchedAt: acc.fetchedAt,
               fetchedAtBlock: acc.fetchedAtBlock,
               alignedRange: acc.alignedRange,
-              // NOTE: Currently we only store completed bins, so fetchedRange === alignedRange
-              fetchedRange: acc.alignedRange,
+              fetchedRange: { fromBlock: binStart, toBlock: effectiveBinEnd },
             } satisfies CachedChunk,
           },
           {

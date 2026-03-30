@@ -97,7 +97,7 @@ async function populateStore(
 async function collectRecords(ndjson: LazyNdjsonMap<CachedChunk>) {
   const records: Entry<CachedChunk>[] = [];
   for await (const record of ndjson.records()) {
-    records.push(record);
+    records.push({ key: record.key, value: record.value });
   }
   return records;
 }

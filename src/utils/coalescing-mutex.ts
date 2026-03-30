@@ -34,9 +34,10 @@ function prepend<T>(target: T[], items: T[]) {
 type QueuedCall = {
   // biome-ignore lint/suspicious/noExplicitAny: queue holds heterogeneous call types
   args: any;
-  // biome-ignore lint/suspicious/noExplicitAny: queue holds heterogeneous call types
   handler: (
+    // biome-ignore lint/suspicious/noExplicitAny: queue holds heterogeneous call types
     args: any,
+    // biome-ignore lint/suspicious/noExplicitAny: queue holds heterogeneous call types
     collectFollowers: () => PendingFollower<any>[],
   ) => Promise<{
     // biome-ignore lint/suspicious/noExplicitAny: queue holds heterogeneous call types

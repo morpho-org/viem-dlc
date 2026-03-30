@@ -1,7 +1,7 @@
 import { hexToBigInt, type RpcLog, toHex } from "viem";
 
 import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
-import type { Entry } from "../../../internal/ndjson-map.js";
+import type { LazyEntry } from "../../../internal/ndjson-map.js";
 import type { BlockRange, EIP1193Parameters } from "../../../types.js";
 import { divideBlockRange, extractRangeFromFilter, isInBlockRange, mergeBlockRanges } from "../../../utils/blocks.js";
 import { parse, stringify } from "../../../utils/json.js";
@@ -19,8 +19,10 @@ function shouldFetchRange(
   totalChunks: number,
   invalidationStrategy: InvalidationStrategy,
 ) {
-  // Check if cached data covers the fetch range.
-  // NOTE: Currently this is extra defensive since the logs sink only writes complete bins.
+  // Check if cached data covers the desired range.
+  // `desired` is aligned, so `cached.alignedRange` should always pass this check,
+  // but `cached.fetchedRange` may not if this bin happened to be at chain tip last time
+  // it was updated.
   if (cached.fetchedRange.toBlock < desired.toBlock) {
     return true;
   }
@@ -66,6 +68,16 @@ export async function handleEthGetLogs(
     // TODO: handle the above + case where they're above latest, maybe throw errors, both here and in divider.
     // TODO: also maybe update divideBlockRange to allow only aligning fromBlock to help avoid this in divider
 
+    const expectedMetadataRanges = new Map<string, BlockRange>();
+    const expectedDataKeys = new Set<string>();
+
+    // Generate bin-aligned ranges and populate expectation maps
+    for (const range of divideBlockRange(requestedRange, binSize, binSize)) {
+      const ek = keychain.entryKey(chainId, "eth_getLogs", range);
+      expectedMetadataRanges.set(ek.metadata, range);
+      expectedDataKeys.add(ek.data);
+    }
+
     // Create LazyNdjsonMap streaming wrapper around data from the store. Thanks to mutex, we own buffers here.
     let buffers = (await preflight[1]) ?? [];
     const ndjson = new LazyNdjsonMap<CachedChunk>(
@@ -79,16 +91,6 @@ export async function handleEthGetLogs(
         },
       },
     );
-
-    const expectedMetadataRanges = new Map<string, BlockRange>();
-    const expectedDataKeys = new Set<string>();
-
-    // Generate bin-aligned ranges and populate expectation maps
-    for (const range of divideBlockRange(requestedRange, binSize, binSize)) {
-      const ek = keychain.entryKey(chainId, "eth_getLogs", range);
-      expectedMetadataRanges.set(ek.metadata, range);
-      expectedDataKeys.add(ek.data);
-    }
 
     // Determine which ranges are stale and/or missing
     const gaps: BlockRange[] = [];
@@ -175,9 +177,12 @@ export async function handleEthGetLogs(
 
     // Single decompression pass applies all reducers.
     const isRequestedLog = isInBlockRange(requestedRange);
-    const processEntry = (accs: RpcLog[][], entry: Entry<CachedChunk>): RpcLog[][] => {
+    const searchPattern = options?.search ? new RegExp(options.search, "i") : undefined;
+    const processEntry = (accs: RpcLog[][], entry: LazyEntry<CachedChunk>): RpcLog[][] => {
       if (!entry.key.startsWith("1:")) return accs;
       expectedDataKeys.delete(entry.key);
+
+      if (searchPattern && !searchPattern.test(entry.rawValue)) return accs;
 
       const logs = entry.value as CachedLogs;
       for (const log of logs) {
@@ -205,7 +210,7 @@ export async function handleEthGetLogs(
     );
 
     if (expectedDataKeys.size > 0) {
-      console.warn(`[cache] eth_getLogs handler detected missing keys in data blob: ${expectedDataKeys}`);
+      console.warn(`[cache] eth_getLogs handler detected missing keys in data blob: ${[...expectedDataKeys]}`);
     }
 
     const outcomes = participants.map((p, i) =>

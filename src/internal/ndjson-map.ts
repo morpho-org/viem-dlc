@@ -2,6 +2,30 @@ import { CompressedLinesBlob, type Slot } from "./compressed-lines-blob.js";
 
 export type Entry<T, K extends string = string> = { key: K; value: T };
 
+/**
+ * Entry with deferred value parsing. The raw JSON value string is available
+ * immediately for cheap pre-filtering (e.g. `.includes()` / regex); the
+ * parsed value is materialized lazily on first `.value` access.
+ */
+export type LazyEntry<T, K extends string = string> = { readonly key: K; readonly rawValue: string; readonly value: T };
+
+/** Construct a {@link LazyEntry} whose `value` is parsed on first access. */
+export function lazyEntry<T, K extends string>(key: K, rawValue: string, parse: (raw: string) => T): LazyEntry<T, K> {
+  let cached: T | undefined;
+  let done = false;
+  return {
+    key,
+    rawValue,
+    get value(): T {
+      if (!done) {
+        cached = parse(rawValue);
+        done = true;
+      }
+      return cached!;
+    },
+  };
+}
+
 /** Codec for the value portion of each NDJSON entry. The class handles key serialization. */
 export type Codec<T> = {
   fromJson: (s: string) => T;

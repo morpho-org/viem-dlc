@@ -34,7 +34,7 @@ function abortError() {
 async function collectRecords<T, K extends string>(map: LazyNdjsonMap<T, K>) {
   const records: Entry<T, K>[] = [];
   for await (const record of map.records()) {
-    records.push(record);
+    records.push({ key: record.key, value: record.value });
   }
   return records;
 }
