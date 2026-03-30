@@ -6,7 +6,7 @@ import type { BlockRange, EIP1193Parameters } from "../../../types.js";
 import { divideBlockRange, extractRangeFromFilter, isInBlockRange, mergeBlockRanges } from "../../../utils/blocks.js";
 import { parse, stringify } from "../../../utils/json.js";
 import { keychain } from "../keychain.js";
-import type { CacheRpcSchema } from "../schema.js";
+import type { CacheSchema } from "../schema.js";
 import type { HandlerContext, InvalidationStrategy } from "../types.js";
 
 import { createSink } from "./sink.js";
@@ -39,7 +39,7 @@ function shouldFetchRange(
 
 export async function handleEthGetLogs(
   { binSize, invalidationStrategy, store, coalesce, requestFn, chainId }: HandlerContext,
-  req: EIP1193Parameters<CacheRpcSchema, "eth_getLogs">,
+  req: EIP1193Parameters<CacheSchema, "eth_getLogs">,
 ): Promise<RpcLog[]> {
   const blobKey = keychain.blobKey(chainId, req);
 

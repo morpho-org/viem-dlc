@@ -4,7 +4,7 @@ import type { BlockRange, EIP1193Parameters } from "../../types.js";
 import { cyrb64Hash } from "../../utils/hash.js";
 import { pick } from "../../utils/pick.js";
 
-import type { CachedMethod, CacheRpcSchema } from "./schema.js";
+import type { CachedMethod, CacheSchema } from "./schema.js";
 
 /**
  * Creates a keychain with proper typing for the `Schema` and `Methods`.
@@ -46,7 +46,7 @@ function hash(obj: unknown) {
   return cyrb64Hash(JSON.stringify(obj));
 }
 
-export const keychain = createKeychain<CacheRpcSchema, CachedMethod>()({
+export const keychain = createKeychain<CacheSchema, CachedMethod>()({
   eth_call: {
     blobKey(chainId, req) {
       const custom = req.params[4]?.blobKey;

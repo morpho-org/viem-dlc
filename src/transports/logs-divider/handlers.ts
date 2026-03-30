@@ -11,7 +11,7 @@ import {
 import { min } from "../../utils/math.js";
 import type { RateLimiterSchema } from "../rate-limiter/schema.js";
 
-import type { LogsDividerRpcSchema } from "./schema.js";
+import type { LogsDividerSchema } from "./schema.js";
 import type { LogsDividerConfig, OnLogsResponse } from "./types.js";
 
 /** Internal context passed through the processing pipeline */
@@ -90,7 +90,7 @@ async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange, prior
  */
 export async function handleGetLogs(
   requestFn: EIP1193RequestFn<RateLimiterSchema>,
-  [filter, ...params]: RpcSignature<LogsDividerRpcSchema, "eth_getLogs">["Parameters"],
+  [filter, ...params]: RpcSignature<LogsDividerSchema, "eth_getLogs">["Parameters"],
   config: LogsDividerConfig,
 ): Promise<RpcLog[]> {
   // blockHash queries cannot be divided - pass through

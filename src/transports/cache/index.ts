@@ -3,13 +3,14 @@ import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } f
 import type { EIP1193Parameters } from "../../types.js";
 import { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
 import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
+import type { LogsEnricherConfig } from "../logs-enricher/types.js";
 import type { LogsSieveConfig } from "../logs-sieve/types.js";
 import type { RateLimiterConfig } from "../rate-limiter/index.js";
 
 import { handleEthCall } from "./eth-call/handler.js";
 import { handleEthGetLogs } from "./eth-get-logs/handler.js";
 import { normalize } from "./normalization.js";
-import type { CachedMethod, CacheRpcSchema } from "./schema.js";
+import type { CachedMethod, CacheSchema } from "./schema.js";
 import type { CacheConfig, HandlerContext, InvalidationStrategy } from "./types.js";
 
 export type * from "./schema.js";
@@ -76,7 +77,9 @@ export function createSimpleInvalidation(
 /**
  * Creates an all-in-one caching transport for eth_getLogs calls.
  *
- * Internally composes three layers:
+ * Internally composes five layers:
+ * - **logsSieve**: (Optionally) filters out extra-large spam logs before they're cached
+ * - **logsEnricher**: (Optionally) ensures all logs have extra data, like `blockTimestamp`
  * - **rateLimiter**: Controls RPC request rate (token bucket + concurrency limit + priority queue)
  * - **logsDivider**: Splits large requests, retries with range halving on failure
  * - **cache**: Reads from cache, fetches gaps, writes complete bins via accumulator
@@ -109,10 +112,11 @@ export function cache(
     CacheConfig,
     Omit<LogsDividerConfig, "alignTo">,
     RateLimiterConfig,
+    LogsEnricherConfig,
     LogsSieveConfig,
   ],
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
-): Transport<"custom", Record<string, any>, EIP1193RequestFn<CacheRpcSchema>> {
+): Transport<"custom", Record<string, any>, EIP1193RequestFn<CacheSchema>> {
   return (params) => {
     if (params.chain === undefined) {
       throw new Error("You must pass a chain to the cache transport.");
@@ -133,7 +137,7 @@ export function cache(
       coalesce,
     };
 
-    const request = (req: EIP1193Parameters<CacheRpcSchema>) => {
+    const request = (req: EIP1193Parameters<CacheSchema>) => {
       req = normalize(req);
       // TODO: compare args against allowlist
 

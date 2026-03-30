@@ -4,7 +4,7 @@ import type { EIP1193Parameters, SafelyExtendRpcSchema } from "../../types.js";
 
 export type EthGetLogsReduce = (logs: RpcLog[], log: RpcLog) => RpcLog[];
 
-export type CacheRpcSchema = SafelyExtendRpcSchema<
+export type CacheSchema = SafelyExtendRpcSchema<
   Base,
   [
     {
@@ -22,12 +22,14 @@ export type CacheRpcSchema = SafelyExtendRpcSchema<
        *   from a full-batch call. This is acceptable for typical view-function workloads.
        */
       Method: "eth_call";
-      AdditionalParameters: [{
-        /** Specifies which entry of the `Store` holds these calls. Blob is extended by new results, not replaced. */
-        blobKey: string;
-        /** Maximum age (ms) of a cached entry before it is considered stale and re-fetched. */
-        ttl: number;
-      }];
+      AdditionalParameters: [
+        {
+          /** Specifies which entry of the `Store` holds these calls. Blob is extended by new results, not replaced. */
+          blobKey: string;
+          /** Maximum age (ms) of a cached entry before it is considered stale and re-fetched. */
+          ttl: number;
+        },
+      ];
     },
     {
       Method: "eth_getLogs";
@@ -41,9 +43,6 @@ export type CacheRpcSchema = SafelyExtendRpcSchema<
   ]
 >;
 
-export const cachedMethods = [
-  "eth_call",
-  "eth_getLogs",
-] as const satisfies EIP1193Parameters<CacheRpcSchema>["method"][];
+export const cachedMethods = ["eth_call", "eth_getLogs"] as const satisfies EIP1193Parameters<CacheSchema>["method"][];
 
 export type CachedMethod = (typeof cachedMethods)[number];

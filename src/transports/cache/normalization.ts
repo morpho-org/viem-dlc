@@ -5,7 +5,7 @@ import { deepTransform, deepTransformOptions as dt } from "../../utils/objects.j
 import { pick } from "../../utils/pick.js";
 import type { Tuple } from "../../utils/tuples.js";
 
-import type { CachedMethod, CacheRpcSchema } from "./schema.js";
+import type { CachedMethod, CacheSchema } from "./schema.js";
 
 /*//////////////////////////////////////////////////////////////
                     METHOD-SPECIFIC HELPERS
@@ -102,7 +102,7 @@ function normalizeTuple<const T extends Tuple>(tuple: T, normalizers: TupleNorma
 //////////////////////////////////////////////////////////////*/
 
 /** Normalizes EIP1193 request parameters; should be called before request deduplication. */
-export function normalize(req: EIP1193Parameters<CacheRpcSchema>) {
+export function normalize(req: EIP1193Parameters<CacheSchema>) {
   req.params = deepTransform(req.params, { ...dt.sortKeys, ...dt.lowercaseHex, ...dt.deleteUndefined });
 
   switch (req.method) {

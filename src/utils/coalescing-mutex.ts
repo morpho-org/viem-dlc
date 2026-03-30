@@ -9,11 +9,9 @@ export type PendingFollower<TArgs> = {
  * - `"reject"` — reject the participant's promise with `error`
  * - For followers, omitting a slot defers that follower to the next leader cycle.
  */
-export type Outcome<TResult> =
-  | { action: "resolve"; result: TResult }
-  | { action: "reject"; error: unknown };
+export type Outcome<TResult> = { action: "resolve"; result: TResult } | { action: "reject"; error: unknown };
 
-export type FollowerOutcome<TResult> = Outcome<TResult> & { slot: number }
+export type FollowerOutcome<TResult> = Outcome<TResult> & { slot: number };
 
 /** Creates a Promise alongside its externalized `resolve` and `reject` handles. */
 function deferred<T>() {
@@ -37,7 +35,10 @@ type QueuedCall = {
   // biome-ignore lint/suspicious/noExplicitAny: queue holds heterogeneous call types
   args: any;
   // biome-ignore lint/suspicious/noExplicitAny: queue holds heterogeneous call types
-  handler: (args: any, collectFollowers: () => PendingFollower<any>[]) => Promise<{
+  handler: (
+    args: any,
+    collectFollowers: () => PendingFollower<any>[],
+  ) => Promise<{
     // biome-ignore lint/suspicious/noExplicitAny: queue holds heterogeneous call types
     leader: Outcome<any>;
     // biome-ignore lint/suspicious/noExplicitAny: queue holds heterogeneous call types

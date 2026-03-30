@@ -2,11 +2,13 @@ import type { PublicRpcSchema, Transport } from "viem";
 import { custom, type EIP1193RequestFn } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
+import { logsEnricher } from "../logs-enricher/index.js";
+import type { LogsEnricherConfig } from "../logs-enricher/types.js";
 import { type LogsSieveConfig, logsSieve } from "../logs-sieve/index.js";
 import { type RateLimiterConfig, rateLimiter } from "../rate-limiter/index.js";
 
 import { handleGetLogs } from "./handlers.js";
-import type { LogsDividerRpcSchema } from "./schema.js";
+import type { LogsDividerSchema } from "./schema.js";
 import type { LogsDividerConfig } from "./types.js";
 
 export type * from "./schema.js";
@@ -55,17 +57,24 @@ export type * from "./types.js";
  */
 export function logsDivider(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  [logsDividerConfig, rateLimiterConfig, logsSieveConfig]: [LogsDividerConfig, RateLimiterConfig, LogsSieveConfig],
+  [logsDividerConfig, rateLimiterConfig, logsEnricherConfig, logsSieveConfig]: [
+    LogsDividerConfig,
+    RateLimiterConfig,
+    LogsEnricherConfig,
+    LogsSieveConfig,
+  ],
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
-): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsDividerRpcSchema>> {
+): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsDividerSchema>> {
   if (Number.isNaN(logsDividerConfig.maxBlockRange) || logsDividerConfig.maxBlockRange < 1) {
     throw new Error(`[logsDivider] maxBlockRange must be >= 1 (got ${logsDividerConfig.maxBlockRange})`);
   }
 
   return (params) => {
-    const transport = rateLimiter(logsSieve(baseTransportFn, [logsSieveConfig]), [rateLimiterConfig])(params);
+    const transport = rateLimiter(logsEnricher(logsSieve(baseTransportFn, [logsSieveConfig]), [logsEnricherConfig]), [
+      rateLimiterConfig,
+    ])(params);
 
-    const request = (args: EIP1193Parameters<LogsDividerRpcSchema>) => {
+    const request = (args: EIP1193Parameters<LogsDividerSchema>) => {
       if (args.method !== "eth_getLogs") {
         return transport.request(args, { dedupe: true });
       }

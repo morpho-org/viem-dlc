@@ -5,7 +5,7 @@ import type { EIP1193Parameters } from "../../../types.js";
 import { cyrb64Hash } from "../../../utils/hash.js";
 import { parse, stringify } from "../../../utils/json.js";
 import { keychain } from "../keychain.js";
-import type { CacheRpcSchema } from "../schema.js";
+import type { CacheSchema } from "../schema.js";
 import type { HandlerContext } from "../types.js";
 
 import {
@@ -20,7 +20,7 @@ import type { CachedEthCallEntry } from "./types.js";
 
 export async function handleEthCall(
   { store, coalesce, requestFn, chainId }: HandlerContext,
-  req: EIP1193Parameters<CacheRpcSchema, "eth_call">,
+  req: EIP1193Parameters<CacheSchema, "eth_call">,
 ): Promise<Hex> {
   const blobKey = keychain.blobKey(chainId, req);
   if (!blobKey) {

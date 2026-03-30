@@ -97,6 +97,20 @@ const logs = await client.request({
 })
 ```
 
+### `logsEnricher`
+
+Enriches `eth_getLogs` responses with data that standard RPCs omit. Currently supports
+populating `blockTimestamp` by fetching block headers.
+
+```ts
+import { createPublicClient, http } from 'viem'
+import { logsEnricher } from '@morpho-org/viem-dlc/transports'
+
+const transport = logsEnricher(http(rpcUrl), [{ blockTimestamp: true }])
+
+const client = createPublicClient({ transport })
+```
+
 ### `logsSieve`
 
 Filters `eth_getLogs` responses by estimated UTF-8 payload size. Any `RpcLog` whose serialized

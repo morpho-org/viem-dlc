@@ -5,7 +5,7 @@ import type { RateLimiterSchema as Base } from "../rate-limiter/schema.js";
 
 import type { OnLogsResponse } from "./types.js";
 
-export type LogsDividerRpcSchema = SafelyExtendRpcSchema<
+export type LogsDividerSchema = SafelyExtendRpcSchema<
   Base,
   [
     {
