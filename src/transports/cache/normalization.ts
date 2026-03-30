@@ -22,6 +22,7 @@ const EthGetLogs = {
     x: T[] | T | Replacement,
     replacement: Replacement,
     transform?: (_: T) => T,
+    sort?: (a: T, b: T) => number,
   ): T[] | T | Replacement {
     if (Array.isArray(x)) {
       switch (x.length) {
@@ -29,8 +30,10 @@ const EthGetLogs = {
           return replacement;
         case 1:
           return transform ? transform(x[0]) : x[0];
-        default:
-          return transform ? x.map(transform) : x;
+        default: {
+          const normalized = transform ? x.map(transform) : [...x];
+          return sort ? normalized.sort(sort) : normalized;
+        }
       }
     }
     return x && transform ? transform(x) : x;
@@ -39,19 +42,31 @@ const EthGetLogs = {
   // [] → undefined
   // 0xABC → 0xabc
   // [0xABC] → 0xabc
-  // [0xABC, ...] → [0xabc, ...]
+  // [0xDEF, 0xABC] → [0xabc, 0xdef]
   normalizeFilterAddresses(address: Address[] | Address | undefined) {
-    return EthGetLogs.normalizeFilterArray(address, undefined, (x) => x.toLowerCase() as Address);
+    return EthGetLogs.normalizeFilterArray(
+      address,
+      undefined,
+      (x) => x.toLowerCase() as Address,
+      (a, b) => a.localeCompare(b),
+    );
   },
 
   // [[], ...] → [null, ...]
   // [0xABC, ...] → [0xabc, ...]
   // [[0xABC], ...] → [0xabc, ...]
-  // [[0xABC, ...], ...] → [[0xabc, ...], ...]
+  // [[0xDEF, 0xABC], ...] → [[0xabc, 0xdef], ...]
   // [] → undefined
   // [null, null, null, null] → undefined
   normalizeFilterTopics(topics: (Hex[] | Hex | null)[] | undefined) {
-    topics = topics?.map((topic) => EthGetLogs.normalizeFilterArray(topic, null, (x) => x.toLowerCase() as Hex));
+    topics = topics?.map((topic) =>
+      EthGetLogs.normalizeFilterArray(
+        topic,
+        null,
+        (x) => x.toLowerCase() as Hex,
+        (a, b) => a.localeCompare(b),
+      ),
+    );
     return topics?.every((topic) => topic === null) ? undefined : topics;
   },
 };

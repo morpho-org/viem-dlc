@@ -148,8 +148,8 @@ Key-value stores implementing the `Store` interface:
 
 ```ts
 interface Store {
-  get(key: string): MaybePromise<string | null>
-  set(key: string, value: string): MaybePromise<void>
+  get(key: string): MaybePromise<Buffer[] | null>
+  set(key: string, value: Buffer[]): MaybePromise<void>
   delete(key: string): MaybePromise<void>
   flush(): MaybePromise<void>
 }
@@ -161,7 +161,7 @@ interface Store {
 | `MemoryStore` | `@morpho-org/viem-dlc/stores` | Simple in-memory Map (prefer `LruStore`) |
 | `HierarchicalStore` | `@morpho-org/viem-dlc/stores` | Layered stores — reads fall through, writes fan out |
 | `DebouncedStore` | `@morpho-org/viem-dlc/stores` | Batches writes with debounce + max staleness timeout |
-| `CompressedStore` | `@morpho-org/viem-dlc/stores/compressed` | Transparent gzip compression (Node/Bun only) |
+| `CompressedStore` | `@morpho-org/viem-dlc/stores/compressed` | Transparent brotli compression (Node/Bun only) |
 | `UpstashStore` | `@morpho-org/viem-dlc/stores/upstash` | Upstash Redis with automatic value sharding and atomic writes |
 
 ### Composing stores
@@ -172,8 +172,7 @@ Stores are designed to be layered. For example, `createOptimizedUpstashStore` (e
 ```
 LruStore (fast, in-process)
   └─ DebouncedStore (coalesces writes)
-       └─ CompressedStore (reduces payload)
-            └─ UpstashStore (durable, remote)
+       └─ UpstashStore (durable, remote)
 ```
 
 ```ts
@@ -210,7 +209,7 @@ Exported from `@morpho-org/viem-dlc/utils`:
 - `divideBlockRange` / `mergeBlockRanges` / `halveBlockRange` — block range manipulation
 - `resolveBlockNumber` — convert block tags to numbers
 - `isErrorCausedByBlockRange` — detect RPC "block range too large" errors
+- `createCoalescingMutex` — per-resource leader/follower batching
 - `createTokenBucket` / `createRateLimit` — rate limiting primitives
-- `createKeyedMutex` / `withKeyedMutex` — per-key concurrency control
 - `cyrb64Hash` — fast string hashing
 - `stringify` / `parse` — JSON serialization with bigint support

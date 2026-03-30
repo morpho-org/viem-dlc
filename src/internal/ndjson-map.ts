@@ -69,7 +69,7 @@ export function sortEntriesByRawKey<K extends string, V>(
 }
 
 /**
- * Streaming NDJSON container backed by a brotli-compressed buffer (base64-encoded).
+ * Streaming NDJSON container backed by a compressed line buffer.
  *
  * Each line is `{"key":<json-key>,"value":<codec-value>}`. The class owns the
  * envelope (key serialization via `JSON.stringify`); the codec handles only the
@@ -129,9 +129,10 @@ export class NdjsonMap<T, K extends string = string> {
    * Maintains lexicographic sorted order by raw JSON key: pending entries are
    * sorted, then interleaved with existing (already-sorted) lines during
    * rewrite. Entries whose keys match an upsert are replaced in-place; new
-   * keys are inserted at their sorted position. Always outputs brotli q=4.
+   * keys are inserted at their sorted position. Rewrites use the current
+   * {@link CompressedLinesBlob} codec and settings.
    *
-   * Mutates internal state — call {@link toBase64} afterwards to retrieve the result.
+   * Mutates the underlying slot via {@link CompressedLinesBlob}.
    * Callers must not overlap `upsert()` calls on the same instance; concurrent
    * upserts are unsafe and may lose writes.
    *
