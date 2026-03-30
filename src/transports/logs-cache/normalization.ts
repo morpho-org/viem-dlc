@@ -2,6 +2,7 @@ import type { Address, Hex } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
 import { deepTransform, deepTransformOptions as dt } from "../../utils/objects.js";
+import { pick } from "../../utils/pick.js";
 import type { Tuple } from "../../utils/tuples.js";
 
 import type { CachedMethod, LogsCacheRpcSchema } from "./schema.js";
@@ -91,6 +92,15 @@ export function normalize(req: EIP1193Parameters<LogsCacheRpcSchema>) {
 
   switch (req.method) {
     case "eth_call":
+      // When caching, strip fields that are incompatible with multicall3 (from, value, gas, etc.)
+      if (req.params[4]?.blobKey) {
+        return {
+          method: req.method,
+          params: normalizeTuple(req.params, {
+            0: (tx) => pick(tx, ["to", "data"]),
+          }),
+        };
+      }
       return req;
     case "eth_getLogs":
       return {

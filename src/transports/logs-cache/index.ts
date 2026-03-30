@@ -1,19 +1,16 @@
 import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
-import type { EIP1193Parameters, EIP1193RequestOptions } from "../../types.js";
-import { cyrb64Hash } from "../../utils/hash.js";
-import { withDedupe } from "../../utils/with-dedupe.js";
-import { createKeyedMutex } from "../../utils/with-keyed-mutex.js";
+import type { EIP1193Parameters } from "../../types.js";
+import { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
 import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
 import type { LogsSieveConfig } from "../logs-sieve/types.js";
 import type { RateLimiterConfig } from "../rate-limiter/index.js";
 
 import { handleEthCall } from "./eth-call/handler.js";
-import { handleGetLogs } from "./eth-get-logs/handler.js";
-import { keychain } from "./keychain.js";
+import { handleEthGetLogs } from "./eth-get-logs/handler.js";
 import { normalize } from "./normalization.js";
 import type { CachedMethod, LogsCacheRpcSchema } from "./schema.js";
-import type { InvalidationStrategy, LogsCacheConfig } from "./types.js";
+import type { HandlerContext, InvalidationStrategy, LogsCacheConfig } from "./types.js";
 
 export type * from "./schema.js";
 export type * from "./types.js";
@@ -122,57 +119,37 @@ export function logsCache(
     }
     const chainId = params.chain.id;
 
+    const { coalesce } = createCoalescingMutex();
     const transport = logsDivider(baseTransportFn, [{ ...logsDividerConfig, alignTo: binSize }, ...otherConfigs])(
       params,
     );
 
-    const { withKeyedMutex } = createKeyedMutex();
+    const context: HandlerContext = {
+      store,
+      binSize,
+      invalidationStrategy,
+      chainId,
+      requestFn: transport.request,
+      coalesce,
+    }
 
-    // TODO: I think `options` are always undefined because of viem internals. document? what to do with them if real?
-    const request = (args: EIP1193Parameters<LogsCacheRpcSchema>, options?: EIP1193RequestOptions) => {
-      args = normalize(args);
+    const request = (req: EIP1193Parameters<LogsCacheRpcSchema>) => {
+      req = normalize(req);
       // TODO: compare args against allowlist
 
-      // Compute hash of normalized request args, for use as dedupe id
-      const hasCallback = args.method === "eth_getLogs" && args.params[1]?.reduce !== undefined;
-      const requestHash = cyrb64Hash(JSON.stringify([chainId, args]));
-
-      // Dedupe all requests
-      return withDedupe(
-        () => {
-          switch (args.method) {
-            case "eth_call": {
-              const blobKey = keychain.blobKey(chainId, args);
-              if (!blobKey) {
-                return transport.request(
-                  { method: args.method, params: [args.params[0], args.params[1], args.params[2], args.params[3]] },
-                  options,
-                );
-              }
-              return withKeyedMutex(blobKey, () =>
-                handleEthCall(transport.request, chainId, args.params, blobKey, { store }),
-              );
-            }
-            case "eth_getLogs": {
-              const blobKey = keychain.blobKey(chainId, args);
-              const run = () =>
-                handleGetLogs(transport.request, chainId, args.params, blobKey, {
-                  binSize,
-                  invalidationStrategy,
-                  store,
-                });
-
-              return withKeyedMutex(blobKey, run);
-            }
-            default: {
-              // Assert that all `CachedMethod` are handled explicitly
-              const _: never = args.method as Extract<typeof args.method, CachedMethod>;
-              return transport.request(args, options);
-            }
-          }
-        },
-        { enabled: !hasCallback, id: requestHash },
-      );
+      switch (req.method) {
+        case "eth_call": {
+          return handleEthCall(context, req);
+        }
+        case "eth_getLogs": {
+          return handleEthGetLogs(context, req);
+        }
+        default: {
+          // Assert that all `CachedMethod` are handled explicitly
+          const _: never = req.method as Extract<typeof req.method, CachedMethod>;
+          return transport.request(req, { dedupe: true });
+        }
+      }
     };
 
     // TODO: have a better way of creating the transport so we can apply custom name and other props.

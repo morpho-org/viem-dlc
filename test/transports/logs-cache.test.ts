@@ -4,11 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSlot, LazyNdjsonMap } from "../../src/internal/index.js";
 import type { Entry } from "../../src/internal/ndjson-map.js";
 import { MemoryStore } from "../../src/stores/memory.js";
-import { handleGetLogs } from "../../src/transports/logs-cache/eth-get-logs/handler.js";
+import { handleEthGetLogs } from "../../src/transports/logs-cache/eth-get-logs/handler.js";
 import { createSink } from "../../src/transports/logs-cache/eth-get-logs/sink.js";
 import type { CachedChunk, CachedLogs, CachedMetadata } from "../../src/transports/logs-cache/eth-get-logs/types.js";
 import { keychain } from "../../src/transports/logs-cache/keychain.js";
 import type { InvalidationStrategy } from "../../src/transports/logs-cache/types.js";
+import { createCoalescingMutex } from "../../src/utils/coalescing-mutex.js";
 import { parse, stringify } from "../../src/utils/json.js";
 
 // =============================================================================
@@ -61,7 +62,13 @@ async function populateStore(
   const ndjson = new LazyNdjsonMap<CachedChunk>(
     codec,
     { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER },
-    { get: () => buffers, set: (v) => { buffers = v; store.set(blobKey, v); } },
+    {
+      get: () => buffers,
+      set: (v) => {
+        buffers = v;
+        store.set(blobKey, v);
+      },
+    },
   );
 
   for (const bin of bins) {
@@ -328,11 +335,13 @@ describe("keychain", () => {
 });
 
 // =============================================================================
-// handleGetLogs Tests
+// handleEthGetLogs Tests
 // =============================================================================
 
-describe("handleGetLogs", () => {
-  const blobKey = "test-blob-key";
+describe("handleEthGetLogs", () => {
+  const { coalesce } = createCoalescingMutex();
+  // Compute the blobKey the handler will derive for filters without address/topics
+  const blobKey = keychain.blobKey(chainId, { method: "eth_getLogs", params: [{}] } as any)!;
   let store: MemoryStore;
 
   beforeEach(() => {
@@ -345,6 +354,13 @@ describe("handleGetLogs", () => {
     vi.useRealTimers();
   });
 
+  function callHandler(requestFn: any, params: any[], invalidationStrategy: InvalidationStrategy) {
+    return handleEthGetLogs({ binSize, invalidationStrategy, store, chainId, requestFn, coalesce }, {
+      method: "eth_getLogs",
+      params,
+    } as any);
+  }
+
   describe("cache miss", () => {
     it("fetches all ranges on complete cache miss", async () => {
       const requestFn = createMockRequestFn({
@@ -352,13 +368,7 @@ describe("handleGetLogs", () => {
         logGenerator: (from) => [createMockLog(from)],
       });
 
-      const logs = await handleGetLogs(
-        requestFn,
-        chainId,
-        [{ fromBlock: "0x0", toBlock: "0x270f" }], // 0-9999
-        blobKey,
-        { binSize, invalidationStrategy: neverInvalidate, store },
-      );
+      const logs = await callHandler(requestFn, [{ fromBlock: "0x0", toBlock: "0x270f" }], neverInvalidate);
 
       expect(logs).toHaveLength(1);
 
@@ -372,11 +382,7 @@ describe("handleGetLogs", () => {
         logGenerator: (from) => [createMockLog(from)],
       });
 
-      await handleGetLogs(requestFn, chainId, [{ fromBlock: "0x0", toBlock: "0x270f" }], blobKey, {
-        binSize,
-        invalidationStrategy: neverInvalidate,
-        store,
-      });
+      await callHandler(requestFn, [{ fromBlock: "0x0", toBlock: "0x270f" }], neverInvalidate);
 
       expect(store.get(blobKey)).not.toBeNull();
     });
@@ -390,11 +396,7 @@ describe("handleGetLogs", () => {
 
       const requestFn = createMockRequestFn({ latestBlock: 100_000n });
 
-      const logs = await handleGetLogs(requestFn, chainId, [{ fromBlock: "0x0", toBlock: "0x270f" }], blobKey, {
-        binSize,
-        invalidationStrategy: neverInvalidate,
-        store,
-      });
+      const logs = await callHandler(requestFn, [{ fromBlock: "0x0", toBlock: "0x270f" }], neverInvalidate);
 
       expect(logs).toContainEqual(cachedLog);
 
@@ -403,22 +405,14 @@ describe("handleGetLogs", () => {
     });
 
     it("handles partial cache hits with gap fetching", async () => {
-      await populateStore(store, blobKey, [
-        { fromBlock: 0n, toBlock: 9999n, logs: [createMockLog(5000n)] },
-      ]);
+      await populateStore(store, blobKey, [{ fromBlock: 0n, toBlock: 9999n, logs: [createMockLog(5000n)] }]);
 
       const requestFn = createMockRequestFn({
         latestBlock: 100_000n,
         logGenerator: (from) => [createMockLog(from)],
       });
 
-      const logs = await handleGetLogs(
-        requestFn,
-        chainId,
-        [{ fromBlock: "0x0", toBlock: "0x4e1f" }], // 0-19999
-        blobKey,
-        { binSize, invalidationStrategy: neverInvalidate, store },
-      );
+      const logs = await callHandler(requestFn, [{ fromBlock: "0x0", toBlock: "0x4e1f" }], neverInvalidate);
 
       expect(logs.length).toBeGreaterThanOrEqual(2);
 
@@ -430,20 +424,14 @@ describe("handleGetLogs", () => {
 
   describe("invalidation", () => {
     it("refetches when invalidation strategy returns 1", async () => {
-      await populateStore(store, blobKey, [
-        { fromBlock: 0n, toBlock: 9999n, logs: [createMockLog(5000n)] },
-      ]);
+      await populateStore(store, blobKey, [{ fromBlock: 0n, toBlock: 9999n, logs: [createMockLog(5000n)] }]);
 
       const requestFn = createMockRequestFn({
         latestBlock: 100_000n,
         logGenerator: () => [createMockLog(6000n)],
       });
 
-      await handleGetLogs(requestFn, chainId, [{ fromBlock: "0x0", toBlock: "0x270f" }], blobKey, {
-        binSize,
-        invalidationStrategy: alwaysInvalidate,
-        store,
-      });
+      await callHandler(requestFn, [{ fromBlock: "0x0", toBlock: "0x270f" }], alwaysInvalidate);
 
       const getLogsCalls = requestFn.mock.calls.filter((c: any) => c[0].method === "eth_getLogs");
       expect(getLogsCalls).toHaveLength(1);
@@ -453,18 +441,12 @@ describe("handleGetLogs", () => {
       const fetchedAtBlock = 50000n;
       const fetchedAt = Date.now() - 5000;
 
-      await populateStore(store, blobKey, [
-        { fromBlock: 0n, toBlock: 9999n, logs: [], fetchedAt, fetchedAtBlock },
-      ]);
+      await populateStore(store, blobKey, [{ fromBlock: 0n, toBlock: 9999n, logs: [], fetchedAt, fetchedAtBlock }]);
 
       const strategy = vi.fn().mockReturnValue(0);
       const requestFn = createMockRequestFn({ latestBlock: 100_000n });
 
-      await handleGetLogs(requestFn, chainId, [{ fromBlock: "0x0", toBlock: "0x270f" }], blobKey, {
-        binSize,
-        invalidationStrategy: strategy,
-        store,
-      });
+      await callHandler(requestFn, [{ fromBlock: "0x0", toBlock: "0x270f" }], strategy);
 
       expect(strategy).toHaveBeenCalledWith({
         confirmations: Number(fetchedAtBlock - 9999n),
@@ -487,13 +469,7 @@ describe("handleGetLogs", () => {
         logGenerator: () => [],
       });
 
-      await handleGetLogs(
-        requestFn,
-        chainId,
-        [{ fromBlock: "0x0", toBlock: "0x9c3f" }], // 0-39999
-        blobKey,
-        { binSize, invalidationStrategy: neverInvalidate, store },
-      );
+      await callHandler(requestFn, [{ fromBlock: "0x0", toBlock: "0x9c3f" }], neverInvalidate);
 
       const getLogsCalls = requestFn.mock.calls.filter((c: any) => c[0].method === "eth_getLogs");
       expect(getLogsCalls).toHaveLength(1);
@@ -509,13 +485,7 @@ describe("handleGetLogs", () => {
     it("returns empty array when fromBlock > toBlock", async () => {
       const requestFn = createMockRequestFn({ latestBlock: 100_000n });
 
-      const logs = await handleGetLogs(
-        requestFn,
-        chainId,
-        [{ fromBlock: "0x2710", toBlock: "0x0" }],
-        blobKey,
-        { binSize, invalidationStrategy: neverInvalidate, store },
-      );
+      const logs = await callHandler(requestFn, [{ fromBlock: "0x2710", toBlock: "0x0" }], neverInvalidate);
 
       expect(logs).toEqual([]);
     });
@@ -523,13 +493,9 @@ describe("handleGetLogs", () => {
     it("throws on blockHash queries", async () => {
       const requestFn = createMockRequestFn({});
 
-      await expect(
-        handleGetLogs(requestFn, chainId, [{ blockHash: `0x${"c".repeat(64)}` }], blobKey, {
-          binSize,
-          invalidationStrategy: neverInvalidate,
-          store,
-        }),
-      ).rejects.toThrow("blockHash");
+      await expect(callHandler(requestFn, [{ blockHash: `0x${"c".repeat(64)}` }], neverInvalidate)).rejects.toThrow(
+        "blockHash",
+      );
     });
 
     it("filters logs to requested range", async () => {
@@ -538,13 +504,7 @@ describe("handleGetLogs", () => {
         logGenerator: () => [createMockLog(0n), createMockLog(5000n), createMockLog(9999n)],
       });
 
-      const logs = await handleGetLogs(
-        requestFn,
-        chainId,
-        [{ fromBlock: "0x1388", toBlock: "0x1770" }], // 5000-6000
-        blobKey,
-        { binSize, invalidationStrategy: neverInvalidate, store },
-      );
+      const logs = await callHandler(requestFn, [{ fromBlock: "0x1388", toBlock: "0x1770" }], neverInvalidate);
 
       expect(logs).toHaveLength(1);
       expect(logs[0]!.blockNumber).toBe(toHex(5000n));
@@ -556,13 +516,7 @@ describe("handleGetLogs", () => {
         logGenerator: () => [createMockLog(8000n), createMockLog(2000n), createMockLog(5000n)],
       });
 
-      const logs = await handleGetLogs(
-        requestFn,
-        chainId,
-        [{ fromBlock: "0x0", toBlock: "0x270f" }],
-        blobKey,
-        { binSize, invalidationStrategy: neverInvalidate, store },
-      );
+      const logs = await callHandler(requestFn, [{ fromBlock: "0x0", toBlock: "0x270f" }], neverInvalidate);
 
       const blockNumbers = logs.map((log) => BigInt(log.blockNumber!));
       expect(blockNumbers).toEqual([2000n, 5000n, 8000n]);
@@ -583,13 +537,7 @@ describe("handleGetLogs", () => {
         return acc;
       };
 
-      await handleGetLogs(
-        requestFn,
-        chainId,
-        [{ fromBlock: "0x0", toBlock: "0x270f" }, { reduce }],
-        blobKey,
-        { binSize, invalidationStrategy: neverInvalidate, store },
-      );
+      await callHandler(requestFn, [{ fromBlock: "0x0", toBlock: "0x270f" }, { reduce }], neverInvalidate);
 
       // Reduce sees logs in sorted order (within-bin sort by sink)
       expect(observed).toEqual([2000n, 5000n, 8000n]);
@@ -599,9 +547,7 @@ describe("handleGetLogs", () => {
   describe("error handling", () => {
     it("flushes partial data to store on fetch error", async () => {
       // Cache the middle bin so we get two non-contiguous gaps that can't be merged
-      await populateStore(store, blobKey, [
-        { fromBlock: 10000n, toBlock: 19999n, logs: [] },
-      ]);
+      await populateStore(store, blobKey, [{ fromBlock: 10000n, toBlock: 19999n, logs: [] }]);
 
       let callCount = 0;
       const requestFn = vi.fn().mockImplementation(async (args: { method: string; params?: any[] }) => {
@@ -629,15 +575,9 @@ describe("handleGetLogs", () => {
         throw new Error(`Unexpected: ${args.method}`);
       });
 
-      await expect(
-        handleGetLogs(
-          requestFn,
-          chainId,
-          [{ fromBlock: "0x0", toBlock: "0x752f" }], // 0-29999 (3 bins, middle cached)
-          blobKey,
-          { binSize, invalidationStrategy: neverInvalidate, store },
-        ),
-      ).rejects.toThrow("Gap fetch failed");
+      await expect(callHandler(requestFn, [{ fromBlock: "0x0", toBlock: "0x752f" }], neverInvalidate)).rejects.toThrow(
+        "Gap fetch failed",
+      );
 
       // Partial data should still be persisted
       expect(store.get(blobKey)).not.toBeNull();

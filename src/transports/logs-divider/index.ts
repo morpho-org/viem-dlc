@@ -1,7 +1,7 @@
 import type { PublicRpcSchema, Transport } from "viem";
 import { custom, type EIP1193RequestFn } from "viem";
 
-import type { EIP1193Parameters, EIP1193RequestOptions } from "../../types.js";
+import type { EIP1193Parameters } from "../../types.js";
 import { type LogsSieveConfig, logsSieve } from "../logs-sieve/index.js";
 import { type RateLimiterConfig, rateLimiter } from "../rate-limiter/index.js";
 
@@ -65,12 +65,11 @@ export function logsDivider(
   return (params) => {
     const transport = rateLimiter(logsSieve(baseTransportFn, [logsSieveConfig]), [rateLimiterConfig])(params);
 
-    const request = (args: EIP1193Parameters<LogsDividerRpcSchema>, options?: EIP1193RequestOptions) => {
+    const request = (args: EIP1193Parameters<LogsDividerRpcSchema>) => {
       if (args.method !== "eth_getLogs") {
-        return transport.request(args, options);
+        return transport.request(args, { dedupe: true });
       }
 
-      // TODO: (@haydenshively future-work) `handleGetLogs` could respect `options`
       return handleGetLogs(transport.request, args.params, logsDividerConfig);
     };
 

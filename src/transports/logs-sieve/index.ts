@@ -1,6 +1,6 @@
 import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
-import type { EIP1193Parameters, EIP1193RequestOptions } from "../../types.js";
+import type { EIP1193Parameters } from "../../types.js";
 import { estimateUtf8Bytes } from "../../utils/json.js";
 
 import type { LogsSieveSchema } from "./schema.js";
@@ -27,12 +27,12 @@ export function logsSieve(
   return (params) => {
     const transport = baseTransportFn(params);
 
-    const request = async (args: EIP1193Parameters<LogsSieveSchema>, options?: EIP1193RequestOptions) => {
+    const request = async (args: EIP1193Parameters<LogsSieveSchema>) => {
       if (args.method !== "eth_getLogs") {
-        return transport.request(args, options);
+        return transport.request(args, { dedupe: true });
       }
 
-      const logs = await transport.request(args, options);
+      const logs = await transport.request(args, { dedupe: true });
       return logs.filter((log) => estimateUtf8Bytes(log) <= maxBytes);
     };
 

@@ -314,7 +314,7 @@ describe("coalesce", () => {
 
       expect(results[0]).toMatchObject({ status: "rejected" });
       expect((results[0] as PromiseRejectedResult).reason.message).toBe(
-        "[coalescing] collectFollowers() called more than once",
+        "[coalesce] collectFollowers() called more than once",
       );
       expect(results[1]).toEqual({ status: "fulfilled", value: "B-ran-as-leader" });
     });
@@ -465,7 +465,7 @@ describe("coalesce", () => {
       const results = await Promise.allSettled([p1, p2]);
 
       expect(results[0]).toMatchObject({ status: "rejected" });
-      expect((results[0] as PromiseRejectedResult).reason.message).toBe("[coalescing] invalid follower slot 1");
+      expect((results[0] as PromiseRejectedResult).reason.message).toBe("[coalesce] invalid follower slot 1");
       expect(results[1]).toEqual({ status: "fulfilled", value: "B-ran-as-leader" });
     });
 
@@ -492,7 +492,7 @@ describe("coalesce", () => {
       const results = await Promise.allSettled([p1, p2]);
 
       expect(results[0]).toMatchObject({ status: "rejected" });
-      expect((results[0] as PromiseRejectedResult).reason.message).toBe("[coalescing] duplicate follower slot 0");
+      expect((results[0] as PromiseRejectedResult).reason.message).toBe("[coalesce] duplicate follower slot 0");
       expect(results[1]).toEqual({ status: "fulfilled", value: "B-ran-as-leader" });
     });
   });

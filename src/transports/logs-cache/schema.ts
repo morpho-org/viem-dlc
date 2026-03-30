@@ -2,6 +2,8 @@ import type { PublicRpcSchema as Base, RpcLog } from "viem";
 
 import type { EIP1193Parameters, SafelyExtendRpcSchema } from "../../types.js";
 
+export type EthGetLogsReduce = (logs: RpcLog[], log: RpcLog) => RpcLog[];
+
 export type LogsCacheRpcSchema = SafelyExtendRpcSchema<
   Base,
   [
@@ -32,7 +34,7 @@ export type LogsCacheRpcSchema = SafelyExtendRpcSchema<
       AdditionalParameters: [
         {
           /** @dev Receives logs in order. */
-          reduce?: (logs: RpcLog[], log: RpcLog) => RpcLog[];
+          reduce?: EthGetLogsReduce;
         },
       ];
     },

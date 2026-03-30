@@ -102,10 +102,10 @@ export function createCoalescingMutex() {
           const seen = new Set<number>();
           for (const e of entries) {
             if (!Number.isInteger(e.slot) || e.slot < 0 || e.slot >= batch.length) {
-              throw new Error(`[coalescing] invalid follower slot ${e.slot}`);
+              throw new Error(`[coalesce] invalid follower slot ${e.slot}`);
             }
             if (seen.has(e.slot)) {
-              throw new Error(`[coalescing] duplicate follower slot ${e.slot}`);
+              throw new Error(`[coalesce] duplicate follower slot ${e.slot}`);
             }
             seen.add(e.slot);
           }

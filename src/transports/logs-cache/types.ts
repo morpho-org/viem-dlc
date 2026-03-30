@@ -1,4 +1,8 @@
+import type { EIP1193RequestFn } from "viem";
+
 import type { Store } from "../../types.js";
+import type { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
+import type { LogsDividerRpcSchema } from "../logs-divider/schema.js";
 
 export interface InvalidationContext {
   /** How many blocks ago this chunk's aligned.to was from the chain tip when fetched */
@@ -22,3 +26,9 @@ export interface LogsCacheConfig {
   /** Returns the probability [0,1] that a cached chunk should be refetched. */
   invalidationStrategy: InvalidationStrategy;
 }
+
+export type HandlerContext = LogsCacheConfig & {
+  chainId: number;
+  requestFn: EIP1193RequestFn<LogsDividerRpcSchema>;
+  coalesce: ReturnType<typeof createCoalescingMutex>["coalesce"];
+};
