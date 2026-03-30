@@ -1,6 +1,6 @@
 import { memoryUsage, resourceUsage } from "process";
 
-import { CompressedLinesBlob, type Codec, createSlot, type Entry, NdjsonMap } from "../../dist/internal/index.js";
+import { type Codec, CompressedLinesBlob, createSlot, type Entry, NdjsonMap } from "../../dist/internal/index.js";
 import { parse, stringify } from "../../dist/utils/json.js";
 
 const MARKER = "__NDJSON_MEMORY__";
