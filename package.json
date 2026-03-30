@@ -45,10 +45,10 @@
       "import": "./dist/transports/index.js",
       "default": "./dist/transports/index.js"
     },
-    "./transports/logs-cache": {
-      "types": "./dist/transports/logs-cache/index.d.ts",
-      "import": "./dist/transports/logs-cache/index.js",
-      "default": "./dist/transports/logs-cache/index.js"
+    "./transports/cache": {
+      "types": "./dist/transports/cache/index.d.ts",
+      "import": "./dist/transports/cache/index.js",
+      "default": "./dist/transports/cache/index.js"
     },
     "./utils": {
       "types": "./dist/utils/index.d.ts",

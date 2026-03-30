@@ -9,8 +9,8 @@ import type { RateLimiterConfig } from "../rate-limiter/index.js";
 import { handleEthCall } from "./eth-call/handler.js";
 import { handleEthGetLogs } from "./eth-get-logs/handler.js";
 import { normalize } from "./normalization.js";
-import type { CachedMethod, LogsCacheRpcSchema } from "./schema.js";
-import type { HandlerContext, InvalidationStrategy, LogsCacheConfig } from "./types.js";
+import type { CachedMethod, CacheRpcSchema } from "./schema.js";
+import type { CacheConfig, HandlerContext, InvalidationStrategy } from "./types.js";
 
 export type * from "./schema.js";
 export type * from "./types.js";
@@ -92,7 +92,7 @@ export function createSimpleInvalidation(
  *   larger values may hit RPC limits and trigger halving.
  *
  * @example
- * const transport = logsCache(
+ * const transport = cache(
  *   http(rpcUrl),
  *   [
  *     { binSize: 10_000, store: new LruStore(), invalidationStrategy: createSimpleInvalidation() },
@@ -103,19 +103,19 @@ export function createSimpleInvalidation(
  *
  * const client = createPublicClient({ chain: mainnet, transport })
  */
-export function logsCache(
+export function cache(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
   [{ binSize, store, invalidationStrategy }, logsDividerConfig, ...otherConfigs]: [
-    LogsCacheConfig,
+    CacheConfig,
     Omit<LogsDividerConfig, "alignTo">,
     RateLimiterConfig,
     LogsSieveConfig,
   ],
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
-): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsCacheRpcSchema>> {
+): Transport<"custom", Record<string, any>, EIP1193RequestFn<CacheRpcSchema>> {
   return (params) => {
     if (params.chain === undefined) {
-      throw new Error("You must pass a chain to the logsCache transport.");
+      throw new Error("You must pass a chain to the cache transport.");
     }
     const chainId = params.chain.id;
 
@@ -131,9 +131,9 @@ export function logsCache(
       chainId,
       requestFn: transport.request,
       coalesce,
-    }
+    };
 
-    const request = (req: EIP1193Parameters<LogsCacheRpcSchema>) => {
+    const request = (req: EIP1193Parameters<CacheRpcSchema>) => {
       req = normalize(req);
       // TODO: compare args against allowlist
 

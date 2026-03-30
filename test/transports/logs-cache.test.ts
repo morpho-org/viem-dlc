@@ -4,11 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSlot, LazyNdjsonMap } from "../../src/internal/index.js";
 import type { Entry } from "../../src/internal/ndjson-map.js";
 import { MemoryStore } from "../../src/stores/memory.js";
-import { handleEthGetLogs } from "../../src/transports/logs-cache/eth-get-logs/handler.js";
-import { createSink } from "../../src/transports/logs-cache/eth-get-logs/sink.js";
-import type { CachedChunk, CachedLogs, CachedMetadata } from "../../src/transports/logs-cache/eth-get-logs/types.js";
-import { keychain } from "../../src/transports/logs-cache/keychain.js";
-import type { InvalidationStrategy } from "../../src/transports/logs-cache/types.js";
+import { handleEthGetLogs } from "../../src/transports/cache/eth-get-logs/handler.js";
+import { createSink } from "../../src/transports/cache/eth-get-logs/sink.js";
+import type { CachedChunk, CachedLogs, CachedMetadata } from "../../src/transports/cache/eth-get-logs/types.js";
+import { keychain } from "../../src/transports/cache/keychain.js";
+import type { InvalidationStrategy } from "../../src/transports/cache/types.js";
 import { createCoalescingMutex } from "../../src/utils/coalescing-mutex.js";
 import { parse, stringify } from "../../src/utils/json.js";
 

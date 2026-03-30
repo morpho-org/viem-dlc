@@ -16,7 +16,7 @@ export interface InvalidationContext {
 /** Returns probability [0,1] that a cached chunk should be refetched */
 export type InvalidationStrategy = (context: InvalidationContext) => number;
 
-export interface LogsCacheConfig {
+export interface CacheConfig {
   store: Store;
   /**
    * Cache alignment boundary. Chunks are aligned to multiples of this value.
@@ -27,7 +27,7 @@ export interface LogsCacheConfig {
   invalidationStrategy: InvalidationStrategy;
 }
 
-export type HandlerContext = LogsCacheConfig & {
+export type HandlerContext = CacheConfig & {
   chainId: number;
   requestFn: EIP1193RequestFn<LogsDividerRpcSchema>;
   coalesce: ReturnType<typeof createCoalescingMutex>["coalesce"];

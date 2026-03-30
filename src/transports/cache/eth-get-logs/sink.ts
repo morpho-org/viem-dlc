@@ -35,7 +35,7 @@ function isBinComplete(ranges: BlockRange[], binStart: bigint, binEnd: bigint): 
 
 /**
  * Creates a callback that accumulates logs responses and writes complete bins to cache.
- * Used internally by `logsCache` as the `onLogsResponse` handler for `logsDivider`.
+ * Used internally by `cache` as the `onLogsResponse` handler for `logsDivider`.
  *
  * The accumulator pattern handles responses of any size relative to binSize:
  * - Responses smaller than binSize (due to splitting or halving) are accumulated

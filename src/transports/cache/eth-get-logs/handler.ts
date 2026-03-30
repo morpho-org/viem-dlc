@@ -6,7 +6,7 @@ import type { BlockRange, EIP1193Parameters } from "../../../types.js";
 import { divideBlockRange, extractRangeFromFilter, isInBlockRange, mergeBlockRanges } from "../../../utils/blocks.js";
 import { parse, stringify } from "../../../utils/json.js";
 import { keychain } from "../keychain.js";
-import type { LogsCacheRpcSchema } from "../schema.js";
+import type { CacheRpcSchema } from "../schema.js";
 import type { HandlerContext, InvalidationStrategy } from "../types.js";
 
 import { createSink } from "./sink.js";
@@ -39,7 +39,7 @@ function shouldFetchRange(
 
 export async function handleEthGetLogs(
   { binSize, invalidationStrategy, store, coalesce, requestFn, chainId }: HandlerContext,
-  req: EIP1193Parameters<LogsCacheRpcSchema, "eth_getLogs">,
+  req: EIP1193Parameters<CacheRpcSchema, "eth_getLogs">,
 ): Promise<RpcLog[]> {
   const blobKey = keychain.blobKey(chainId, req);
 
@@ -50,7 +50,7 @@ export async function handleEthGetLogs(
 
     // blockHash queries are not cached - pass through
     if (filter.blockHash) {
-      throw new Error(`[logsCache] eth_getLogs blockHash queries are not supported.`);
+      throw new Error(`[cache] eth_getLogs blockHash queries are not supported.`);
     }
 
     // Optimistically kickoff `latestBlockNumber` and `buffers` promises in parallel
@@ -147,7 +147,7 @@ export async function handleEthGetLogs(
         );
       } catch (error) {
         await ndjson.flush().catch(() => {});
-        const context = `[logsCache] Gap fetch failed for ${rangesToFetch.length} range(s): ${rangesToFetch.map((r) => `[${r.fromBlock}n, ${r.toBlock}n]`).join(", ")}`;
+        const context = `[cache] Gap fetch failed for ${rangesToFetch.length} range(s): ${rangesToFetch.map((r) => `[${r.fromBlock}n, ${r.toBlock}n]`).join(", ")}`;
         if (error instanceof Error) {
           error.message = `${context} ${error.message}`;
           throw error;
@@ -205,7 +205,7 @@ export async function handleEthGetLogs(
     );
 
     if (expectedDataKeys.size > 0) {
-      console.warn(`[logsCache] eth_getLogs handler detected missing keys in data blob: ${expectedDataKeys}`);
+      console.warn(`[cache] eth_getLogs handler detected missing keys in data blob: ${expectedDataKeys}`);
     }
 
     const outcomes = participants.map((p, i) =>

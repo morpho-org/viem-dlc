@@ -4,7 +4,7 @@ import type { EIP1193Parameters, SafelyExtendRpcSchema } from "../../types.js";
 
 export type EthGetLogsReduce = (logs: RpcLog[], log: RpcLog) => RpcLog[];
 
-export type LogsCacheRpcSchema = SafelyExtendRpcSchema<
+export type CacheRpcSchema = SafelyExtendRpcSchema<
   Base,
   [
     {
@@ -44,6 +44,6 @@ export type LogsCacheRpcSchema = SafelyExtendRpcSchema<
 export const cachedMethods = [
   "eth_call",
   "eth_getLogs",
-] as const satisfies EIP1193Parameters<LogsCacheRpcSchema>["method"][];
+] as const satisfies EIP1193Parameters<CacheRpcSchema>["method"][];
 
 export type CachedMethod = (typeof cachedMethods)[number];
