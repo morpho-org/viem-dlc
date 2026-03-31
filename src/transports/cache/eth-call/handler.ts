@@ -28,7 +28,7 @@ export async function handleEthCall(
     return requestFn(
       {
         method: req.method,
-        params: [req.params[0], req.params[1], req.params[2], req.params[3]],
+        params: req.params,
       },
       { dedupe: true },
     );
@@ -136,16 +136,17 @@ export async function handleEthCall(
         // Re-aggregate misses into one multicall3 call
         const missedCalls = misses.map((m) => m.subCall);
         const calldata = encodeAggregate3(missedCalls);
+        const multicallTxObj = { to, data: calldata };
 
         const rpcResult = await requestFn(
           {
             method: "eth_call",
-            params: [{ to, data: calldata }, block, stateOverride, blockOverride] as [
-              (typeof req.params)[0],
-              (typeof req.params)[1],
-              (typeof req.params)[2],
-              (typeof req.params)[3],
-            ],
+            params:
+              blockOverride !== undefined
+                ? [multicallTxObj, block, stateOverride, blockOverride]
+                : stateOverride !== undefined
+                  ? [multicallTxObj, block, stateOverride]
+                  : [multicallTxObj, block],
           },
           { dedupe: true },
         );
@@ -166,7 +167,12 @@ export async function handleEthCall(
         const rpcResult = await requestFn(
           {
             method: "eth_call",
-            params: [txObj, block, stateOverride, blockOverride],
+            params:
+              blockOverride !== undefined
+                ? [txObj, block, stateOverride, blockOverride]
+                : stateOverride !== undefined
+                  ? [txObj, block, stateOverride]
+                  : [txObj, block],
           },
           { dedupe: true },
         );

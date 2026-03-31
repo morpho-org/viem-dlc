@@ -1,6 +1,6 @@
 {
   "name": "@morpho-org/viem-dlc",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "A collection of flexible viem extensions with a focus on intelligent caching.",
   "license": "MIT",
   "keywords": [
@@ -63,7 +63,8 @@
     "typecheck": "tsc --project tsconfig.json --noEmit --incremental",
     "pretest": "pnpm build",
     "test": "vitest run",
-    "prepare": "pnpm build"
+    "prepare": "pnpm build",
+    "loc": "tokei src"
   },
   "dependencies": {
     "valibot": "^1.2.0"

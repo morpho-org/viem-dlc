@@ -75,10 +75,7 @@ describe("handleEthCall", () => {
     );
 
     expect(result).toBe("0x1234");
-    expect(requestFn).toHaveBeenCalledWith(
-      { method: "eth_call", params: [{ to, data }, "latest", undefined, undefined] },
-      { dedupe: true },
-    );
+    expect(requestFn).toHaveBeenCalledWith({ method: "eth_call", params: [{ to, data }, "latest"] }, { dedupe: true });
   });
 
   it("fetches and caches a direct call on miss", async () => {
