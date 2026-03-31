@@ -119,6 +119,24 @@ export type SafelyExtendRpcSchema<T extends RpcSchema, Extension extends RpcSche
   readonly [K in keyof T]: Prettify<DeriveRpcSignature<T, K, Extension[number]>>;
 };
 
+/**
+ * Describes any `RpcSchema` that was safely extended from `T`, preserving `Method` and `ReturnType`
+ * for each entry while treating `Parameters` as opaque (`any`).
+ *
+ * Unlike `SafelyExtendRpcSchema`, which is generative, this type is descriptive: it matches any schema
+ * that could be the result of safely extending `T`.
+ *
+ * Useful when a function needs to accept transports whose schema extends `T` without being generic over
+ * the exact schema type. For example, `EIP1193RequestFn<SafelyExtendedRpcSchema<T>>` and `EIP1193RequestFn<T>`
+ * resolve concretely.
+ */
+export type SafelyExtendedRpcSchema<Base extends RpcSchema> = {
+  readonly [K in keyof Base]: Base[K] extends { Method: infer M; ReturnType: infer R }
+    ? // biome-ignore lint/suspicious/noExplicitAny: need bidirectional assignability here
+      { Method: M; Parameters?: any; ReturnType: R }
+    : Base[K];
+};
+
 /*//////////////////////////////////////////////////////////////
                               TYPES
 //////////////////////////////////////////////////////////////*/
@@ -127,24 +145,22 @@ export type SafelyExtendRpcSchema<T extends RpcSchema, Extension extends RpcSche
  * All methods are best-effort and MUST NOT throw. Stores should be robust to gaps
  * in wall clock time (e.g., freeze/thaw cycles in serverless function environments).
  *
+ * @dev `get`/`set` should be atomic. `value` MUST NOT be partially retrieved or persisted.
+ *
  * @dev `Buffer`s are used to make `value` pass-by-reference explicit and minimize
  * memory duplication. `Buffer`s MUST NOT be modified in-place -- always use the
  * `get`/`set` interface.
  *
- * @dev `flush` is expected to resolve after pending work is complete. The definition of
- * "pending work" may be Store-specific.
+ * @dev `flush` snapshots current pending work and resolves only after at least
+ * attempting to persist it. It DOES NOT guarantee success -- only that the
+ * attempt was made. What "persist" means is Store-specific (e.g. no-op for
+ * in-memory stores, HTTP call for remote stores).
  */
 export interface Store {
   get(key: string): MaybePromise<Buffer[] | null>;
   set(key: string, value: Buffer[]): MaybePromise<void>;
   delete(key: string): MaybePromise<void>;
   flush(): MaybePromise<void>;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface Cache<T extends {}> {
-  read(keys: string[]): Promise<(T | undefined)[]>;
-  write(items: { key: string; value: T }[]): Promise<void>;
 }
 
 export type BlockNumberish = BlockNumber | BlockTag | Hex;

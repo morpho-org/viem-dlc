@@ -68,7 +68,7 @@ function measureNdjsonPeakMemory(config: MeasurementConfig): MemoryMeasurement {
 }
 
 describe("NdjsonMap memory", () => {
-  it("reduce peak RSS stays near compressed input size", { timeout: 30_000 }, () => {
+  it("reduce peak RSS stays < 2x compressed input size", { timeout: 30_000 }, () => {
     const result = measureNdjsonPeakMemory({
       operation: "reduce",
       payloadMode: "pseudo-random",
@@ -78,10 +78,10 @@ describe("NdjsonMap memory", () => {
     });
 
     expect(result.compressedBytes).toBeGreaterThan(10_000_000);
-    expect(totalCompressedFootprintMultiple(result.peakDeltaBytes, result.compressedBytes)).toBeLessThan(2.5);
+    expect(totalCompressedFootprintMultiple(result.peakDeltaBytes, result.compressedBytes)).toBeLessThan(2);
   });
 
-  it("upsert peak RSS stays within a small multiple of compressed output size", { timeout: 30_000 }, () => {
+  it("upsert peak RSS stays < 2x compressed output size", { timeout: 30_000 }, () => {
     const result = measureNdjsonPeakMemory({
       operation: "upsert",
       payloadMode: "pseudo-random",
@@ -91,6 +91,6 @@ describe("NdjsonMap memory", () => {
     });
 
     expect(result.outputCompressedBytes).toBeGreaterThan(10_000_000);
-    expect(totalCompressedFootprintMultiple(result.peakDeltaBytes, result.outputCompressedBytes)).toBeLessThan(3);
+    expect(totalCompressedFootprintMultiple(result.peakDeltaBytes, result.outputCompressedBytes)).toBeLessThan(2);
   });
 });

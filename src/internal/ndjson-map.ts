@@ -1,6 +1,30 @@
-import { BrotliLineBlob, type Slot } from "./brotli-line-blob.js";
+import { CompressedLinesBlob, type Slot } from "./compressed-lines-blob.js";
 
 export type Entry<T, K extends string = string> = { key: K; value: T };
+
+/**
+ * Entry with deferred value parsing. The raw JSON value string is available
+ * immediately for cheap pre-filtering (e.g. `.includes()` / regex); the
+ * parsed value is materialized lazily on first `.value` access.
+ */
+export type LazyEntry<T, K extends string = string> = { readonly key: K; readonly rawValue: string; readonly value: T };
+
+/** Construct a {@link LazyEntry} whose `value` is parsed on first access. */
+export function lazyEntry<T, K extends string>(key: K, rawValue: string, parse: (raw: string) => T): LazyEntry<T, K> {
+  let cached: T | undefined;
+  let done = false;
+  return {
+    key,
+    rawValue,
+    get value(): T {
+      if (!done) {
+        cached = parse(rawValue);
+        done = true;
+      }
+      return cached!;
+    },
+  };
+}
 
 /** Codec for the value portion of each NDJSON entry. The class handles key serialization. */
 export type Codec<T> = {
@@ -69,7 +93,7 @@ export function sortEntriesByRawKey<K extends string, V>(
 }
 
 /**
- * Streaming NDJSON container backed by a brotli-compressed buffer (base64-encoded).
+ * Streaming NDJSON container backed by a compressed line buffer.
  *
  * Each line is `{"key":<json-key>,"value":<codec-value>}`. The class owns the
  * envelope (key serialization via `JSON.stringify`); the codec handles only the
@@ -84,13 +108,13 @@ export function sortEntriesByRawKey<K extends string, V>(
  * should cause `slot` to mutate or return different data.
  */
 export class NdjsonMap<T, K extends string = string> {
-  private readonly blob: BrotliLineBlob;
+  private readonly blob: CompressedLinesBlob;
 
   constructor(
     private readonly codec: Codec<T>,
     slot: Slot,
   ) {
-    this.blob = new BrotliLineBlob(slot);
+    this.blob = new CompressedLinesBlob(slot);
   }
 
   /** Build a full NDJSON line from a pre-stringified JSON key token and a value. */
@@ -129,9 +153,10 @@ export class NdjsonMap<T, K extends string = string> {
    * Maintains lexicographic sorted order by raw JSON key: pending entries are
    * sorted, then interleaved with existing (already-sorted) lines during
    * rewrite. Entries whose keys match an upsert are replaced in-place; new
-   * keys are inserted at their sorted position. Always outputs brotli q=4.
+   * keys are inserted at their sorted position. Rewrites use the current
+   * {@link CompressedLinesBlob} codec and settings.
    *
-   * Mutates internal state — call {@link toBase64} afterwards to retrieve the result.
+   * Mutates the underlying slot via {@link CompressedLinesBlob}.
    * Callers must not overlap `upsert()` calls on the same instance; concurrent
    * upserts are unsafe and may lose writes.
    *
@@ -142,8 +167,46 @@ export class NdjsonMap<T, K extends string = string> {
    */
   async upsert(entries: Entry<T, K>[], signal?: AbortSignal): Promise<void> {
     if (entries.length === 0) return;
+    return this.mergeAndRewrite(entries, signal);
+  }
 
+  /**
+   * Like {@link upsert}, but also folds through every entry (existing + new)
+   * in sorted key order during the rewrite pass. When `entries` is empty,
+   * degenerates to a pure {@link reduce} (no rewrite).
+   */
+  async upsertAndFold<Acc>(
+    entries: Entry<T, K>[],
+    fn: (acc: Acc, entry: Entry<T, K>) => Acc,
+    init: Acc,
+    signal?: AbortSignal,
+  ): Promise<Acc> {
+    if (entries.length === 0) return this.reduce(fn, init);
+    let acc = init;
+    await this.mergeAndRewrite(entries, signal, (entry) => {
+      acc = fn(acc, entry);
+    });
+    return acc;
+  }
+
+  /*//////////////////////////////////////////////////////////////
+                              PRIVATE
+  //////////////////////////////////////////////////////////////*/
+
+  /**
+   * Core merge-insert-rewrite logic shared by {@link upsert} and {@link upsertAndFold}.
+   * If `onEntry` is provided, it is called synchronously for each emitted entry
+   * (existing lines kept as-is, replaced lines, and newly inserted lines) in
+   * sorted key order.
+   */
+  private async mergeAndRewrite(
+    entries: Entry<T, K>[],
+    signal?: AbortSignal,
+    onEntry?: (entry: Entry<T, K>) => void,
+  ): Promise<void> {
     const serializeLine = this.serializeLine.bind(this);
+    const parseLine = onEntry ? this.parseLine.bind(this) : undefined;
+
     // Deduplicate (last write wins) then sort by raw JSON key for merge-insert
     const byKey = new Map<K, T>();
     for (const entry of entries) {
@@ -177,21 +240,29 @@ export class NdjsonMap<T, K extends string = string> {
 
         // Merge-insert: emit sorted pending entries that belong before this key
         while (idx < sorted.length && compareRawKeys(sorted[idx]![0], rawKey) < 0) {
-          const [pKey, , pValue] = sorted[idx++]!;
+          const [pKey, pOrigKey, pValue] = sorted[idx++]!;
           emit(serializeLine(pKey, pValue));
+          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
         }
 
         // Replace in-place if this key is being upserted, otherwise keep existing line
         if (idx < sorted.length && sorted[idx]![0] === rawKey) {
-          emit(serializeLine(rawKey, sorted[idx++]![2]));
+          const [, pOrigKey, pValue] = sorted[idx++]!;
+          emit(serializeLine(rawKey, pValue));
+          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
         } else {
           emit(line);
+          if (parseLine) {
+            const entry = parseLine(line);
+            if (entry) onEntry!(entry);
+          }
         }
       },
       (emit) => {
         while (idx < sorted.length) {
-          const [pKey, , pValue] = sorted[idx++]!;
+          const [pKey, pOrigKey, pValue] = sorted[idx++]!;
           emit(serializeLine(pKey, pValue));
+          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
         }
       },
       signal,

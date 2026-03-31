@@ -1,11 +1,11 @@
 import { Buffer } from "buffer";
-import { brotliCompressSync } from "zlib";
+import { zstdCompressSync } from "zlib";
 
 import { describe, expect, it } from "vitest";
 
-import { BrotliLineBlob, createSlot } from "../../src/internal/brotli-line-blob.js";
+import { CompressedLinesBlob, createSlot } from "../../src/internal/compressed-lines-blob.js";
 
-async function collectLines(blob: BrotliLineBlob) {
+async function collectLines(blob: CompressedLinesBlob) {
   const lines: string[] = [];
   for await (const line of blob.lines()) {
     lines.push(line);
@@ -13,16 +13,16 @@ async function collectLines(blob: BrotliLineBlob) {
   return lines;
 }
 
-describe("BrotliLineBlob", () => {
-  it("reads base64 input and trims a trailing carriage return on the final unterminated line", async () => {
-    const compressed = brotliCompressSync(Buffer.from("alpha\r"));
-    const blob = new BrotliLineBlob(createSlot(compressed));
+describe("CompressedLinesBlob", () => {
+  it("reads input and trims a trailing carriage return on the final unterminated line", async () => {
+    const compressed = zstdCompressSync(Buffer.from("alpha\r"));
+    const blob = new CompressedLinesBlob(createSlot(compressed));
 
     expect(await collectLines(blob)).toEqual(["alpha"]);
   });
 
   it("supports rewriting an empty blob from flush output only", async () => {
-    const blob = new BrotliLineBlob(createSlot());
+    const blob = new CompressedLinesBlob(createSlot());
 
     expect(await collectLines(blob)).toEqual([]);
 
@@ -38,15 +38,15 @@ describe("BrotliLineBlob", () => {
 
   it("treats an empty compressed buffer input as an empty blob", async () => {
     const slot = createSlot(Buffer.alloc(0));
-    const blob = new BrotliLineBlob(slot);
+    const blob = new CompressedLinesBlob(slot);
 
     expect(slot.get()).toEqual([]);
     expect(await collectLines(blob)).toEqual([]);
   });
 
   it("clears the stored blob when a rewrite emits no replacement lines", async () => {
-    const slot = createSlot(brotliCompressSync(Buffer.from("keep\nremove\n")));
-    const blob = new BrotliLineBlob(slot);
+    const slot = createSlot(zstdCompressSync(Buffer.from("keep\nremove\n")));
+    const blob = new CompressedLinesBlob(slot);
 
     await blob.rewriteLines(() => {});
 
@@ -55,7 +55,7 @@ describe("BrotliLineBlob", () => {
   });
 
   it("keeps the existing blob unchanged when rewrite is aborted before commit", async () => {
-    const blob = new BrotliLineBlob(createSlot(brotliCompressSync(Buffer.from("keep\nreplace\n"))));
+    const blob = new CompressedLinesBlob(createSlot(zstdCompressSync(Buffer.from("keep\nreplace\n"))));
     const controller = new AbortController();
     controller.abort();
 

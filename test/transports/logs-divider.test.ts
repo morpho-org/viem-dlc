@@ -30,7 +30,7 @@ function createMockRequestFn(options: {
 }) {
   const { latestBlock = 1000n, logsPerRequest = 1, logGenerator, failOnRange } = options;
 
-  return vi.fn().mockImplementation(async (args: { method: string; params?: any[] }) => {
+  return vi.fn().mockImplementation(async (args) => {
     if (args.method === "eth_blockNumber") {
       return toHex(latestBlock);
     }

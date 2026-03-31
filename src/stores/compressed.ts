@@ -1,20 +1,20 @@
 /// <reference types="node" />
 import { promisify } from "util";
-import { type BrotliOptions, brotliCompress, brotliDecompress, constants as zlib } from "zlib";
+import { type ZstdOptions, constants as zlib, zstdCompress, zstdDecompress } from "zlib";
 
 import type { Store } from "../types.js";
 import { createInFlightBarrier } from "../utils/in-flight.js";
 
-const compress = promisify(brotliCompress);
-const decompress = promisify(brotliDecompress);
-const options: BrotliOptions = {
+const compress = promisify(zstdCompress);
+const decompress = promisify(zstdDecompress);
+const options: ZstdOptions = {
   params: {
-    [zlib.BROTLI_PARAM_QUALITY]: 4,
+    [zlib.ZSTD_c_compressionLevel]: 1,
   },
 };
 
 /**
- * A store that transparently compresses/decompresses values with brotli.
+ * A store that transparently compresses/decompresses values with zstd.
  *
  * @deprecated Compression is now handled outside the `Store` stack, so this would be
  * compressing already-compressed data.

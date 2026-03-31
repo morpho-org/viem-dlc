@@ -1,6 +1,6 @@
 import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
-import type { EIP1193Parameters, EIP1193RequestOptions } from "../../types.js";
+import type { EIP1193Parameters } from "../../types.js";
 import { createRateLimit } from "../../utils/with-rate-limit.js";
 
 import { type RateLimiterSchema, stripAdditionalParameters } from "./schema.js";
@@ -40,9 +40,9 @@ export function rateLimiter(
     const transport = baseTransportFn(params);
     const { withRateLimit } = createRateLimit(maxBurstRequests, maxRequestsPerSecond, maxConcurrentRequests);
 
-    const request = (args: EIP1193Parameters<RateLimiterSchema>, options?: EIP1193RequestOptions) => {
+    const request = (args: EIP1193Parameters<RateLimiterSchema>) => {
       const [baseArgs, additional] = stripAdditionalParameters(args);
-      return withRateLimit(() => transport.request(baseArgs, options), {
+      return withRateLimit(() => transport.request(baseArgs, { dedupe: true }), {
         priority: additional?.[0].priority,
       });
     };

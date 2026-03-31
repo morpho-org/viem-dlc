@@ -1,6 +1,6 @@
 {
   "name": "@morpho-org/viem-dlc",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "A collection of flexible viem extensions with a focus on intelligent caching.",
   "license": "MIT",
   "keywords": [
@@ -45,10 +45,10 @@
       "import": "./dist/transports/index.js",
       "default": "./dist/transports/index.js"
     },
-    "./transports/logs-cache": {
-      "types": "./dist/transports/logs-cache/index.d.ts",
-      "import": "./dist/transports/logs-cache/index.js",
-      "default": "./dist/transports/logs-cache/index.js"
+    "./transports/cache": {
+      "types": "./dist/transports/cache/index.d.ts",
+      "import": "./dist/transports/cache/index.js",
+      "default": "./dist/transports/cache/index.js"
     },
     "./utils": {
       "types": "./dist/utils/index.d.ts",
@@ -83,6 +83,7 @@
     "@tsconfig/node24": "24.0.4",
     "@types/node": "25.2.0",
     "@upstash/redis": "1.36.1",
+    "tsx": "4.21.0",
     "typescript": "5.9.3",
     "viem": "2.45.1",
     "vitest": "4.0.18"

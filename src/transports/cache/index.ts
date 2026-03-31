@@ -1,23 +1,20 @@
 import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
-import type { EIP1193Parameters, EIP1193RequestOptions } from "../../types.js";
-import { cyrb64Hash } from "../../utils/hash.js";
-import { parse, stringify } from "../../utils/json.js";
-import { withDedupe } from "../../utils/with-dedupe.js";
+import type { EIP1193Parameters } from "../../types.js";
+import { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
 import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
+import type { LogsEnricherConfig } from "../logs-enricher/types.js";
 import type { LogsSieveConfig } from "../logs-sieve/types.js";
 import type { RateLimiterConfig } from "../rate-limiter/index.js";
 
-import { ShardedCache } from "./cache.js";
-import { handleGetLogs } from "./handlers/eth-get-logs.js";
+import { handleEthCall } from "./eth-call/handler.js";
+import { handleEthGetLogs } from "./eth-get-logs/handler.js";
 import { normalize } from "./normalization.js";
-import type { LogsCacheRpcSchema } from "./schema.js";
-import type { CachedChunk, InvalidationStrategy, LogsCacheConfig } from "./types.js";
-import { CACHE_KEY_SEPARATOR } from "./utils.js";
+import type { CachedMethod, CacheSchema } from "./schema.js";
+import type { CacheConfig, HandlerContext, InvalidationStrategy } from "./types.js";
 
 export type * from "./schema.js";
 export type * from "./types.js";
-export { CACHE_KEY_SEPARATOR, computeCacheKey } from "./utils.js";
 
 /**
  * @param alphaAge Exponential growth rate w.r.t cache entry age (in time). @default 1/8
@@ -80,7 +77,9 @@ export function createSimpleInvalidation(
 /**
  * Creates an all-in-one caching transport for eth_getLogs calls.
  *
- * Internally composes three layers:
+ * Internally composes five layers:
+ * - **logsSieve**: (Optionally) filters out extra-large spam logs before they're cached
+ * - **logsEnricher**: (Optionally) ensures all logs have extra data, like `blockTimestamp`
  * - **rateLimiter**: Controls RPC request rate (token bucket + concurrency limit + priority queue)
  * - **logsDivider**: Splits large requests, retries with range halving on failure
  * - **cache**: Reads from cache, fetches gaps, writes complete bins via accumulator
@@ -96,7 +95,7 @@ export function createSimpleInvalidation(
  *   larger values may hit RPC limits and trigger halving.
  *
  * @example
- * const transport = logsCache(
+ * const transport = cache(
  *   http(rpcUrl),
  *   [
  *     { binSize: 10_000, store: new LruStore(), invalidationStrategy: createSimpleInvalidation() },
@@ -107,51 +106,57 @@ export function createSimpleInvalidation(
  *
  * const client = createPublicClient({ chain: mainnet, transport })
  */
-export function logsCache(
+export function cache(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
   [{ binSize, store, invalidationStrategy }, logsDividerConfig, ...otherConfigs]: [
-    LogsCacheConfig,
+    CacheConfig,
     Omit<LogsDividerConfig, "alignTo">,
-    RateLimiterConfig,
+    LogsEnricherConfig,
     LogsSieveConfig,
+    RateLimiterConfig,
   ],
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
-): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsCacheRpcSchema>> {
+): Transport<"custom", Record<string, any>, EIP1193RequestFn<CacheSchema>> {
   return (params) => {
     if (params.chain === undefined) {
-      throw new Error("You must pass a chain to the logsCache transport.");
+      throw new Error("You must pass a chain to the cache transport.");
     }
     const chainId = params.chain.id;
 
-    const cache = new ShardedCache<CachedChunk>(store, stringify, parse, CACHE_KEY_SEPARATOR);
+    const { coalesce } = createCoalescingMutex();
     const transport = logsDivider(baseTransportFn, [{ ...logsDividerConfig, alignTo: binSize }, ...otherConfigs])(
       params,
     );
 
-    const request = (args: EIP1193Parameters<LogsCacheRpcSchema>, options?: EIP1193RequestOptions) => {
-      args = normalize(args);
-
-      // Compute hash of normalized request args, for use as dedupe id
-      const requestHash = cyrb64Hash(JSON.stringify([chainId, args]));
-
-      // Dedupe all requests
-      return withDedupe(
-        () => {
-          if (args.method !== "eth_getLogs") {
-            return transport.request(args, options);
-          }
-
-          // TODO: (@haydenshively future-work) `handleGetLogs` could respect `options`
-          return handleGetLogs(transport.request, chainId, args.params, {
-            binSize,
-            invalidationStrategy,
-            cache,
-          });
-        },
-        { enabled: true, id: requestHash },
-      );
+    const context: HandlerContext = {
+      store,
+      binSize,
+      invalidationStrategy,
+      chainId,
+      requestFn: transport.request,
+      coalesce,
     };
 
+    const request = (req: EIP1193Parameters<CacheSchema>) => {
+      req = normalize(req);
+      // TODO: compare args against allowlist
+
+      switch (req.method) {
+        case "eth_call": {
+          return handleEthCall(context, req);
+        }
+        case "eth_getLogs": {
+          return handleEthGetLogs(context, req);
+        }
+        default: {
+          // Assert that all `CachedMethod` are handled explicitly
+          const _: never = req.method as Extract<typeof req.method, CachedMethod>;
+          return transport.request(req, { dedupe: true });
+        }
+      }
+    };
+
+    // TODO: have a better way of creating the transport so we can apply custom name and other props.
     return custom({ request })(params);
   };
 }
