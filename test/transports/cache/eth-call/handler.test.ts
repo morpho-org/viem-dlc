@@ -76,7 +76,7 @@ describe("handleEthCall", () => {
 
     expect(result).toBe("0x1234");
     expect(requestFn).toHaveBeenCalledWith(
-      { method: "eth_call", params: [{ to, data }, "latest", undefined, undefined] },
+      { method: "eth_call", params: [{ to, data }, "latest"] },
       { dedupe: true },
     );
   });
