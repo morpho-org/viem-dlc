@@ -32,6 +32,15 @@ export function extractRangeFromFilter(filter: EthGetLogsHashlessFilter, latest:
   };
 }
 
+/** Sort comparator for `RpcLog[]` -- orders by blockNumber, then logIndex, using bigint conversions. */
+export function sortRpcLogs(a: RpcLog, b: RpcLog): number {
+  const blockDiff = hexToBigInt(a.blockNumber!) - hexToBigInt(b.blockNumber!);
+  if (blockDiff !== 0n) return blockDiff < 0n ? -1 : 1;
+  const indexDiff = hexToBigInt(a.logIndex!) - hexToBigInt(b.logIndex!);
+  if (indexDiff !== 0n) return indexDiff < 0n ? -1 : 1;
+  return 0;
+}
+
 /** Returns a filter function that keeps logs in the range [fromBlock, toBlock]. */
 export function isInBlockRange(range: BlockRange) {
   return (log: RpcLog): boolean => {

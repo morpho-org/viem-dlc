@@ -60,6 +60,8 @@ export async function handleEthCall(
     return encodeAggregate3Result([]);
   }
 
+  // Hash includes the full params (including sentinel state override) so that requests
+  // with different TTLs are checked for freshness independently during fan-out.
   const reqHash = cyrb64Hash(JSON.stringify(req.params));
 
   return coalesce(blobKey, req, async (_leaderReq, collectFollowers) => {

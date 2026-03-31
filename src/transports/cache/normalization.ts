@@ -104,6 +104,7 @@ function normalizeTuple<const T extends Tuple>(tuple: T, normalizers: TupleNorma
 export function normalize(req: EIP1193Parameters<CacheSchema>) {
   req.params = deepTransform(req.params, { ...dt.sortKeys, ...dt.lowercaseHex, ...dt.deleteUndefined });
 
+  // TODO: could go further with normalization -- for example, parse 0x1 and 0x01 as the same block number
   switch (req.method) {
     case "eth_call":
       return req;

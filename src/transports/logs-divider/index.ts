@@ -57,11 +57,11 @@ export type * from "./types.js";
  */
 export function logsDivider(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  [logsDividerConfig, rateLimiterConfig, logsEnricherConfig, logsSieveConfig]: [
+  [logsDividerConfig, logsEnricherConfig, logsSieveConfig, rateLimiterConfig]: [
     LogsDividerConfig,
-    RateLimiterConfig,
     LogsEnricherConfig,
     LogsSieveConfig,
+    RateLimiterConfig,
   ],
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
 ): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsDividerSchema>> {
@@ -70,8 +70,8 @@ export function logsDivider(
   }
 
   return (params) => {
-    const transport = rateLimiter(logsEnricher(logsSieve(baseTransportFn, [logsSieveConfig]), [logsEnricherConfig]), [
-      rateLimiterConfig,
+    const transport = logsEnricher(logsSieve(rateLimiter(baseTransportFn, [rateLimiterConfig]), [logsSieveConfig]), [
+      logsEnricherConfig,
     ])(params);
 
     const request = (args: EIP1193Parameters<LogsDividerSchema>) => {

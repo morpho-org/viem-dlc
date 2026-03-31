@@ -111,9 +111,9 @@ export function cache(
   [{ binSize, store, invalidationStrategy }, logsDividerConfig, ...otherConfigs]: [
     CacheConfig,
     Omit<LogsDividerConfig, "alignTo">,
-    RateLimiterConfig,
     LogsEnricherConfig,
     LogsSieveConfig,
+    RateLimiterConfig,
   ],
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
 ): Transport<"custom", Record<string, any>, EIP1193RequestFn<CacheSchema>> {

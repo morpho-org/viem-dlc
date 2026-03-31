@@ -1,8 +1,8 @@
-import { hexToNumber, type RpcLog } from "viem";
+import type { RpcLog } from "viem";
 
 import type { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
 import type { BlockRange } from "../../../types.js";
-import { isInBlockRange, mergeBlockRanges } from "../../../utils/blocks.js";
+import { isInBlockRange, mergeBlockRanges, sortRpcLogs } from "../../../utils/blocks.js";
 import { max, min } from "../../../utils/math.js";
 import type { OnLogsResponse } from "../../logs-divider/types.js";
 import { keychain } from "../keychain.js";
@@ -91,10 +91,7 @@ export function createSink({ chainId, binSize, ndjson }: SinkConfig): OnLogsResp
       const effectiveBinEnd = min(binEnd, acc.fetchedAtBlock);
       if (isBinComplete(acc.coveredRanges, binStart, effectiveBinEnd)) {
         // Sort logs within the bin for guaranteed ordering
-        acc.logs.sort((a, b) => {
-          const blockDiff = hexToNumber(a.blockNumber!) - hexToNumber(b.blockNumber!);
-          return blockDiff !== 0 ? blockDiff : hexToNumber(a.logIndex!) - hexToNumber(b.logIndex!);
-        });
+        acc.logs.sort(sortRpcLogs);
 
         // Write metadata and logs as a batch to guarantee they're flushed together
         ndjson.upsert([

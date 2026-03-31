@@ -1,28 +1,28 @@
 import { custom, type EIP1193RequestFn, type Hex, type PublicRpcSchema, type Transport } from "viem";
 
-import type { EIP1193Parameters } from "../../types.js";
+import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 
-import type { LogsEnricherSchema } from "./schema.js";
 import type { LogsEnricherConfig } from "./types.js";
 
-export type * from "./schema.js";
 export type * from "./types.js";
 
+type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
+
 /** Creates a transport wrapper that enriches `eth_getLogs` responses. */
-export function logsEnricher(
-  baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
+export function logsEnricher<T extends Base>(
+  baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
   [{ retryCount, retryDelay, blockTimestamp }]: [LogsEnricherConfig],
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
-): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsEnricherSchema>> {
+): Transport<"custom", Record<string, any>, EIP1193RequestFn<T>> {
   return (params) => {
-    const transport = baseTransportFn(params);
+    const requestFn = baseTransportFn(params).request as EIP1193RequestFn<Base>;
 
-    const request = async (args: EIP1193Parameters<LogsEnricherSchema>) => {
+    const request = async (args: EIP1193Parameters<T>) => {
       if (args.method !== "eth_getLogs") {
-        return transport.request(args, { dedupe: true });
+        return requestFn(args, { dedupe: true });
       }
 
-      const logs = await transport.request(args, { dedupe: true });
+      const logs = await requestFn(args as EIP1193Parameters<Base, "eth_getLogs">, { dedupe: true });
 
       if (!blockTimestamp) return logs;
 
@@ -40,7 +40,7 @@ export function logsEnricher(
       const timestamps = new Map<Hex, Hex | null>();
       await Promise.all(
         [...blockNumbers].map(async (blockNumber) => {
-          const block = await transport.request(
+          const block = await requestFn(
             { method: "eth_getBlockByNumber", params: [blockNumber, false] },
             { dedupe: true, retryCount, retryDelay },
           );

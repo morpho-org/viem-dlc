@@ -119,6 +119,24 @@ export type SafelyExtendRpcSchema<T extends RpcSchema, Extension extends RpcSche
   readonly [K in keyof T]: Prettify<DeriveRpcSignature<T, K, Extension[number]>>;
 };
 
+/**
+ * Describes any `RpcSchema` that was safely extended from `T`, preserving `Method` and `ReturnType`
+ * for each entry while treating `Parameters` as opaque (`any`).
+ *
+ * Unlike `SafelyExtendRpcSchema`, which is generative, this type is descriptive: it matches any schema
+ * that could be the result of safely extending `T`.
+ *
+ * Useful when a function needs to accept transports whose schema extends `T` without being generic over
+ * the exact schema type. For example, `EIP1193RequestFn<SafelyExtendedRpcSchema<T>>` and `EIP1193RequestFn<T>`
+ * resolve concretely.
+ */
+export type SafelyExtendedRpcSchema<Base extends RpcSchema> = {
+  readonly [K in keyof Base]: Base[K] extends { Method: infer M; ReturnType: infer R }
+    ? // biome-ignore lint/suspicious/noExplicitAny: need bidirectional assignability here
+      { Method: M; Parameters?: any; ReturnType: R }
+    : Base[K];
+};
+
 /*//////////////////////////////////////////////////////////////
                               TYPES
 //////////////////////////////////////////////////////////////*/

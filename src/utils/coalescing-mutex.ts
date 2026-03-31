@@ -91,7 +91,7 @@ export function createCoalescingMutex() {
 
       try {
         const outcome = await leader.handler(leader.args, () => {
-          if (collected !== null) throw error_collectFollowersCalledTwice;
+          if (collected !== null) throw new Error("[coalesce] collectFollowers() called more than once");
           collected = queue.splice(0);
           return collected.map((c, slot) => ({ slot, args: c.args }));
         });
@@ -172,5 +172,3 @@ export function broadcast<TArgs, TResult>(
     followers: followers.map((f) => ({ slot: f.slot, action: "resolve", result })),
   };
 }
-
-const error_collectFollowersCalledTwice = new Error("[coalesce] collectFollowers() called more than once");

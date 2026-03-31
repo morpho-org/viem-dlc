@@ -37,17 +37,17 @@ const transport = cache(http(rpcUrl), [
     maxBlockRange: 100_000,
   },
   {
-    maxRequestsPerSecond: 10,
-    maxBurstRequests: 5,
-    maxConcurrentRequests: 5,
-  },
-  {
     retryCount: 3,
     retryDelay: 1_000,
     blockTimestamp: false,
   },
   {
     maxBytes: 8_192,
+  },
+  {
+    maxRequestsPerSecond: 10,
+    maxBurstRequests: 5,
+    maxConcurrentRequests: 5,
   },
 ])
 
@@ -79,16 +79,16 @@ const transport = logsDivider(http(rpcUrl), [
     alignTo: 10_000,
   },
   {
-    maxRequestsPerSecond: 10,
-    maxConcurrentRequests: 5,
-  },
-  {
     retryCount: 3,
     retryDelay: 1_000,
     blockTimestamp: false,
   },
   {
     maxBytes: 8_192,
+  },
+  {
+    maxRequestsPerSecond: 10,
+    maxConcurrentRequests: 5,
   },
 ])
 
@@ -191,7 +191,7 @@ interface Store {
 | `MemoryStore` | `@morpho-org/viem-dlc/stores` | Simple in-memory Map (prefer `LruStore`) |
 | `HierarchicalStore` | `@morpho-org/viem-dlc/stores` | Layered stores — reads fall through, writes fan out |
 | `DebouncedStore` | `@morpho-org/viem-dlc/stores` | Batches writes with debounce + max staleness timeout |
-| `CompressedStore` | `@morpho-org/viem-dlc/stores` | Transparent brotli compression (Node/Bun only) |
+| `CompressedStore` | `@morpho-org/viem-dlc/stores` | Transparent zstd compression (Node/Bun only) |
 | `UpstashStore` | `@morpho-org/viem-dlc/stores/upstash` | Upstash Redis with automatic value sharding and atomic writes |
 
 ### Composing stores
