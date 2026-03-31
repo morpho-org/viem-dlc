@@ -4,6 +4,7 @@ import type { BlockRange, EIP1193Parameters } from "../../types.js";
 import { cyrb64Hash } from "../../utils/hash.js";
 import { pick } from "../../utils/pick.js";
 
+import { extractEthCallCachePolicy } from "./eth-call/state-override.js";
 import type { CachedMethod, CacheSchema } from "./schema.js";
 
 /**
@@ -49,7 +50,7 @@ function hash(obj: unknown) {
 export const keychain = createKeychain<CacheSchema, CachedMethod>()({
   eth_call: {
     blobKey(chainId, req) {
-      const custom = req.params[4]?.blobKey;
+      const custom = extractEthCallCachePolicy(req.params[2])?.policy.blobKey;
       return custom ? `${chainId}:${req.method}:v002:${hash(custom)}` : null;
     },
     entryKey(

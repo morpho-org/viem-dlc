@@ -16,6 +16,7 @@ import {
   encodeAggregate3Result,
   isMulticall3,
 } from "./multicall3.js";
+import { extractEthCallCachePolicy } from "./state-override.js";
 import type { CachedEthCallEntry } from "./types.js";
 
 export async function handleEthCall(
@@ -36,9 +37,11 @@ export async function handleEthCall(
   // Step 1: Extract params & detect multicall
   const txObj = req.params[0];
   const block = req.params[1];
-  const stateOverride = req.params[2];
   const blockOverride = req.params[3];
-  const ttl = req.params[4]!.ttl;
+
+  const extracted = extractEthCallCachePolicy(req.params[2])!;
+  const ttl = extracted.policy.ttl;
+  const stateOverride = extracted.cleanStateOverride;
 
   // Normalization strips txObj to { to, data } when blobKey is present
   const { to, data } = txObj;

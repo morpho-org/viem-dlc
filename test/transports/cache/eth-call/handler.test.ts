@@ -1,8 +1,13 @@
+import { toHex } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import { LazyNdjsonMap } from "../../../../src/internal/index.js";
 import { MemoryStore } from "../../../../src/stores/memory.js";
 import { handleEthCall } from "../../../../src/transports/cache/eth-call/handler.js";
+import {
+  ETH_CALL_CACHE_POLICY_ADDRESS,
+  extractEthCallCachePolicy,
+} from "../../../../src/transports/cache/eth-call/state-override.js";
 import type { CachedEthCallEntry } from "../../../../src/transports/cache/eth-call/types.js";
 import { keychain } from "../../../../src/transports/cache/keychain.js";
 import type { CacheSchema } from "../../../../src/transports/cache/schema.js";
@@ -23,7 +28,11 @@ function createReq(withBlobKey = true): EthCallRequest {
   return {
     method: "eth_call",
     params: withBlobKey
-      ? [{ to, data }, "latest", undefined, undefined, { blobKey: "test-blob", ttl }]
+      ? [
+          { to, data },
+          "latest",
+          { [ETH_CALL_CACHE_POLICY_ADDRESS]: { code: toHex(JSON.stringify({ blobKey: "test-blob", ttl })) } },
+        ]
       : [{ to, data }, "latest"],
   };
 }
@@ -43,11 +52,12 @@ async function populateStore(store: MemoryStore, req: ReturnType<typeof createRe
     },
   );
 
+  const cleanStateOverride = extractEthCallCachePolicy(req.params[2])?.cleanStateOverride;
   const entryKey = keychain.entryKey(chainId, "eth_call", {
     to,
     data,
     block: req.params[1],
-    stateOverride: req.params[2],
+    stateOverride: cleanStateOverride,
     blockOverride: req.params[3],
   });
   ndjson.upsert([{ key: entryKey.data, value }]);
