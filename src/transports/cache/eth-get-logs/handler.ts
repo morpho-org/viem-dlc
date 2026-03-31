@@ -4,6 +4,7 @@ import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
 import type { LazyEntry } from "../../../internal/ndjson-map.js";
 import type { BlockRange, EIP1193Parameters } from "../../../types.js";
 import { divideBlockRange, extractRangeFromFilter, isInBlockRange, mergeBlockRanges } from "../../../utils/blocks.js";
+import { tryCatch } from "../../../utils/errors.js";
 import { parse, stringify } from "../../../utils/json.js";
 import { keychain } from "../keychain.js";
 import type { CacheSchema } from "../schema.js";
@@ -45,10 +46,11 @@ export async function handleEthGetLogs(
 ): Promise<RpcLog[]> {
   const blobKey = keychain.blobKey(chainId, req);
 
-  return coalesce(blobKey, req, async ({ params: [filter, options] }, collectFollowers) => {
+  return coalesce(blobKey, req, async (args, collectFollowers) => {
     /*//////////////////////////////////////////////////////////////
                                LEADER OPS
     //////////////////////////////////////////////////////////////*/
+    const [filter] = args.params;
 
     // blockHash queries are not cached - pass through
     if (filter.blockHash) {
@@ -162,33 +164,47 @@ export async function handleEthGetLogs(
                                 FAN OUT
     //////////////////////////////////////////////////////////////*/
 
-    // Collect followers whose filter matches the leader's (only reduce may differ).
+    // Collect followers whose filter matches the leader's (only search/reduce may differ).
     // Matching followers share this decompression pass; non-matching ones are deferred.
     // Leader is prepended at index 0; matching followers follow.
-    const collected = collectFollowers();
-    const filterJson = JSON.stringify(filter);
-    const participants = collected
-      .filter((f) => JSON.stringify(f.args.params[0]) === filterJson)
-      .map((f) => ({ slot: f.slot, reduce: f.args.params[1]?.reduce }));
-    participants.unshift({ slot: -1, reduce: options?.reduce });
+    const leader = { slot: -1, args };
+    const followers = collectFollowers();
 
-    // Each reduce is isolated so a throwing reducer only kills its own participant.
-    const failed = new Map<number, unknown>();
+    const leaderFilterJson = JSON.stringify(filter);
+    const participants = [leader, ...followers]
+      .filter((f) => JSON.stringify(f.args.params[0]) === leaderFilterJson)
+      .map((f) => {
+        const search = tryCatch(() =>
+          f.args.params[1]?.search ? new RegExp(f.args.params[1].search, "i") : undefined,
+        );
+        return {
+          slot: f.slot,
+          reduce: f.args.params[1]?.reduce,
+          search: search.result,
+          error: search.error,
+        };
+      });
 
     // Single decompression pass applies all reducers.
     const isRequestedLog = isInBlockRange(requestedRange);
-    const searchPattern = options?.search ? new RegExp(options.search, "i") : undefined;
     const processEntry = (accs: RpcLog[][], entry: LazyEntry<CachedChunk>): RpcLog[][] => {
       if (!entry.key.startsWith("1:")) return accs;
       expectedDataKeys.delete(entry.key);
 
-      if (searchPattern && !searchPattern.test(entry.rawValue)) return accs;
+      // Test each participant's search pattern against the raw NDJSON once per entry.
+      // Skip JSON parsing entirely if no participant matches.
+      const matched: number[] = [];
+      participants.forEach((p, i) => {
+        if (p.error || (p.search && !p.search.test(entry.rawValue))) return;
+        matched.push(i);
+      });
+      if (matched.length === 0) return accs;
 
       const logs = entry.value as CachedLogs;
       for (const log of logs) {
         if (!isRequestedLog(log)) continue;
-        for (let i = 0; i < participants.length; i++) {
-          if (failed.has(i)) continue;
+        for (const i of matched) {
+          if (participants[i]!.error) continue;
           try {
             const reduce = participants[i]!.reduce;
             if (reduce) {
@@ -196,8 +212,8 @@ export async function handleEthGetLogs(
             } else {
               accs[i]!.push(log);
             }
-          } catch (e) {
-            failed.set(i, e);
+          } catch (error) {
+            participants[i]!.error = error;
           }
         }
       }
@@ -214,8 +230,8 @@ export async function handleEthGetLogs(
     }
 
     const outcomes = participants.map((p, i) =>
-      failed.has(i)
-        ? { slot: p.slot, action: "reject" as const, error: failed.get(i) }
+      p.error
+        ? { slot: p.slot, action: "reject" as const, error: p.error }
         : { slot: p.slot, action: "resolve" as const, result: accs[i]! },
     );
 

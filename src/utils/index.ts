@@ -1,5 +1,6 @@
 export * from "./blocks.js";
 export * from "./coalescing-mutex.js";
+export * from "./errors.js";
 export * from "./hash.js";
 export * from "./in-flight.js";
 export * from "./json.js";

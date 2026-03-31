@@ -19,7 +19,7 @@ function createKeychain<Schema extends RpcSchema, Methods extends Schema[number]
   return <
     Fns extends {
       [M in Methods]: {
-        blobKey: (chainId: number, req: EIP1193Parameters<Schema, M>) => `${number}:${M}:${string}` | null;
+        blobKey: (chainId: number, req: EIP1193Parameters<Schema, M>) => `${number}:${M}:v${string}:${string}` | null;
         // biome-ignore lint/suspicious/noExplicitAny: necessary to infer types
         entryKey: (chainId: number, method: M, inputs: any) => Record<string, string>;
       };
@@ -50,7 +50,7 @@ export const keychain = createKeychain<CacheSchema, CachedMethod>()({
   eth_call: {
     blobKey(chainId, req) {
       const custom = req.params[4]?.blobKey;
-      return custom ? `${chainId}:${req.method}:${hash(custom)}` : null;
+      return custom ? `${chainId}:${req.method}:v002:${hash(custom)}` : null;
     },
     entryKey(
       _chainId,
@@ -63,7 +63,7 @@ export const keychain = createKeychain<CacheSchema, CachedMethod>()({
   eth_getLogs: {
     blobKey(chainId, req) {
       const suffix = hash(pick(req.params[0], ["address", "topics"]));
-      return `${chainId}:${req.method}:${suffix}`;
+      return `${chainId}:${req.method}:v002:${suffix}`;
     },
     entryKey(_chainId, _method, inputs: BlockRange) {
       const fromBlock = inputs.fromBlock.toString().padStart(20, "0");

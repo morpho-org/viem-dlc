@@ -24,10 +24,13 @@ export async function handleEthCall(
 ): Promise<Hex> {
   const blobKey = keychain.blobKey(chainId, req);
   if (!blobKey) {
-    return requestFn({
-      method: req.method,
-      params: [req.params[0], req.params[1], req.params[2], req.params[3]],
-    });
+    return requestFn(
+      {
+        method: req.method,
+        params: [req.params[0], req.params[1], req.params[2], req.params[3]],
+      },
+      { dedupe: true },
+    );
   }
 
   // Step 1: Extract params & detect multicall
