@@ -19,18 +19,15 @@ import type { CacheSchema, EthGetLogsReduce } from "../transports/cache/schema.j
 
 export type GetLogs2Parameters<
   abiEvent extends AbiEvent | undefined = undefined,
-  abiEvents extends
-    | readonly AbiEvent[]
-    | readonly unknown[]
-    | undefined = abiEvent extends AbiEvent ? [abiEvent] : undefined,
+  abiEvents extends readonly AbiEvent[] | readonly unknown[] | undefined = abiEvent extends AbiEvent
+    ? [abiEvent]
+    : undefined,
   strict extends boolean | undefined = undefined,
   fromBlock extends BlockNumber | BlockTag | undefined = undefined,
   toBlock extends BlockNumber | BlockTag | undefined = undefined,
   //
   _eventName extends string | undefined = MaybeAbiEventName<abiEvent>,
-  _pending extends boolean =
-    | (fromBlock extends "pending" ? true : false)
-    | (toBlock extends "pending" ? true : false),
+  _pending extends boolean = (fromBlock extends "pending" ? true : false) | (toBlock extends "pending" ? true : false),
   _log = Log<bigint, number, _pending, abiEvent, strict, abiEvents, _eventName>,
 > = {
   /** Address or list of addresses from which logs originated */
@@ -81,18 +78,15 @@ export type GetLogs2Parameters<
 
 export type GetLogs2ReturnType<
   abiEvent extends AbiEvent | undefined = undefined,
-  abiEvents extends
-    | readonly AbiEvent[]
-    | readonly unknown[]
-    | undefined = abiEvent extends AbiEvent ? [abiEvent] : undefined,
+  abiEvents extends readonly AbiEvent[] | readonly unknown[] | undefined = abiEvent extends AbiEvent
+    ? [abiEvent]
+    : undefined,
   strict extends boolean | undefined = undefined,
   fromBlock extends BlockNumber | BlockTag | undefined = undefined,
   toBlock extends BlockNumber | BlockTag | undefined = undefined,
   //
   _eventName extends string | undefined = MaybeAbiEventName<abiEvent>,
-  _pending extends boolean =
-    | (fromBlock extends "pending" ? true : false)
-    | (toBlock extends "pending" ? true : false),
+  _pending extends boolean = (fromBlock extends "pending" ? true : false) | (toBlock extends "pending" ? true : false),
 > = Log<bigint, number, _pending, abiEvent, strict, abiEvents, _eventName>[];
 
 /**
@@ -122,10 +116,9 @@ export type GetLogs2ReturnType<
 export async function getLogs2<
   chain extends Chain | undefined,
   const abiEvent extends AbiEvent | undefined = undefined,
-  const abiEvents extends
-    | readonly AbiEvent[]
-    | readonly unknown[]
-    | undefined = abiEvent extends AbiEvent ? [abiEvent] : undefined,
+  const abiEvents extends readonly AbiEvent[] | readonly unknown[] | undefined = abiEvent extends AbiEvent
+    ? [abiEvent]
+    : undefined,
   strict extends boolean | undefined = undefined,
   fromBlock extends BlockNumber | BlockTag | undefined = undefined,
   toBlock extends BlockNumber | BlockTag | undefined = undefined,
