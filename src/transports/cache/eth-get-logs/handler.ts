@@ -106,7 +106,7 @@ export async function handleEthGetLogs(
       expectedMetadataRanges.delete(record.key);
 
       if (
-        record.value.__type === "metadata" &&
+        record.value.__type !== "metadata" ||
         shouldFetchRange(record.value, range, expectedDataKeys.size, invalidationStrategy)
       ) {
         gaps.push(range);
