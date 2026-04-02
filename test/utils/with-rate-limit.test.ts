@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { sleep } from "../../src/utils/sleep.js";
-import { RateLimitGateError, createRateLimit, createTokenBucket } from "../../src/utils/with-rate-limit.js";
+import { createRateLimit, createTokenBucket, RateLimitGateError } from "../../src/utils/with-rate-limit.js";
 
 describe("createTokenBucket", () => {
   it("creates bucket with specified maxTokens and refillRate", () => {
