@@ -84,11 +84,15 @@ function refillBucket(bucket: TokenBucket): void {
 /** Job waiting to be admitted by the limiter */
 interface Job {
   /** Resolver used to unblock the waiting caller */
-  resolve: () => void;
+  resolve: (admitted: boolean) => void;
   /** Lower numbers execute first */
   priority: number;
   /** Monotonic sequence number for FIFO within same priority */
   seq: number;
+  /** Timestamp when the job was queued */
+  queuedAt: number;
+  /** Discard the job if it sits in the queue longer than this (ms). `Infinity` = never discard. */
+  discardAfterMs: number;
 }
 
 interface RateLimitContext {
@@ -161,11 +165,17 @@ function drainQueue(ctx: RateLimitContext): void {
   refillBucket(ctx.bucket);
 
   while (ctx.queue.length > 0 && ctx.inFlight < ctx.maxConcurrent && ctx.bucket.tokens >= 1) {
+    const job = dequeueNext(ctx.queue)!;
+
+    // Discard stale jobs without consuming a token or concurrency slot
+    if (Date.now() - job.queuedAt > job.discardAfterMs) {
+      job.resolve(false);
+      continue;
+    }
+
     ctx.bucket.tokens -= 1;
     ctx.inFlight += 1;
-
-    const job = dequeueNext(ctx.queue)!;
-    job.resolve();
+    job.resolve(true);
   }
 
   scheduleDrain(ctx);
@@ -216,15 +226,22 @@ export function createRateLimit(maxTokens: number, refillRate: number, maxConcur
      *   withRateLimit(() => fetch('/medium'), { priority: 5 }),
      * ])
      */
-    async withRateLimit<T>(fn: () => Promise<T>, { priority = Infinity }: { priority?: number }): Promise<T> {
-      await new Promise<void>((resolve) => {
+    async withRateLimit<T>(
+      fn: () => Promise<T>,
+      { priority = Infinity, discardAfterMs = Infinity }: { priority?: number; discardAfterMs?: number },
+    ): Promise<T> {
+      const admitted = await new Promise<boolean>((resolve) => {
         ctx.queue.push({
           resolve,
           priority,
           seq: ctx.nextSeq++,
+          queuedAt: Date.now(),
+          discardAfterMs,
         });
         drainQueue(ctx);
       });
+
+      if (!admitted) throw new Error("[withRateLimit] Job discarded: exceeded discardAfterMs");
 
       try {
         return await fn();

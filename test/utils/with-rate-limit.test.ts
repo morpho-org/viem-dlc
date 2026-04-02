@@ -189,6 +189,118 @@ describe("withRateLimit", () => {
   });
 });
 
+describe("discardAfterMs", () => {
+  it("discards stale jobs without calling fn", async () => {
+    // 1 concurrent slot — second job must wait in queue
+    const { withRateLimit } = createRateLimit(10, 1000, 1);
+    let fnCalled = false;
+
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      resolveGate = r;
+    });
+
+    // First job holds the slot
+    const p0 = withRateLimit(async () => {
+      await gate;
+      return "gate";
+    }, {});
+
+    // Second job has a very short discard window
+    const p1 = withRateLimit(
+      async () => {
+        fnCalled = true;
+        return "should-not-run";
+      },
+      { discardAfterMs: 10 },
+    );
+
+    // Wait long enough for p1 to become stale
+    await sleep(50);
+    resolveGate();
+
+    const [r0, r1] = await Promise.allSettled([p0, p1]);
+
+    expect(r0).toEqual({ status: "fulfilled", value: "gate" });
+    expect(r1.status).toBe("rejected");
+    expect(fnCalled).toBe(false);
+  });
+
+  it("admits timely jobs normally", async () => {
+    const { withRateLimit } = createRateLimit(10, 1000, 1);
+
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      resolveGate = r;
+    });
+
+    const p0 = withRateLimit(async () => {
+      await gate;
+      return "gate";
+    }, {});
+
+    // Long discard window — should not expire
+    const p1 = withRateLimit(async () => "admitted", { discardAfterMs: 5000 });
+
+    resolveGate();
+    const [, r1] = await Promise.all([p0, p1]);
+    expect(r1).toBe("admitted");
+  });
+
+  it("does not consume tokens for discarded jobs", async () => {
+    // 2 burst tokens, slow refill, 1 concurrent
+    const { withRateLimit } = createRateLimit(2, 1, 1);
+
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      resolveGate = r;
+    });
+
+    // Job 0 takes the concurrency slot
+    const p0 = withRateLimit(async () => {
+      await gate;
+    }, {});
+
+    // Jobs 1-2 will become stale
+    const p1 = withRateLimit(async () => "stale1", { discardAfterMs: 10 });
+    const p2 = withRateLimit(async () => "stale2", { discardAfterMs: 10 });
+
+    // Wait for them to expire, then release the gate
+    await sleep(50);
+    resolveGate();
+    await Promise.allSettled([p0, p1, p2]);
+
+    // We started with 2 tokens, p0 consumed 1. Stale p1 and p2 should NOT have consumed tokens.
+    // So 1 token should remain — a fresh job should run immediately.
+    const start = Date.now();
+    await withRateLimit(async () => "fresh", {});
+    expect(Date.now() - start).toBeLessThan(50);
+  });
+
+  it("never discards when discardAfterMs is Infinity (default)", async () => {
+    const { withRateLimit } = createRateLimit(10, 1000, 1);
+
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      resolveGate = r;
+    });
+
+    const p0 = withRateLimit(async () => {
+      await gate;
+    }, {});
+
+    // Default: no discardAfterMs — should never discard
+    const p1 = withRateLimit(async () => "survived", {});
+
+    // Even after a long wait
+    await sleep(100);
+    resolveGate();
+
+    const [, r1] = await Promise.all([p0, p1]);
+    expect(r1).toBe("survived");
+  });
+});
+
 describe("priority scheduling", () => {
   it("executes lower priority values before higher ones", async () => {
     // 10 burst tokens, fast refill, 1 concurrent — forces serialization
