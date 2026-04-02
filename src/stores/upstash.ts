@@ -7,9 +7,9 @@ import type { Store } from "../types.js";
 import { createInFlightBarrier } from "../utils/in-flight.js";
 import { shardString } from "../utils/strings.js";
 
-import { DebouncedStore } from "./debounced.js";
 import { HierarchicalStore } from "./hierarchical.js";
 import { LruStore } from "./lru.js";
+import { ThrottledStore } from "./throttled.js";
 
 export type UpstashStoreOptions = {
   maxRequestBytes: number;
@@ -207,21 +207,15 @@ export function createOptimizedUpstashStore(options: UpstashStoreOptions) {
   // 100 commands/(10ms Upstash job bucket) → 3-6 commands/write → 3+ concurrent instances ≅ 3 writes
   const maxWritesBurst = 3;
 
-  // We use DebouncedStore to coalesce writes and reduce load, while still respecting rate limits.
-  // debounceMs=500 gives good coalescing without too much lag.
-  // maxStalenessMs=2000 ensures we don't hold data too long.
+  // We coalesce writes per key and rate-limit remote persistence.
   return new HierarchicalStore(
     [
-      new LruStore(1 << 28), // 256 MB
-      new DebouncedStore(remote, {
-        debounceMs: 500,
-        maxDelayMs: 2000,
-        maxStalenessMs: 30000, // defend against serverless freeze/thaw cycles
+      new LruStore(1 << 30), // 1 GB
+      new ThrottledStore(remote, {
+        maxStalenessMs: 60000, // defend against serverless freeze/thaw cycles
         maxWritesBurst,
         maxWritesPerSecond,
-        onWriteError: (key, err, durationMs) => {
-          console.error(`[UpstashStore] Write error for key ${key} after ${Math.ceil(durationMs / 1000)}s:`, err);
-        },
+        maxConcurrent: Infinity,
       }),
     ],
     { populateOnMiss: true },
