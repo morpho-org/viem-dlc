@@ -84,15 +84,15 @@ function refillBucket(bucket: TokenBucket): void {
 /** Job waiting to be admitted by the limiter */
 interface Job {
   /** Resolver used to unblock the waiting caller */
-  resolve: (admitted: boolean) => void;
+  resolve: () => void;
+  /** Rejector used when admission is denied before execution */
+  reject: (err: unknown) => void;
   /** Lower numbers execute first */
   priority: number;
   /** Monotonic sequence number for FIFO within same priority */
   seq: number;
-  /** Timestamp when the job was queued */
-  queuedAt: number;
-  /** Discard the job if it sits in the queue longer than this (ms). `Infinity` = never discard. */
-  discardAfterMs: number;
+  /** Optional admission guard evaluated immediately before execution */
+  gate?: () => boolean;
 }
 
 interface RateLimitContext {
@@ -108,6 +108,13 @@ interface RateLimitContext {
   nextSeq: number;
   /** Whether a drain timer is already scheduled */
   drainScheduled: boolean;
+}
+
+export class RateLimitGateError extends Error {
+  constructor(message = "[withRateLimit] Job rejected by gate") {
+    super(message);
+    this.name = "RateLimitGateError";
+  }
 }
 
 /**
@@ -167,15 +174,19 @@ function drainQueue(ctx: RateLimitContext): void {
   while (ctx.queue.length > 0 && ctx.inFlight < ctx.maxConcurrent && ctx.bucket.tokens >= 1) {
     const job = dequeueNext(ctx.queue)!;
 
-    // Discard stale jobs without consuming a token or concurrency slot
-    if (Date.now() - job.queuedAt > job.discardAfterMs) {
-      job.resolve(false);
+    try {
+      if (job.gate?.() === false) {
+        job.reject(new RateLimitGateError());
+        continue;
+      }
+    } catch (err) {
+      job.reject(err);
       continue;
     }
 
     ctx.bucket.tokens -= 1;
     ctx.inFlight += 1;
-    job.resolve(true);
+    job.resolve();
   }
 
   scheduleDrain(ctx);
@@ -228,20 +239,18 @@ export function createRateLimit(maxTokens: number, refillRate: number, maxConcur
      */
     async withRateLimit<T>(
       fn: () => Promise<T>,
-      { priority = Infinity, discardAfterMs = Infinity }: { priority?: number; discardAfterMs?: number },
+      { priority = Infinity, gate }: { priority?: number; gate?: () => boolean },
     ): Promise<T> {
-      const admitted = await new Promise<boolean>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
         ctx.queue.push({
           resolve,
+          reject,
           priority,
           seq: ctx.nextSeq++,
-          queuedAt: Date.now(),
-          discardAfterMs,
+          gate,
         });
         drainQueue(ctx);
       });
-
-      if (!admitted) throw new Error("[withRateLimit] Job discarded: exceeded discardAfterMs");
 
       try {
         return await fn();

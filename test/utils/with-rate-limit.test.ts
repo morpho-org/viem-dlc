@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { sleep } from "../../src/utils/sleep.js";
-import { createRateLimit, createTokenBucket } from "../../src/utils/with-rate-limit.js";
+import { RateLimitGateError, createRateLimit, createTokenBucket } from "../../src/utils/with-rate-limit.js";
 
 describe("createTokenBucket", () => {
   it("creates bucket with specified maxTokens and refillRate", () => {
@@ -189,8 +189,8 @@ describe("withRateLimit", () => {
   });
 });
 
-describe("discardAfterMs", () => {
-  it("discards stale jobs without calling fn", async () => {
+describe("gate", () => {
+  it("rejects gated-out jobs without calling fn", async () => {
     // 1 concurrent slot — second job must wait in queue
     const { withRateLimit } = createRateLimit(10, 1000, 1);
     let fnCalled = false;
@@ -206,27 +206,24 @@ describe("discardAfterMs", () => {
       return "gate";
     }, {});
 
-    // Second job has a very short discard window
     const p1 = withRateLimit(
       async () => {
         fnCalled = true;
         return "should-not-run";
       },
-      { discardAfterMs: 10 },
+      { gate: () => false },
     );
 
-    // Wait long enough for p1 to become stale
-    await sleep(50);
     resolveGate();
 
     const [r0, r1] = await Promise.allSettled([p0, p1]);
 
     expect(r0).toEqual({ status: "fulfilled", value: "gate" });
-    expect(r1.status).toBe("rejected");
+    expect(r1).toMatchObject({ status: "rejected", reason: expect.any(RateLimitGateError) });
     expect(fnCalled).toBe(false);
   });
 
-  it("admits timely jobs normally", async () => {
+  it("runs jobs normally when gate returns true", async () => {
     const { withRateLimit } = createRateLimit(10, 1000, 1);
 
     let resolveGate!: () => void;
@@ -239,15 +236,14 @@ describe("discardAfterMs", () => {
       return "gate";
     }, {});
 
-    // Long discard window — should not expire
-    const p1 = withRateLimit(async () => "admitted", { discardAfterMs: 5000 });
+    const p1 = withRateLimit(async () => "admitted", { gate: () => true });
 
     resolveGate();
     const [, r1] = await Promise.all([p0, p1]);
     expect(r1).toBe("admitted");
   });
 
-  it("does not consume tokens for discarded jobs", async () => {
+  it("does not consume tokens for gated-out jobs", async () => {
     // 2 burst tokens, slow refill, 1 concurrent
     const { withRateLimit } = createRateLimit(2, 1, 1);
 
@@ -261,24 +257,22 @@ describe("discardAfterMs", () => {
       await gate;
     }, {});
 
-    // Jobs 1-2 will become stale
-    const p1 = withRateLimit(async () => "stale1", { discardAfterMs: 10 });
-    const p2 = withRateLimit(async () => "stale2", { discardAfterMs: 10 });
+    const p1 = withRateLimit(async () => "blocked1", { gate: () => false });
+    const p2 = withRateLimit(async () => "blocked2", { gate: () => false });
 
-    // Wait for them to expire, then release the gate
-    await sleep(50);
     resolveGate();
     await Promise.allSettled([p0, p1, p2]);
 
-    // We started with 2 tokens, p0 consumed 1. Stale p1 and p2 should NOT have consumed tokens.
+    // We started with 2 tokens, p0 consumed 1. Gated-out p1 and p2 should NOT have consumed tokens.
     // So 1 token should remain — a fresh job should run immediately.
     const start = Date.now();
     await withRateLimit(async () => "fresh", {});
     expect(Date.now() - start).toBeLessThan(50);
   });
 
-  it("never discards when discardAfterMs is Infinity (default)", async () => {
+  it("does not consume concurrency for gated-out jobs", async () => {
     const { withRateLimit } = createRateLimit(10, 1000, 1);
+    const order: string[] = [];
 
     let resolveGate!: () => void;
     const gate = new Promise<void>((r) => {
@@ -287,17 +281,32 @@ describe("discardAfterMs", () => {
 
     const p0 = withRateLimit(async () => {
       await gate;
+      order.push("gate");
     }, {});
 
-    // Default: no discardAfterMs — should never discard
-    const p1 = withRateLimit(async () => "survived", {});
+    const p1 = withRateLimit(async () => "blocked", { gate: () => false });
+    const p2 = withRateLimit(async () => {
+      order.push("ran");
+    }, {});
 
-    // Even after a long wait
-    await sleep(100);
     resolveGate();
+    const [r1] = await Promise.allSettled([p1, p0, p2]);
 
-    const [, r1] = await Promise.all([p0, p1]);
-    expect(r1).toBe("survived");
+    expect(r1).toMatchObject({ status: "rejected", reason: expect.any(RateLimitGateError) });
+    expect(order).toEqual(["gate", "ran"]);
+  });
+
+  it("propagates errors thrown by gate", async () => {
+    const { withRateLimit } = createRateLimit(10, 1000, 1);
+    const error = new Error("gate failed");
+
+    await expect(
+      withRateLimit(async () => "never", {
+        gate: () => {
+          throw error;
+        },
+      }),
+    ).rejects.toBe(error);
   });
 });
 
