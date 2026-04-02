@@ -225,6 +225,7 @@ export function createRateLimit(maxTokens: number, refillRate: number, maxConcur
      *
      * Lower numeric priority runs first (P0 before P1).
      * Jobs with the same priority are processed FIFO.
+     * Use `gate` to defer decision on whether to run job (doesn't consume tokens if false).
      *
      * @example
      * const { withRateLimit } = createRateLimit(5, 10, 2) // 5 burst, 10/sec refill, 2 concurrent
