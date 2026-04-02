@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { sleep } from "../../src/utils/sleep.js";
-import { createRateLimit, createTokenBucket } from "../../src/utils/with-rate-limit.js";
+import { createRateLimit, createTokenBucket, RateLimitGateError } from "../../src/utils/with-rate-limit.js";
 
 describe("createTokenBucket", () => {
   it("creates bucket with specified maxTokens and refillRate", () => {
@@ -186,6 +186,127 @@ describe("withRateLimit", () => {
       // All should complete and return correct values
       expect(results).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     });
+  });
+});
+
+describe("gate", () => {
+  it("rejects gated-out jobs without calling fn", async () => {
+    // 1 concurrent slot — second job must wait in queue
+    const { withRateLimit } = createRateLimit(10, 1000, 1);
+    let fnCalled = false;
+
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      resolveGate = r;
+    });
+
+    // First job holds the slot
+    const p0 = withRateLimit(async () => {
+      await gate;
+      return "gate";
+    }, {});
+
+    const p1 = withRateLimit(
+      async () => {
+        fnCalled = true;
+        return "should-not-run";
+      },
+      { gate: () => false },
+    );
+
+    resolveGate();
+
+    const [r0, r1] = await Promise.allSettled([p0, p1]);
+
+    expect(r0).toEqual({ status: "fulfilled", value: "gate" });
+    expect(r1).toMatchObject({ status: "rejected", reason: expect.any(RateLimitGateError) });
+    expect(fnCalled).toBe(false);
+  });
+
+  it("runs jobs normally when gate returns true", async () => {
+    const { withRateLimit } = createRateLimit(10, 1000, 1);
+
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      resolveGate = r;
+    });
+
+    const p0 = withRateLimit(async () => {
+      await gate;
+      return "gate";
+    }, {});
+
+    const p1 = withRateLimit(async () => "admitted", { gate: () => true });
+
+    resolveGate();
+    const [, r1] = await Promise.all([p0, p1]);
+    expect(r1).toBe("admitted");
+  });
+
+  it("does not consume tokens for gated-out jobs", async () => {
+    // 2 burst tokens, slow refill, 1 concurrent
+    const { withRateLimit } = createRateLimit(2, 1, 1);
+
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      resolveGate = r;
+    });
+
+    // Job 0 takes the concurrency slot
+    const p0 = withRateLimit(async () => {
+      await gate;
+    }, {});
+
+    const p1 = withRateLimit(async () => "blocked1", { gate: () => false });
+    const p2 = withRateLimit(async () => "blocked2", { gate: () => false });
+
+    resolveGate();
+    await Promise.allSettled([p0, p1, p2]);
+
+    // We started with 2 tokens, p0 consumed 1. Gated-out p1 and p2 should NOT have consumed tokens.
+    // So 1 token should remain — a fresh job should run immediately.
+    const start = Date.now();
+    await withRateLimit(async () => "fresh", {});
+    expect(Date.now() - start).toBeLessThan(50);
+  });
+
+  it("does not consume concurrency for gated-out jobs", async () => {
+    const { withRateLimit } = createRateLimit(10, 1000, 1);
+    const order: string[] = [];
+
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      resolveGate = r;
+    });
+
+    const p0 = withRateLimit(async () => {
+      await gate;
+      order.push("gate");
+    }, {});
+
+    const p1 = withRateLimit(async () => "blocked", { gate: () => false });
+    const p2 = withRateLimit(async () => {
+      order.push("ran");
+    }, {});
+
+    resolveGate();
+    const [r1] = await Promise.allSettled([p1, p0, p2]);
+
+    expect(r1).toMatchObject({ status: "rejected", reason: expect.any(RateLimitGateError) });
+    expect(order).toEqual(["gate", "ran"]);
+  });
+
+  it("propagates errors thrown by gate", async () => {
+    const { withRateLimit } = createRateLimit(10, 1000, 1);
+    const error = new Error("gate failed");
+
+    await expect(
+      withRateLimit(async () => "never", {
+        gate: () => {
+          throw error;
+        },
+      }),
+    ).rejects.toBe(error);
   });
 });
 

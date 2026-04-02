@@ -85,10 +85,14 @@ function refillBucket(bucket: TokenBucket): void {
 interface Job {
   /** Resolver used to unblock the waiting caller */
   resolve: () => void;
+  /** Rejector used when admission is denied before execution */
+  reject: (err: unknown) => void;
   /** Lower numbers execute first */
   priority: number;
   /** Monotonic sequence number for FIFO within same priority */
   seq: number;
+  /** Optional admission guard evaluated immediately before execution */
+  gate?: () => boolean;
 }
 
 interface RateLimitContext {
@@ -104,6 +108,13 @@ interface RateLimitContext {
   nextSeq: number;
   /** Whether a drain timer is already scheduled */
   drainScheduled: boolean;
+}
+
+export class RateLimitGateError extends Error {
+  constructor(message = "[withRateLimit] Job rejected by gate") {
+    super(message);
+    this.name = "RateLimitGateError";
+  }
 }
 
 /**
@@ -161,10 +172,20 @@ function drainQueue(ctx: RateLimitContext): void {
   refillBucket(ctx.bucket);
 
   while (ctx.queue.length > 0 && ctx.inFlight < ctx.maxConcurrent && ctx.bucket.tokens >= 1) {
+    const job = dequeueNext(ctx.queue)!;
+
+    try {
+      if (job.gate?.() === false) {
+        job.reject(new RateLimitGateError());
+        continue;
+      }
+    } catch (err) {
+      job.reject(err);
+      continue;
+    }
+
     ctx.bucket.tokens -= 1;
     ctx.inFlight += 1;
-
-    const job = dequeueNext(ctx.queue)!;
     job.resolve();
   }
 
@@ -204,6 +225,7 @@ export function createRateLimit(maxTokens: number, refillRate: number, maxConcur
      *
      * Lower numeric priority runs first (P0 before P1).
      * Jobs with the same priority are processed FIFO.
+     * Use `gate` to defer decision on whether to run job (doesn't consume tokens if false).
      *
      * @example
      * const { withRateLimit } = createRateLimit(5, 10, 2) // 5 burst, 10/sec refill, 2 concurrent
@@ -216,12 +238,17 @@ export function createRateLimit(maxTokens: number, refillRate: number, maxConcur
      *   withRateLimit(() => fetch('/medium'), { priority: 5 }),
      * ])
      */
-    async withRateLimit<T>(fn: () => Promise<T>, { priority = Infinity }: { priority?: number }): Promise<T> {
-      await new Promise<void>((resolve) => {
+    async withRateLimit<T>(
+      fn: () => Promise<T>,
+      { priority = Infinity, gate }: { priority?: number; gate?: () => boolean },
+    ): Promise<T> {
+      await new Promise<void>((resolve, reject) => {
         ctx.queue.push({
           resolve,
+          reject,
           priority,
           seq: ctx.nextSeq++,
+          gate,
         });
         drainQueue(ctx);
       });
