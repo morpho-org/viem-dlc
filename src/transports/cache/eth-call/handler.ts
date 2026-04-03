@@ -94,7 +94,7 @@ export async function handleEthCall(
     let buffers = (await store.get(blobKey)) ?? [];
     const ndjson = new LazyNdjsonMap<CachedEthCallEntry>(
       { toJson: stringify, fromJson: parse },
-      { autoFlushThresholdBytes: 1 << 26 }, // 64MB (flushing too often strains CPU, flushing too late strains memory)
+      { debounceMs: 500, maxDelayMs: 2_500, maxStalenessMs: 60_000 },
       {
         get: () => buffers,
         set: (value) => {

@@ -36,7 +36,11 @@ export function entryKey(fromBlock: bigint, toBlock: bigint) {
 
 export function createNdjson() {
   const slot = createSlot();
-  const ndjson = new LazyNdjsonMap<CachedChunk>(codec, { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER }, slot);
+  const ndjson = new LazyNdjsonMap<CachedChunk>(
+    codec,
+    { debounceMs: 86_400_000, maxDelayMs: 86_400_000, maxStalenessMs: 86_400_000 },
+    slot,
+  );
   return { ndjson, slot };
 }
 
@@ -65,7 +69,7 @@ export async function populateStore(store: MemoryStore, blobKey: string, bins: S
   let buffers = store.get(blobKey) ?? [];
   const ndjson = new LazyNdjsonMap<CachedChunk>(
     codec,
-    { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER },
+    { debounceMs: 86_400_000, maxDelayMs: 86_400_000, maxStalenessMs: 86_400_000 },
     {
       get: () => buffers,
       set: (v) => {

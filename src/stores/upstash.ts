@@ -212,7 +212,7 @@ export function createOptimizedUpstashStore(options: UpstashStoreOptions) {
     [
       new LruStore(1 << 30), // 1 GB
       new ThrottledStore(remote, {
-        maxStalenessMs: 60000, // defend against serverless freeze/thaw cycles
+        maxStalenessMs: 60_000, // defend against serverless freeze/thaw cycles
         maxWritesBurst,
         maxWritesPerSecond,
         maxConcurrent: Infinity,
