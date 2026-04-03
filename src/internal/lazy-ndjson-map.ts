@@ -1,4 +1,4 @@
-import { measureUtf8Bytes } from "../utils/strings.js";
+import { type DebouncedFn, debounce } from "../utils/debounce.js";
 
 import type { Slot } from "./compressed-lines-blob.js";
 import {
@@ -23,29 +23,27 @@ const identity: Codec<string> = {
  *
  * Pending entries are stringified eagerly (so their value byte size can be tracked)
  * but the actual upsert into the underlying compressed blob is deferred until:
- * - (a) accumulated pending value bytes exceed `autoFlushThresholdBytes` (auto-flush), or
- * - (b) the caller requests serialization via {@link flush} or {@link toBase64}
+ * - (a) the debounce/maxDelay timer fires (auto-flush), or
+ * - (b) the caller requests serialization via {@link flush} or {@link flushAndFold}
  *
  * {@link records} and {@link reduce} provide read-your-writes semantics by
  * snapshotting pending entries at call time and merge-sorting them with
  * underlying data. Pending entries that update existing keys take precedence,
  * and new pending keys are interleaved at their sorted position.
  *
- * Auto-flush is best-effort: if pending bytes cross the threshold while no
- * flush is active, a background flush starts. It snapshots the current pending
- * entries, so writes that arrive during that pass remain pending until a later
- * auto-flush or an explicit {@link flush}/{@link toBase64} call.
+ * Auto-flush is best-effort: each upsert resets a debounce timer; the auto-flush
+ * fires once the timer expires or `maxDelayMs` is reached (whichever comes first).
+ * It snapshots the current pending entries, so writes that arrive during that pass
+ * remain pending until a later auto-flush or an explicit {@link flush}/{@link flushAndFold}
+ * call. Auto-flush errors are silently dropped — they surface only through
+ * {@link flush} or {@link flushAndFold}.
  *
- * User-requested flushes ({@link flush}/{@link toBase64}) are shared: if one is
- * already running, later callers await the same promise. Otherwise an explicit
- * flush aborts any in-progress auto-flush and keeps flushing until `pending` is
- * empty.
+ * All blob writes (auto-flush, {@link flush}, {@link flushAndFold}) are serialized
+ * through an internal queue. Explicit operations cancel any pending auto-flush
+ * timers and abort any in-progress auto-flush before enqueueing their own work.
  *
  * Aborting is safe: the underlying blob is unchanged on abort, and all entries
  * from the aborted flush remain in `pending` for the next attempt.
- *
- * While an explicit flush is running, {@link upsert} warns but still buffers
- * the write. The flush loop will pick it up in a subsequent pass.
  *
  * @dev Unlike {@link Store.flush}, which snapshots pending work and returns
  * after a single attempt, this flush drains until `pending` is empty. That
@@ -60,27 +58,26 @@ const identity: Codec<string> = {
 export class LazyNdjsonMap<T, K extends string = string> {
   private readonly inner: NdjsonMap<string, K>;
   private readonly codec: Codec<T>;
-  private readonly autoFlushThresholdBytes: number;
+  private readonly debouncedFlush: DebouncedFn<[]>;
 
   /** Pre-stringified pending entries keyed by the original key */
   private pending = new Map<K, string>();
-  /** Total UTF-8 encoded byte length for all `pending` values (excludes keys and overhead) */
-  private pendingBytes = 0;
 
-  /**
-   * At most one flush runs at a time. Explicit flushes block upserts and drain
-   * until pending is empty; auto-flushes are single-pass and abortable.
-   */
-  private active?: {
-    promise: Promise<void>;
-    explicit: boolean;
-    controller?: AbortController;
-  };
+  /** Serial queue for all blob writes (auto-flush, flush, flushAndFold). */
+  private queue: Promise<void> = Promise.resolve();
 
-  constructor(codec: Codec<T>, options: { autoFlushThresholdBytes: number }, slot: Slot) {
+  constructor(
+    codec: Codec<T>,
+    options: { debounceMs: number; maxDelayMs: number; maxStalenessMs: number },
+    slot: Slot,
+  ) {
     this.codec = codec;
-    this.autoFlushThresholdBytes = options.autoFlushThresholdBytes;
     this.inner = new NdjsonMap<string, K>(identity, slot);
+    this.debouncedFlush = debounce((signal: AbortSignal) => this.enqueue(() => this.drainOnce(signal)), {
+      debounceMs: options.debounceMs,
+      maxDelayMs: options.maxDelayMs,
+      maxStalenessMs: options.maxStalenessMs,
+    });
   }
 
   /*//////////////////////////////////////////////////////////////
@@ -93,59 +90,30 @@ export class LazyNdjsonMap<T, K extends string = string> {
    * are collapsed (last write wins).
    *
    * All entries in a batch are added to `pending` atomically before the
-   * auto-flush threshold is checked, so batched entries are guaranteed to
-   * be flushed together.
-   *
-   * If pending value bytes exceed `autoFlushThresholdBytes` and no flush is
-   * already active, a background auto-flush is started. The threshold is
-   * best-effort, not absolute. Auto-flush errors are silently dropped — they
-   * surface only through {@link flush} or {@link toBase64}.
+   * auto-flush is triggered, so batched entries are guaranteed to be flushed
+   * together.
    */
   upsert(entries: Entry<T, K>[]): void {
-    if (this.active?.explicit) {
-      console.warn(
-        `[LazyNdjsonMap] Upserting ${entries.length} key(s) while explicit flush is in progress. This is an anti-pattern, as it delays the flush.`,
-      );
-    }
-
     for (const entry of entries) {
       const rawValue = this.codec.toJson(entry.value);
-
-      const existing = this.pending.get(entry.key);
-      if (existing !== undefined) this.pendingBytes -= measureUtf8Bytes(existing);
       this.pending.set(entry.key, rawValue);
-      this.pendingBytes += measureUtf8Bytes(rawValue);
     }
 
-    if (this.pendingBytes >= this.autoFlushThresholdBytes && !this.active) {
-      this.startAutoFlush();
-    }
+    this.debouncedFlush();
   }
 
   /**
-   * Flush all pending entries into the underlying compressed blob. If an
-   * auto-flush is in progress it is aborted first. Keeps draining until
-   * `pending` is empty (writes that land during a pass are picked up by
-   * the next pass). Concurrent callers share the same promise.
+   * Flush all pending entries into the underlying compressed blob. Cancels
+   * any pending auto-flush timers and aborts any in-progress auto-flush,
+   * then enqueues a drain loop that runs until `pending` is empty.
    */
   flush(): Promise<void> {
-    if (this.active?.explicit) return this.active.promise;
-
-    // Abort any in-progress auto-flush; capture it so we can await settlement.
-    const dying = this.active;
-    dying?.controller?.abort();
-
-    const promise = (async () => {
-      await dying?.promise;
+    this.debouncedFlush.cancel();
+    return this.enqueue(async () => {
       while (this.pending.size > 0) {
         await this.drainOnce();
       }
-    })().finally(() => {
-      if (this.active?.promise === promise) this.active = undefined;
     });
-
-    this.active = { promise, explicit: true };
-    return promise;
   }
 
   /**
@@ -153,8 +121,7 @@ export class LazyNdjsonMap<T, K extends string = string> {
    * in sorted key order during the rewrite pass. Returns the fold accumulator.
    *
    * When there are no pending entries, degenerates to a pure {@link reduce}
-   * (no rewrite). Concurrent calls are serialized: a second call waits for
-   * the first to settle, then runs its own pass.
+   * (no rewrite). Concurrent calls are serialized through the queue.
    *
    * The fold callback only **observes** entries — it does not control what
    * gets written to the blob. Both reduce and filter are special cases of fold.
@@ -164,15 +131,10 @@ export class LazyNdjsonMap<T, K extends string = string> {
       return this.reduce(fn, init);
     }
 
-    // Abort any in-progress auto-flush; capture it so we can await settlement.
-    const dying = this.active;
-    dying?.controller?.abort();
-
+    this.debouncedFlush.cancel();
     let result!: Acc;
 
-    const promise = (async () => {
-      await dying?.promise;
-
+    await this.enqueue(async () => {
       // Snapshot pending entries
       const snapshot = new Map(this.pending);
       const entries: Entry<string, K>[] = [];
@@ -192,7 +154,6 @@ export class LazyNdjsonMap<T, K extends string = string> {
       for (const [key, rawValue] of snapshot) {
         if (this.pending.get(key) === rawValue) {
           this.pending.delete(key);
-          this.pendingBytes -= measureUtf8Bytes(rawValue);
         }
       }
 
@@ -200,12 +161,8 @@ export class LazyNdjsonMap<T, K extends string = string> {
       while (this.pending.size > 0) {
         await this.drainOnce();
       }
-    })().finally(() => {
-      if (this.active?.promise === promise) this.active = undefined;
     });
 
-    this.active = { promise, explicit: true };
-    await promise;
     return result;
   }
 
@@ -248,15 +205,11 @@ export class LazyNdjsonMap<T, K extends string = string> {
                               PRIVATE
   //////////////////////////////////////////////////////////////*/
 
-  private startAutoFlush(): void {
-    const controller = new AbortController();
-    const promise = this.drainOnce(controller.signal)
-      .catch(() => {}) // auto-flush is best-effort; errors surface via explicit flush
-      .finally(() => {
-        if (this.active?.promise === promise) this.active = undefined;
-      });
-
-    this.active = { promise, explicit: false, controller };
+  /** Append `work` to the serial queue. The queue swallows errors internally to stay live. */
+  private enqueue(work: () => Promise<void>): Promise<void> {
+    const p = this.queue.then(work);
+    this.queue = p.catch(() => {});
+    return p;
   }
 
   /**
@@ -277,7 +230,6 @@ export class LazyNdjsonMap<T, K extends string = string> {
     for (const [key, rawValue] of snapshot) {
       if (this.pending.get(key) === rawValue) {
         this.pending.delete(key);
-        this.pendingBytes -= measureUtf8Bytes(rawValue);
       }
     }
   }
