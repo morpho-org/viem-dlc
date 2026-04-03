@@ -13,6 +13,7 @@ export class LazyEntry<T, K extends string = string> {
   readonly key: K;
   readonly rawValue: string;
   private parsed: T | undefined;
+  private done = false;
   private readonly codec: Codec<T>;
 
   constructor(key: K, rawValue: string, codec: Codec<T>) {
@@ -22,10 +23,11 @@ export class LazyEntry<T, K extends string = string> {
   }
 
   get value(): T {
-    if (this.parsed === undefined) {
+    if (!this.done) {
       this.parsed = this.codec.fromJson(this.rawValue);
+      this.done = true;
     }
-    return this.parsed;
+    return this.parsed as T;
   }
 }
 
