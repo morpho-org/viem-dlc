@@ -132,7 +132,11 @@ describe("LazyNdjsonMap", () => {
     const release = deferred();
     let callCount = 0;
 
-    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (this: NdjsonMap<string, string>, entries, signal) {
+    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (
+      this: NdjsonMap<string, string>,
+      entries,
+      signal,
+    ) {
       callCount += 1;
       if (callCount === 1) {
         entered.resolve();
@@ -172,7 +176,11 @@ describe("LazyNdjsonMap", () => {
     const release = deferred();
     let callCount = 0;
 
-    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (this: NdjsonMap<string, string>, entries, signal) {
+    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (
+      this: NdjsonMap<string, string>,
+      entries,
+      signal,
+    ) {
       callCount += 1;
       if (callCount === 1) {
         entered.resolve();
@@ -250,7 +258,11 @@ describe("LazyNdjsonMap", () => {
     const release = deferred();
     let callCount = 0;
 
-    vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (this: NdjsonMap<string, string>, entries, signal) {
+    vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (
+      this: NdjsonMap<string, string>,
+      entries,
+      signal,
+    ) {
       callCount += 1;
       if (callCount === 1) {
         entered.resolve();
@@ -291,7 +303,11 @@ describe("LazyNdjsonMap", () => {
     const release = deferred();
     let callCount = 0;
 
-    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (this: NdjsonMap<string, string>, entries, signal) {
+    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (
+      this: NdjsonMap<string, string>,
+      entries,
+      signal,
+    ) {
       callCount += 1;
       if (callCount === 1) {
         entered.resolve();
@@ -327,7 +343,11 @@ describe("LazyNdjsonMap", () => {
     const entered = deferred();
     let callCount = 0;
 
-    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (this: NdjsonMap<string, string>, entries, signal) {
+    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (
+      this: NdjsonMap<string, string>,
+      entries,
+      signal,
+    ) {
       callCount += 1;
 
       if (callCount === 1) {
