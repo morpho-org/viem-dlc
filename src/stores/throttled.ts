@@ -107,9 +107,9 @@ export class ThrottledStore implements Store {
             this.onWriteError?.(key, err, Date.now() - t0);
           }
 
+          this.resolveFlushBoundaries(key, entry.version);
           if (this.pending.get(key)?.version === entry.version) {
             this.pending.delete(key);
-            this.resolveFlushBoundaries(key, entry.version);
           }
         },
         {

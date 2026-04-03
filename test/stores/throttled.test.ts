@@ -498,6 +498,47 @@ describe("ThrottledStore", () => {
     });
   });
 
+  describe("flush under continuous writes", () => {
+    it("flush resolves even when same-key writes keep arriving during in-flight write", async () => {
+      const underlying = new MemoryStore();
+      const originalSet = underlying.set.bind(underlying);
+      const setSpy = vi.spyOn(underlying, "set");
+
+      let resolveFirst!: () => void;
+      const firstGate = new Promise<void>((r) => {
+        resolveFirst = r;
+      });
+      setSpy.mockImplementationOnce(async (key, value) => {
+        await firstGate;
+        originalSet(key, value);
+      });
+
+      const store = createStore(underlying);
+
+      // v1 write starts and blocks
+      store.set("key", [Buffer.from("v1")]);
+      await sleep(1);
+
+      // flush snapshots {key: 1}
+      let flushed = false;
+      const flushPromise = store.flush().then(() => {
+        flushed = true;
+      });
+
+      // v2 arrives while v1 is in-flight — bumps version, coalesced
+      store.set("key", [Buffer.from("v2")]);
+
+      // Release v1 — flush should resolve because v1 (version >= snapshot) was written
+      resolveFirst();
+      await flushPromise;
+
+      expect(flushed).toBe(true);
+      // v2 is still pending and will be written by re-queue
+      await store.flush();
+      expect(underlying.get("key")).toEqual([Buffer.from("v2")]);
+    });
+  });
+
   describe("multiple concurrent flushes", () => {
     it("each flush calls underlying flush independently", async () => {
       const underlying = new MemoryStore();
