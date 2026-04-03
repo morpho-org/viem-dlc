@@ -1,19 +1,5 @@
 import type { Slot } from "./compressed-lines-blob.js";
-import {
-  type Codec,
-  type Entry,
-  type LazyEntry,
-  lazyEntry,
-  NdjsonMap,
-  sortEntriesByRawKey,
-  toRawKey,
-} from "./ndjson-map.js";
-
-/** No-op codec for pre-stringified values. */
-const identity: Codec<string> = {
-  fromJson: (s) => s,
-  toJson: (s) => s,
-};
+import { type Codec, type Entry, type LazyEntry, NdjsonMap } from "./ndjson-map.js";
 
 /** Allow the process to exit even if this timer is still pending. */
 const unref = (t: ReturnType<typeof setTimeout>) => {
@@ -38,12 +24,11 @@ type AutoFlush =
  * cause `slot` to mutate or return different data.
  */
 export class LazyNdjsonMap<T, K extends string = string> {
-  private readonly inner: NdjsonMap<string, K>;
-  private readonly codec: Codec<T>;
+  private readonly inner: NdjsonMap<T, K>;
   private readonly opts: { debounceMs: number; maxDelayMs: number; maxStalenessMs: number };
 
-  /** Pre-stringified pending entries keyed by the original key */
-  private pending = new Map<K, string>();
+  /** Pending entries keyed by the original key */
+  private pending = new Map<K, T>();
 
   /** Serial queue for all blob writes (auto-flush, flush, flushAndFold). */
   private queue: Promise<void> = Promise.resolve();
@@ -58,9 +43,8 @@ export class LazyNdjsonMap<T, K extends string = string> {
     options: { debounceMs: number; maxDelayMs: number; maxStalenessMs: number },
     slot: Slot,
   ) {
-    this.codec = codec;
     this.opts = options;
-    this.inner = new NdjsonMap<string, K>(identity, slot);
+    this.inner = new NdjsonMap<T, K>(codec, slot);
   }
 
   /*//////////////////////////////////////////////////////////////
@@ -68,9 +52,8 @@ export class LazyNdjsonMap<T, K extends string = string> {
   //////////////////////////////////////////////////////////////*/
 
   /**
-   * Buffer entries for a deferred upsert. Values are stringified immediately
-   * so their byte cost is tracked; duplicate keys within the pending buffer
-   * are collapsed (last write wins).
+   * Buffer entries for a deferred upsert. Duplicate keys within the pending
+   * buffer are collapsed (last write wins).
    *
    * All entries in a batch are added to `pending` atomically before the
    * auto-flush is triggered, so batched entries are guaranteed to be flushed
@@ -78,8 +61,7 @@ export class LazyNdjsonMap<T, K extends string = string> {
    */
   upsert(entries: Entry<T, K>[]): void {
     for (const entry of entries) {
-      const rawValue = this.codec.toJson(entry.value);
-      this.pending.set(entry.key, rawValue);
+      this.pending.set(entry.key, entry.value);
     }
 
     this.poke();
@@ -100,11 +82,14 @@ export class LazyNdjsonMap<T, K extends string = string> {
   }
 
   /**
-   * Flush all pending entries and fold through every entry (existing + pending)
-   * in sorted key order during the rewrite pass. Returns the fold accumulator.
+   * Flush the pending snapshot captured at call time and fold through every
+   * entry (existing + that snapshot) in sorted key order during the rewrite
+   * pass. Returns the fold accumulator.
    *
    * When there are no pending entries, degenerates to a pure {@link reduce}
-   * (no rewrite). Concurrent calls are serialized through the queue.
+   * (no rewrite). Concurrent calls are serialized through the queue. Writes
+   * that arrive while the flush/fold is in flight are left pending for a
+   * later flush; they are not included in the current fold result.
    *
    * The fold callback only **observes** entries — it does not control what
    * gets written to the blob. Both reduce and filter are special cases of fold.
@@ -118,75 +103,46 @@ export class LazyNdjsonMap<T, K extends string = string> {
     let result!: Acc;
 
     await this.enqueue(async () => {
-      // Snapshot pending entries
-      const snapshot = new Map(this.pending);
-      const entries: Entry<string, K>[] = [];
-      for (const [key, rawValue] of snapshot) {
-        entries.push({ key, value: rawValue });
-      }
-
-      // Flush + fold in a single decompression pass
-      const codec = this.codec;
-      result = await this.inner.upsertAndFold(
-        entries,
-        (acc: Acc, entry: Entry<string, K>) => fn(acc, lazyEntry(entry.key, entry.value, codec.fromJson)),
-        init,
-      );
-
-      // Clean up flushed entries (same as drainOnce)
-      for (const [key, rawValue] of snapshot) {
-        if (this.pending.get(key) === rawValue) {
-          this.pending.delete(key);
-        }
-      }
-
-      // Drain any remaining pending entries (defensive, for concurrent writes)
-      while (this.pending.size > 0) {
-        await this.drainOnce();
-      }
+      const [entries, cleanup] = this.takePendingSnapshot();
+      result = await this.inner.upsertAndFold(entries, fn, init);
+      cleanup();
     });
 
     return result;
   }
 
   /** Stream-decompress and fold every entry (flushed + pending) through `fn`, in sorted key order. */
-  async reduce<Acc>(fn: (acc: Acc, record: LazyEntry<T, K>) => Acc, init: Acc): Promise<Acc> {
-    let acc = init;
-    for await (const record of this.records()) {
-      acc = fn(acc, record);
-    }
-    return acc;
+  reduce<Acc>(fn: (acc: Acc, record: LazyEntry<T, K>) => Acc, init: Acc): Promise<Acc> {
+    return this.inner.reduce(fn, init, new Map(this.pending));
   }
 
   /** Async generator that yields each entry (flushed + pending) in sorted key order. */
   async *records(): AsyncGenerator<LazyEntry<T, K>, void, void> {
-    // TODO: micro-optimization: streamline 3 layers of async generators in this stack
-    const pendingSnapshot = new Map(this.pending);
-    const sorted = sortEntriesByRawKey(pendingSnapshot);
-    const codec = this.codec;
-    let idx = 0;
-
-    for await (const record of this.inner.records()) {
-      // Merge-insert: yield sorted pending entries that belong before this key
-      const rawKey = toRawKey(record.key);
-      while (idx < sorted.length && sorted[idx]![0] < rawKey) {
-        const [, key, rawValue] = sorted[idx++]!;
-        yield lazyEntry(key, rawValue, codec.fromJson);
-      }
-
-      if (pendingSnapshot.has(record.key)) continue;
-      yield lazyEntry(record.key, record.value, codec.fromJson);
-    }
-
-    while (idx < sorted.length) {
-      const [, key, rawValue] = sorted[idx++]!;
-      yield lazyEntry(key, rawValue, codec.fromJson);
-    }
+    yield* this.inner.records(new Map(this.pending));
   }
 
   /*//////////////////////////////////////////////////////////////
                               PRIVATE
   //////////////////////////////////////////////////////////////*/
+
+  /** Snapshot current pending entries and return them as an array + a cleanup function that removes flushed keys. */
+  private takePendingSnapshot(): [entries: Entry<T, K>[], cleanup: () => void] {
+    const snapshot = new Map(this.pending);
+    const entries: Entry<T, K>[] = [];
+    for (const [key, value] of snapshot) {
+      entries.push({ key, value });
+    }
+    return [
+      entries,
+      () => {
+        for (const [key, value] of snapshot) {
+          if (this.pending.get(key) === value) {
+            this.pending.delete(key);
+          }
+        }
+      },
+    ];
+  }
 
   /** Update staleness timestamp and arm the auto-flush timer (unless an auto-flush is already in flight). */
   private poke() {
@@ -243,19 +199,8 @@ export class LazyNdjsonMap<T, K extends string = string> {
    */
   private async drainOnce(signal?: AbortSignal): Promise<void> {
     if (this.pending.size === 0) return;
-
-    const snapshot = new Map(this.pending);
-    const entries: Entry<string, K>[] = [];
-    for (const [key, rawValue] of snapshot) {
-      entries.push({ key, value: rawValue });
-    }
-
+    const [entries, cleanup] = this.takePendingSnapshot();
     await this.inner.upsert(entries, signal);
-
-    for (const [key, rawValue] of snapshot) {
-      if (this.pending.get(key) === rawValue) {
-        this.pending.delete(key);
-      }
-    }
+    cleanup();
   }
 }

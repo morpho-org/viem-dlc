@@ -25,7 +25,7 @@ function serializeLine(key: string, value: string) {
 async function collectRecords<T, K extends string>(map: NdjsonMap<T, K>) {
   const records: Entry<T, K>[] = [];
   for await (const record of map.records()) {
-    records.push(record);
+    records.push({ key: record.key, value: record.value });
   }
   return records;
 }

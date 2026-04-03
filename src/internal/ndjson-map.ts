@@ -6,27 +6,36 @@ export type Entry<T, K extends string = string> = { key: K; value: T };
  * Entry with deferred value parsing. The raw JSON value string is available
  * immediately for cheap pre-filtering (e.g. `.includes()` / regex); the
  * parsed value is materialized lazily on first `.value` access.
+ *
+ * Backed by a class so getters live on the prototype rather than as per-instance closures.
  */
-export type LazyEntry<T, K extends string = string> = { readonly key: K; readonly rawValue: string; readonly value: T };
+export class LazyEntry<T, K extends string = string> {
+  readonly key: K;
+  readonly rawValue: string;
+  private parsed: T | undefined;
+  private readonly codec: Codec<T>;
 
-/** Construct a {@link LazyEntry} whose `value` is parsed on first access. */
-export function lazyEntry<T, K extends string>(key: K, rawValue: string, parse: (raw: string) => T): LazyEntry<T, K> {
-  let cached: T | undefined;
-  let done = false;
-  return {
-    key,
-    rawValue,
-    get value(): T {
-      if (!done) {
-        cached = parse(rawValue);
-        done = true;
-      }
-      return cached!;
-    },
-  };
+  constructor(key: K, rawValue: string, codec: Codec<T>) {
+    this.key = key;
+    this.rawValue = rawValue;
+    this.codec = codec;
+  }
+
+  get value(): T {
+    if (this.parsed === undefined) {
+      this.parsed = this.codec.fromJson(this.rawValue);
+    }
+    return this.parsed;
+  }
 }
 
-/** Codec for the value portion of each NDJSON entry. The class handles key serialization. */
+/**
+ * Codec for the value portion of each NDJSON entry. The class handles key serialization.
+ *
+ * Must be lossless: `fromJson(toJson(x))` should deeply equal `x` for any valid value.
+ * This invariant is required for read-your-writes consistency in {@link LazyNdjsonMap}
+ * (pending entries may be surfaced before or after a codec round-trip).
+ */
 export type Codec<T> = {
   fromJson: (s: string) => T;
   /** Serializes `value` to a valid JSON string, which MUST NOT contain literal newlines. */
@@ -75,21 +84,12 @@ function parseEnvelope<K extends string>(line: string): { key: K; valueStart: nu
   return { key, valueStart: KEY_START + rawKey.length + SEPARATOR.length };
 }
 
-/** Produce the raw JSON key token for a given key. Inverse of JSON.parse on the token. */
-export function toRawKey(key: string): string {
-  return JSON.stringify(key);
-}
-
-function compareRawKeys(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-export function sortEntriesByRawKey<K extends string, V>(
+function sortEntriesByRawKey<K extends string, V>(
   entries: Iterable<readonly [key: K, value: V]>,
 ): [rawKey: string, key: K, value: V][] {
   return [...entries]
-    .map(([key, value]) => [toRawKey(key), key, value] as [string, K, V])
-    .sort(([a], [b]) => compareRawKeys(a, b));
+    .map(([key, value]) => [JSON.stringify(key), key, value] as [string, K, V])
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 /**
@@ -117,31 +117,65 @@ export class NdjsonMap<T, K extends string = string> {
     this.blob = new CompressedLinesBlob(slot);
   }
 
-  /** Build a full NDJSON line from a pre-stringified JSON key token and a value. */
-  private serializeLine(rawKey: string, value: T): string {
-    return `${KEY_PREFIX}${rawKey}${SEPARATOR}${this.codec.toJson(value)}}`;
-  }
-
-  /** Parse a line into an entry, returning `undefined` if the envelope is malformed. */
-  private parseLine(line: string): Entry<T, K> | undefined {
+  /** Parse a line into a lazy entry, returning `undefined` if the envelope is malformed. */
+  private parseLine(line: string): LazyEntry<T, K> | undefined {
     const parsed = parseEnvelope<K>(line);
     if (parsed === undefined) return undefined;
-    return { key: parsed.key, value: this.codec.fromJson(line.slice(parsed.valueStart, line.length - 1)) };
+    const rawValue = line.slice(parsed.valueStart, line.length - 1);
+    return new LazyEntry(parsed.key, rawValue, this.codec);
   }
 
-  /** Async generator that yields each record from the compressed NDJSON. */
-  async *records(): AsyncGenerator<Entry<T, K>, void, void> {
+  /**
+   * Async generator that yields each record from the compressed NDJSON.
+   * If `extra` is provided, its entries are merge-sorted into the stream
+   * by key, with extra entries taking precedence over stored entries on
+   * key collision.
+   */
+  async *records(extra?: ReadonlyMap<K, T>): AsyncGenerator<LazyEntry<T, K>, void, void> {
+    const sorted = extra?.size ? sortEntriesByRawKey(extra) : undefined;
+    let idx = 0;
+
     for await (const line of this.blob.lines()) {
       if (line.length === 0) continue;
+
+      if (sorted) {
+        const rawKey = extractRawKey(line);
+        if (rawKey === undefined) continue;
+
+        // Yield extra entries that sort before this stored key
+        while (idx < sorted.length && sorted[idx]![0] < rawKey) {
+          const [, key, value] = sorted[idx++]!;
+          yield new LazyEntry(key, this.codec.toJson(value), this.codec);
+        }
+
+        // Extra entry overrides this stored key — yield the override, skip stored
+        if (idx < sorted.length && sorted[idx]![0] === rawKey) {
+          const [, key, value] = sorted[idx++]!;
+          yield new LazyEntry(key, this.codec.toJson(value), this.codec);
+          continue;
+        }
+      }
+
       const entry = this.parseLine(line);
       if (entry !== undefined) yield entry;
+    }
+
+    if (sorted) {
+      while (idx < sorted.length) {
+        const [, key, value] = sorted[idx++]!;
+        yield new LazyEntry(key, this.codec.toJson(value), this.codec);
+      }
     }
   }
 
   /** Stream-decompress and fold every entry through `fn`. */
-  async reduce<Acc>(fn: (acc: Acc, record: Entry<T, K>) => Acc, init: Acc): Promise<Acc> {
+  async reduce<Acc>(
+    fn: (acc: Acc, record: LazyEntry<T, K>) => Acc,
+    init: Acc,
+    extra?: ReadonlyMap<K, T>,
+  ): Promise<Acc> {
     let acc = init;
-    for await (const record of this.records()) {
+    for await (const record of this.records(extra)) {
       acc = fn(acc, record);
     }
     return acc;
@@ -177,7 +211,7 @@ export class NdjsonMap<T, K extends string = string> {
    */
   async upsertAndFold<Acc>(
     entries: Entry<T, K>[],
-    fn: (acc: Acc, entry: Entry<T, K>) => Acc,
+    fn: (acc: Acc, entry: LazyEntry<T, K>) => Acc,
     init: Acc,
     signal?: AbortSignal,
   ): Promise<Acc> {
@@ -202,10 +236,17 @@ export class NdjsonMap<T, K extends string = string> {
   private async mergeAndRewrite(
     entries: Entry<T, K>[],
     signal?: AbortSignal,
-    onEntry?: (entry: Entry<T, K>) => void,
+    onEntry?: (entry: LazyEntry<T, K>) => void,
   ): Promise<void> {
-    const serializeLine = this.serializeLine.bind(this);
+    const toJson = this.codec.toJson;
     const parseLine = onEntry ? this.parseLine.bind(this) : undefined;
+
+    const codec = this.codec;
+    const emitNew = (emit: (line: string) => void, rawKey: string, key: K, value: T) => {
+      const rawValue = toJson(value);
+      emit(`${KEY_PREFIX}${rawKey}${SEPARATOR}${rawValue}}`);
+      if (onEntry) onEntry(new LazyEntry(key, rawValue, codec));
+    };
 
     // Deduplicate (last write wins) then sort by raw JSON key for merge-insert
     const byKey = new Map<K, T>();
@@ -225,31 +266,26 @@ export class NdjsonMap<T, K extends string = string> {
         const rawKey = extractRawKey(line);
         if (rawKey === undefined) return;
 
-        if (prevRawKey !== undefined) {
-          const ordering = compareRawKeys(rawKey, prevRawKey);
-          if (ordering <= 0) {
-            const reason = ordering === 0 ? "Duplicate" : "Unsorted";
-            console.warn(
-              `[NdjsonMap] ${reason} key in blob: ${rawKey}${ordering === 0 ? "" : ` after ${prevRawKey}`}. Discarding remaining blob lines.`,
-            );
-            corrupted = true;
-            return;
-          }
+        if (prevRawKey !== undefined && rawKey <= prevRawKey) {
+          const reason = rawKey === prevRawKey ? "Duplicate" : "Unsorted";
+          console.warn(
+            `[NdjsonMap] ${reason} key in blob: ${rawKey}${rawKey === prevRawKey ? "" : ` after ${prevRawKey}`}. Discarding remaining blob lines.`,
+          );
+          corrupted = true;
+          return;
         }
         prevRawKey = rawKey;
 
         // Merge-insert: emit sorted pending entries that belong before this key
-        while (idx < sorted.length && compareRawKeys(sorted[idx]![0], rawKey) < 0) {
+        while (idx < sorted.length && sorted[idx]![0] < rawKey) {
           const [pKey, pOrigKey, pValue] = sorted[idx++]!;
-          emit(serializeLine(pKey, pValue));
-          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
+          emitNew(emit, pKey, pOrigKey, pValue);
         }
 
         // Replace in-place if this key is being upserted, otherwise keep existing line
         if (idx < sorted.length && sorted[idx]![0] === rawKey) {
           const [, pOrigKey, pValue] = sorted[idx++]!;
-          emit(serializeLine(rawKey, pValue));
-          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
+          emitNew(emit, rawKey, pOrigKey, pValue);
         } else {
           emit(line);
           if (parseLine) {
@@ -261,8 +297,7 @@ export class NdjsonMap<T, K extends string = string> {
       (emit) => {
         while (idx < sorted.length) {
           const [pKey, pOrigKey, pValue] = sorted[idx++]!;
-          emit(serializeLine(pKey, pValue));
-          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
+          emitNew(emit, pKey, pOrigKey, pValue);
         }
       },
       signal,
