@@ -89,6 +89,23 @@ describe("ThrottledStore", () => {
       expect(deleteSpy).toHaveBeenCalledWith("key");
     });
 
+    it("coalesces delete then set to a single set", async () => {
+      const underlying = new MemoryStore();
+      underlying.set("key", [Buffer.from("old")]);
+      const setSpy = vi.spyOn(underlying, "set");
+      const deleteSpy = vi.spyOn(underlying, "delete");
+      const store = createStore(underlying);
+
+      store.delete("key");
+      store.set("key", [Buffer.from("new")]);
+
+      await store.flush();
+
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(setSpy).toHaveBeenCalledTimes(1);
+      expect(setSpy).toHaveBeenCalledWith("key", [Buffer.from("new")]);
+    });
+
     it("keeps independent keys independent", async () => {
       const underlying = new MemoryStore();
       const setSpy = vi.spyOn(underlying, "set");
@@ -269,6 +286,42 @@ describe("ThrottledStore", () => {
     });
   });
 
+  describe("error handling", () => {
+    it("upstream write errors do not hang flush", async () => {
+      const underlying = new MemoryStore();
+      const setSpy = vi.spyOn(underlying, "set");
+      setSpy.mockRejectedValueOnce(new Error("upstream failure"));
+
+      const store = createStore(underlying);
+
+      store.set("key", [Buffer.from("value")]);
+      await store.flush(); // should resolve, not hang
+
+      // Key was cleaned up despite the error
+      store.set("key", [Buffer.from("retry")]);
+      await store.flush();
+
+      expect(setSpy).toHaveBeenCalledTimes(2);
+      expect(underlying.get("key")).toEqual([Buffer.from("retry")]);
+    });
+
+    it("calls onWriteError with key, error, and duration", async () => {
+      const underlying = new MemoryStore();
+      const setSpy = vi.spyOn(underlying, "set");
+      const error = new Error("boom");
+      setSpy.mockRejectedValueOnce(error);
+
+      const onWriteError = vi.fn();
+      const store = createStore(underlying, { onWriteError });
+
+      store.set("key", [Buffer.from("value")]);
+      await store.flush();
+
+      expect(onWriteError).toHaveBeenCalledTimes(1);
+      expect(onWriteError).toHaveBeenCalledWith("key", error, expect.any(Number));
+    });
+  });
+
   describe("maxStalenessMs", () => {
     it("drops stale writes and clears pending", async () => {
       const underlying = new MemoryStore();
@@ -342,6 +395,43 @@ describe("ThrottledStore", () => {
       expect(underlying.get("stale")).toBeNull();
     });
 
+    it("flush resolves when stale entries are discarded", async () => {
+      const underlying = new MemoryStore();
+      const originalSet = underlying.set.bind(underlying);
+      const setSpy = vi.spyOn(underlying, "set");
+
+      const store = createStore(underlying, {
+        maxConcurrent: 1,
+        maxStalenessMs: 20,
+      });
+
+      let resolveGate!: () => void;
+      const gate = new Promise<void>((r) => {
+        resolveGate = r;
+      });
+      setSpy.mockImplementationOnce(async (key, value) => {
+        await gate;
+        originalSet(key, value);
+      });
+
+      store.set("blocker", [Buffer.from("blocks")]);
+      await sleep(1);
+      store.set("stale", [Buffer.from("value")]);
+
+      // Flush snapshots both keys
+      const flushPromise = store.flush();
+
+      // Wait for stale to expire, then release blocker
+      await sleep(50);
+      resolveGate();
+
+      // Flush should resolve — stale key was discarded, blocker was written
+      await flushPromise;
+
+      expect(underlying.get("blocker")).toEqual([Buffer.from("blocks")]);
+      expect(underlying.get("stale")).toBeNull();
+    });
+
     it("measures staleness from the most recent same-key update", async () => {
       const underlying = new MemoryStore();
       const originalSet = underlying.set.bind(underlying);
@@ -375,6 +465,81 @@ describe("ThrottledStore", () => {
 
       expect(setSpy).toHaveBeenCalledTimes(2);
       expect(underlying.get("stale")).toEqual([Buffer.from("v2")]);
+    });
+  });
+
+  describe("concurrency", () => {
+    it("enforces maxConcurrent", async () => {
+      const underlying = new MemoryStore();
+      const originalSet = underlying.set.bind(underlying);
+      const setSpy = vi.spyOn(underlying, "set");
+
+      let concurrentNow = 0;
+      let concurrentMax = 0;
+      setSpy.mockImplementation(async (key, value) => {
+        concurrentNow++;
+        concurrentMax = Math.max(concurrentMax, concurrentNow);
+        await sleep(20);
+        concurrentNow--;
+        originalSet(key, value);
+      });
+
+      const store = createStore(underlying, { maxConcurrent: 2 });
+
+      store.set("a", [Buffer.from("1")]);
+      store.set("b", [Buffer.from("2")]);
+      store.set("c", [Buffer.from("3")]);
+      store.set("d", [Buffer.from("4")]);
+
+      await store.flush();
+
+      expect(setSpy).toHaveBeenCalledTimes(4);
+      expect(concurrentMax).toBe(2);
+    });
+  });
+
+  describe("multiple concurrent flushes", () => {
+    it("each flush calls underlying flush independently", async () => {
+      const underlying = new MemoryStore();
+      const flushSpy = vi.spyOn(underlying, "flush");
+      const store = createStore(underlying);
+
+      store.set("a", [Buffer.from("1")]);
+      store.set("b", [Buffer.from("2")]);
+
+      await Promise.all([store.flush(), store.flush()]);
+
+      expect(flushSpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("flush mid-flight", () => {
+    it("flush started after a write is already in-flight still resolves", async () => {
+      const underlying = new MemoryStore();
+      const originalSet = underlying.set.bind(underlying);
+      const setSpy = vi.spyOn(underlying, "set");
+
+      let resolveWrite!: () => void;
+      const writeGate = new Promise<void>((r) => {
+        resolveWrite = r;
+      });
+      setSpy.mockImplementationOnce(async (key, value) => {
+        await writeGate;
+        originalSet(key, value);
+      });
+
+      const store = createStore(underlying);
+
+      store.set("key", [Buffer.from("value")]);
+      await sleep(1); // fn starts, blocks on writeGate
+
+      // Flush starts while the write is in-flight
+      const flushPromise = store.flush();
+
+      resolveWrite();
+      await flushPromise;
+
+      expect(underlying.get("key")).toEqual([Buffer.from("value")]);
     });
   });
 

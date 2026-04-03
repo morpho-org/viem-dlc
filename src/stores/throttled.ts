@@ -15,6 +15,8 @@ export type ThrottledStoreOptions = {
   maxConcurrent: number;
   /** Drop queued writes older than this (ms). Defends against serverless freeze/thaw. Default: `Infinity`. */
   maxStalenessMs: number;
+  /** Optional: handle write errors (default: ignore) -- MUST NOT THROW. */
+  onWriteError?: (key: string, err: unknown, durationMs: number) => void;
 };
 
 /**
@@ -30,6 +32,7 @@ export type ThrottledStoreOptions = {
 export class ThrottledStore implements Store {
   private readonly rateLimiter: ReturnType<typeof createRateLimit>;
   private readonly maxStalenessMs: number;
+  private readonly onWriteError?: (key: string, err: unknown, durationMs: number) => void;
 
   /** Latest pending op per key. Written at call time, read lazily at admission time, deleted at completion. */
   private readonly pending = new Map<string, { op: PendingOp; version: number; lastUpdatedAt: number }>();
@@ -44,6 +47,7 @@ export class ThrottledStore implements Store {
   ) {
     this.rateLimiter = createRateLimit(opts.maxWritesBurst, opts.maxWritesPerSecond, opts.maxConcurrent);
     this.maxStalenessMs = opts.maxStalenessMs;
+    this.onWriteError = opts.onWriteError;
   }
 
   get(key: string) {
@@ -90,6 +94,7 @@ export class ThrottledStore implements Store {
           const entry = this.pending.get(key);
           if (entry === undefined) return;
 
+          const t0 = Date.now();
           try {
             await withTimeout(
               async () => (entry.op.kind === "set" ? this.store.set(key, entry.op.value) : this.store.delete(key)),
@@ -98,7 +103,9 @@ export class ThrottledStore implements Store {
                 timeout: 10_000,
               },
             );
-          } catch {}
+          } catch (err) {
+            this.onWriteError?.(key, err, Date.now() - t0);
+          }
 
           if (this.pending.get(key)?.version === entry.version) {
             this.pending.delete(key);
