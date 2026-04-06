@@ -9,6 +9,12 @@ export type Slot = {
   set(value: Buffer[]): void;
 };
 
+/**
+ * Imperative rewrite session for {@link CompressedLinesBlob.rewrite}.
+ *
+ * `emit()` appends one logical line to the replacement blob.
+ * `forEachLine()` streams the current blob through a synchronous callback.
+ */
 export type RewriteSession = {
   emit(line: string): void;
   forEachLine(fn: (line: string) => void): Promise<void>;
@@ -82,8 +88,8 @@ class SplitLines extends Transform {
 /**
  * zstd-compressed line buffer.
  *
- * Stores newline-delimited UTF-8 text in zstd-compressed form and exposes a small streaming API
- * for reading and rewriting logical lines.
+ * Stores newline-delimited UTF-8 text in zstd-compressed form and exposes a small API
+ * for convenience iteration via {@link lines} and transactional rewrites via {@link rewrite}.
  *
  * Peak live decompressed memory is proportional to the largest logical line. Rewrites also
  * buffer the full new **compressed blob** as chunks in memory before swapping it into place.
@@ -97,7 +103,12 @@ export class CompressedLinesBlob {
     console.assert(chunks.length === 0 || chunks[0]!.length > 0, "Slot contains an empty buffer in array");
   }
 
-  /** Stream-decompress and yield logical lines (without trailing newline characters). */
+  /**
+   * Stream-decompress and yield logical lines (without trailing newline characters).
+   *
+   * This is the ergonomic read API. Hot paths that also need to persist data
+   * should prefer higher-level fused visitors such as `NdjsonMap.scan()`.
+   */
   async *lines(): AsyncGenerator<string, void, void> {
     if (this.slot.get().length === 0) return;
 
@@ -124,6 +135,8 @@ export class CompressedLinesBlob {
    *
    * `emit()` appends one logical line to the replacement blob.
    * `forEachLine()` streams existing logical lines through a synchronous callback.
+   * This keeps rewrite producers imperative, so higher-level callers can fuse
+   * read/transform/write work into one decompress -> process -> compress pass.
    *
    * On success, swaps the slot. On abort (or error), the slot is unchanged.
    */

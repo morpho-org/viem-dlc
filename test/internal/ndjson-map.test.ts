@@ -3,7 +3,7 @@ import { zstdCompressSync } from "zlib";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { type Codec, CompressedLinesBlob, createSlot, type Entry, NdjsonMap, type Slot } from "../../src/internal/index.js";
+import { type Codec, CompressedLinesBlob, createSlot, type Entry, type LazyEntry, NdjsonMap, type Slot } from "../../src/internal/index.js";
 import { parse, stringify } from "../../src/utils/json.js";
 
 const codec: Codec<string> = {
@@ -15,12 +15,11 @@ function serializeLine(key: string, value: string) {
   return `{"key":${JSON.stringify(key)},"value":${stringify(value)}}`;
 }
 
-async function collectRecords<T, K extends string>(map: NdjsonMap<T, K>) {
-  const records: Entry<T, K>[] = [];
-  for await (const record of map.records()) {
-    records.push({ key: record.key, value: record.value });
-  }
-  return records;
+function collectRecords<T, K extends string>(map: NdjsonMap<T, K>) {
+  return map.reduce<Entry<T, K>[]>((acc, record) => {
+    acc.push({ key: record.key, value: record.value });
+    return acc;
+  }, []);
 }
 
 async function collectRawLines(slot: Slot) {
@@ -44,16 +43,18 @@ describe("NdjsonMap", () => {
       createSlot(zstdCompressSync(Buffer.from(`${serializeLine("a", "alpha")}\n`))),
     );
 
-    const iterator = map.records();
-    const first = await iterator.next();
-    const record = first.value;
+    let record: LazyEntry<string> | undefined;
+    await map.scan((r) => {
+      record = r;
+      return false;
+    });
 
-    expect(first.done).toBe(false);
-    expect(record?.rawValue).toBe(stringify("alpha"));
+    expect(record).toBeDefined();
+    expect(record!.rawValue).toBe(stringify("alpha"));
     expect(fromJson).not.toHaveBeenCalled();
 
-    expect(record?.value).toBe("alpha");
-    expect(record?.value).toBe("alpha");
+    expect(record!.value).toBe("alpha");
+    expect(record!.value).toBe("alpha");
     expect(fromJson).toHaveBeenCalledTimes(1);
   });
 
@@ -143,7 +144,7 @@ describe("NdjsonMap", () => {
     expect(String(warnSpy.mock.calls[0]?.[0])).toContain("Unsorted key in blob");
   });
 
-  describe("records(extra) merge-sort", () => {
+  describe("scan(extra) merge-sort", () => {
     it("interleaves extra entries before, between, and after stored keys and overrides collisions", async () => {
       const source = [serializeLine("c", "stored-c"), serializeLine("f", "stored-f"), ""].join("\n");
       const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
@@ -154,12 +155,12 @@ describe("NdjsonMap", () => {
         ["z", "extra-z"], // after all stored
       ]);
 
-      const records: Entry<string, string>[] = [];
-      for await (const r of map.records(extra)) {
-        records.push({ key: r.key, value: r.value });
-      }
+      const result = await map.reduce<Entry<string, string>[]>((acc, r) => {
+        acc.push({ key: r.key, value: r.value });
+        return acc;
+      }, [], extra);
 
-      expect(records).toEqual([
+      expect(result).toEqual([
         { key: "a", value: "extra-a" },
         { key: "c", value: "extra-c" },
         { key: "f", value: "stored-f" },
@@ -171,14 +172,52 @@ describe("NdjsonMap", () => {
       const source = [serializeLine("x", "val"), ""].join("\n");
       const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
 
-      const withUndefined: Entry<string, string>[] = [];
-      for await (const r of map.records()) withUndefined.push({ key: r.key, value: r.value });
-
-      const withEmpty: Entry<string, string>[] = [];
-      for await (const r of map.records(new Map())) withEmpty.push({ key: r.key, value: r.value });
+      const withUndefined = await collectRecords(map);
+      const withEmpty = await map.reduce<Entry<string, string>[]>((acc, r) => {
+        acc.push({ key: r.key, value: r.value });
+        return acc;
+      }, [], new Map());
 
       expect(withUndefined).toEqual([{ key: "x", value: "val" }]);
       expect(withEmpty).toEqual(withUndefined);
+    });
+  });
+
+  describe("scan(extra)", () => {
+    it("merge-sorts extra entries and stops early when the visitor returns false", async () => {
+      const source = [serializeLine("c", "stored-c"), serializeLine("f", "stored-f"), ""].join("\n");
+      const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
+      const extra = new Map<string, string>([
+        ["a", "extra-a"],
+        ["c", "extra-c"],
+        ["z", "extra-z"],
+      ]);
+
+      const visited: string[] = [];
+      await map.scan((record) => {
+        visited.push(`${record.key}:${record.value}`);
+        if (record.key === "c") return false;
+      }, extra);
+
+      expect(visited).toEqual(["a:extra-a", "c:extra-c"]);
+    });
+
+    it("stops early during trailing extras after all stored lines are consumed", async () => {
+      const source = [serializeLine("a", "stored-a"), ""].join("\n");
+      const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
+      const extra = new Map<string, string>([
+        ["x", "extra-x"],
+        ["y", "extra-y"],
+        ["z", "extra-z"],
+      ]);
+
+      const visited: string[] = [];
+      await map.scan((record) => {
+        visited.push(record.key);
+        if (record.key === "y") return false;
+      }, extra);
+
+      expect(visited).toEqual(["a", "x", "y"]);
     });
   });
 

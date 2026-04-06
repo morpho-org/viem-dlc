@@ -104,12 +104,11 @@ export async function populateStore(store: MemoryStore, blobKey: string, bins: S
   await ndjson.flush();
 }
 
-export async function collectRecords(ndjson: LazyNdjsonMap<CachedChunk>) {
-  const records: Entry<CachedChunk>[] = [];
-  for await (const record of ndjson.records()) {
-    records.push({ key: record.key, value: record.value });
-  }
-  return records;
+export function collectRecords(ndjson: LazyNdjsonMap<CachedChunk>) {
+  return ndjson.reduce<Entry<CachedChunk>[]>((acc, record) => {
+    acc.push({ key: record.key, value: record.value });
+    return acc;
+  }, []);
 }
 
 /**

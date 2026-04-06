@@ -97,12 +97,12 @@ export async function handleEthGetLogs(
     // Determine which ranges are stale and/or missing
     const gaps: BlockRange[] = [];
 
-    for await (const record of ndjson.records()) {
+    await ndjson.scan((record) => {
       // Stop if we found all ranges *or* if key's prefix indicates we've passed all metadata
-      if (expectedMetadataRanges.size === 0 || !record.key.startsWith("0:")) break;
+      if (expectedMetadataRanges.size === 0 || !record.key.startsWith("0:")) return false;
 
       const range = expectedMetadataRanges.get(record.key);
-      if (!range) continue;
+      if (!range) return;
       expectedMetadataRanges.delete(record.key);
 
       if (
@@ -111,7 +111,7 @@ export async function handleEthGetLogs(
       ) {
         gaps.push(range);
       }
-    }
+    });
 
     for (const range of expectedMetadataRanges.values()) {
       gaps.push(range);

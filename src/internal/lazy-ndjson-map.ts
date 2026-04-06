@@ -17,8 +17,11 @@ type AutoFlush =
  * decompress/recompress cycle until an auto-flush timer fires or the caller
  * explicitly requests serialization via {@link flush} or {@link flushAndFold}.
  *
- * {@link records} and {@link reduce} provide read-your-writes semantics by
- * merge-sorting pending entries with the underlying compressed data.
+ * Read-side APIs provide read-your-writes semantics by merge-sorting pending
+ * entries with the underlying compressed data:
+ *
+ * - {@link scan} is the fused visitor for hot paths and early-exit scans.
+ * - {@link reduce} builds on {@link scan} for full folds.
  *
  * @dev Each instance expects to own its `slot`, i.e., no other entity should
  * cause `slot` to mutate or return different data.
@@ -111,14 +114,24 @@ export class LazyNdjsonMap<T, K extends string = string> {
     return result;
   }
 
-  /** Stream-decompress and fold every entry (flushed + pending) through `fn`, in sorted key order. */
+  /**
+   * Fold every entry (flushed + pending) through `fn` in sorted key order.
+   *
+   * Implemented on top of the fused {@link scan} path, so it preserves
+   * read-your-writes semantics without going through {@link records}.
+   */
   reduce<Acc>(fn: (acc: Acc, record: LazyEntry<T, K>) => Acc, init: Acc): Promise<Acc> {
     return this.inner.reduce(fn, init, new Map(this.pending));
   }
 
-  /** Async generator that yields each entry (flushed + pending) in sorted key order. */
-  async *records(): AsyncGenerator<LazyEntry<T, K>, void, void> {
-    yield* this.inner.records(new Map(this.pending));
+  /**
+   * Preferred hot read API.
+   *
+   * Visit each entry (flushed + pending) in sorted key order.
+   * Return `false` from `fn` to stop the scan early.
+   */
+  scan(fn: (record: LazyEntry<T, K>) => boolean | undefined): Promise<void> {
+    return this.inner.scan(fn, new Map(this.pending));
   }
 
   /*//////////////////////////////////////////////////////////////

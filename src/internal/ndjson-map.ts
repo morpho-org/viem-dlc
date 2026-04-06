@@ -102,9 +102,18 @@ function sortEntriesByRawKey<K extends string, V>(
  * value portion of type `T`.
  *
  * Lines are maintained in lexicographic sorted order by raw JSON key;
- * see {@link upsert}. Supports streaming reduce (without materializing
- * the full dataset) and streaming upsert (decompress → merge-insert →
- * recompress).
+ * see {@link upsert}. Read-side APIs:
+ *
+ * - {@link scan} is the fused visitor for hot paths and early-exit scans.
+ * - {@link reduce} builds on {@link scan} for full-pass folds.
+ *
+ * If an ergonomic `for await` surface is ever needed, an async-generator
+ * method can be added with merge-sort logic mirroring {@link scan} (not
+ * built on top of it, to preserve streaming).
+ *
+ * Write-side operations stay single-pass as well: {@link upsert} and
+ * {@link upsertAndFold} stream-decompress, merge, and recompress without
+ * materializing the full dataset.
  *
  * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
  * should cause `slot` to mutate or return different data.
@@ -128,14 +137,21 @@ export class NdjsonMap<T, K extends string = string> {
   }
 
   /**
-   * Async generator that yields each record from the compressed NDJSON.
-   * If `extra` is provided, its entries are merge-sorted into the stream
-   * by key, with extra entries taking precedence over stored entries on
-   * key collision.
+   * Fused visitor over each record from the compressed NDJSON.
+   *
+   * This is the preferred hot read API. It walks the stored blob once,
+   * merge-sorts `extra` inline when provided, and can stop early without
+   * paying async-generator overhead.
+   *
+   * If `extra` is provided, its entries are merge-sorted into the visit order
+   * by key, with extra entries taking precedence over stored entries on key collision.
+   *
+   * Return `false` from `fn` to stop the scan early.
    */
-  async *records(extra?: ReadonlyMap<K, T>): AsyncGenerator<LazyEntry<T, K>, void, void> {
+  async scan(fn: (record: LazyEntry<T, K>) => boolean | undefined, extra?: ReadonlyMap<K, T>): Promise<void> {
     const sorted = extra?.size ? sortEntriesByRawKey(extra) : undefined;
     let idx = 0;
+    const visit = (record: LazyEntry<T, K>) => fn(record) !== false;
 
     for await (const line of this.blob.lines()) {
       if (line.length === 0) continue;
@@ -146,38 +162,43 @@ export class NdjsonMap<T, K extends string = string> {
       if (sorted) {
         while (idx < sorted.length && sorted[idx]![0] < parsed.rawKey) {
           const [, key, value] = sorted[idx++]!;
-          yield new LazyEntry(key, this.codec.toJson(value), this.codec);
+          if (!visit(new LazyEntry(key, this.codec.toJson(value), this.codec))) return;
         }
 
         if (idx < sorted.length && sorted[idx]![0] === parsed.rawKey) {
           const [, key, value] = sorted[idx++]!;
-          yield new LazyEntry(key, this.codec.toJson(value), this.codec);
+          if (!visit(new LazyEntry(key, this.codec.toJson(value), this.codec))) return;
           continue;
         }
       }
 
       const rawValue = line.slice(parsed.valueStart, line.length - 1);
-      yield new LazyEntry(parsed.key, rawValue, this.codec);
+      if (!visit(new LazyEntry(parsed.key, rawValue, this.codec))) return;
     }
 
     if (sorted) {
       while (idx < sorted.length) {
         const [, key, value] = sorted[idx++]!;
-        yield new LazyEntry(key, this.codec.toJson(value), this.codec);
+        if (!visit(new LazyEntry(key, this.codec.toJson(value), this.codec))) return;
       }
     }
   }
 
-  /** Stream-decompress and fold every entry through `fn`. */
+  /**
+   * Fold every entry through `fn` in sorted key order.
+   *
+   * Implemented on top of {@link scan}, so it shares the fused read path but
+   * always consumes the full merged stream.
+   */
   async reduce<Acc>(
     fn: (acc: Acc, record: LazyEntry<T, K>) => Acc,
     init: Acc,
     extra?: ReadonlyMap<K, T>,
   ): Promise<Acc> {
     let acc = init;
-    for await (const record of this.records(extra)) {
+    await this.scan((record) => {
       acc = fn(acc, record);
-    }
+    }, extra);
     return acc;
   }
 
@@ -206,7 +227,7 @@ export class NdjsonMap<T, K extends string = string> {
 
   /**
    * Like {@link upsert}, but also folds through every entry (existing + new)
-   * in sorted key order during the rewrite pass. When `entries` is empty,
+   * in sorted key order during the same rewrite pass. When `entries` is empty,
    * degenerates to a pure {@link reduce} (no rewrite).
    */
   async upsertAndFold<Acc>(
@@ -231,7 +252,7 @@ export class NdjsonMap<T, K extends string = string> {
    * Core merge-insert-rewrite logic shared by {@link upsert} and {@link upsertAndFold}.
    * If `onEntry` is provided, it is called synchronously for each emitted entry
    * (existing lines kept as-is, replaced lines, and newly inserted lines) in
-   * sorted key order.
+   * sorted key order within the same decompress -> merge -> compress loop.
    */
   private async mergeAndRewrite(
     entries: Entry<T, K>[],

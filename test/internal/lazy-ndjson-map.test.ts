@@ -3,7 +3,7 @@ import { zstdCompressSync } from "zlib";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CompressedLinesBlob, type Codec, createSlot, type Entry, LazyNdjsonMap } from "../../src/internal/index.js";
+import { CompressedLinesBlob, type Codec, createSlot, type Entry, type LazyEntry, LazyNdjsonMap } from "../../src/internal/index.js";
 import { parse, stringify } from "../../src/utils/json.js";
 
 const codec: Codec<string> = {
@@ -36,12 +36,11 @@ function abortError() {
   return error;
 }
 
-async function collectRecords<T, K extends string>(map: LazyNdjsonMap<T, K>) {
-  const records: Entry<T, K>[] = [];
-  for await (const record of map.records()) {
-    records.push({ key: record.key, value: record.value });
-  }
-  return records;
+function collectRecords<T, K extends string>(map: LazyNdjsonMap<T, K>) {
+  return map.reduce<Entry<T, K>[]>((acc, record) => {
+    acc.push({ key: record.key, value: record.value });
+    return acc;
+  }, []);
 }
 
 type TimerEntry = {
@@ -89,17 +88,19 @@ describe("LazyNdjsonMap", () => {
 
     ndjson.upsert([{ key: "a", value: "alpha" }]);
 
-    const iterator = ndjson.records();
-    const first = await iterator.next();
-    const record = first.value;
+    let record: LazyEntry<string> | undefined;
+    await ndjson.scan((r) => {
+      record = r;
+      return false;
+    });
 
-    expect(first.done).toBe(false);
-    expect(record?.rawValue).toBe(stringify("alpha"));
+    expect(record).toBeDefined();
+    expect(record!.rawValue).toBe(stringify("alpha"));
     expect(fromJson).not.toHaveBeenCalled();
     expect(toJson).toHaveBeenCalledTimes(1);
 
-    expect(record?.value).toBe("alpha");
-    expect(record?.value).toBe("alpha");
+    expect(record!.value).toBe("alpha");
+    expect(record!.value).toBe("alpha");
     expect(fromJson).toHaveBeenCalledTimes(1);
   });
 
@@ -125,6 +126,26 @@ describe("LazyNdjsonMap", () => {
       return acc;
     }, []);
     expect(reduced).toEqual(["x:new-x", "y:keep-y", "z:tail-z"]);
+  });
+
+  it("scan merge-sorts pending writes and stops early when requested", async () => {
+    const source = [serializeLine("m", "old-m"), serializeLine("z", "keep-z"), ""].join("\n");
+    const ndjson = new LazyNdjsonMap<string, string>(
+      codec,
+      noAutoFlush,
+      createSlot(zstdCompressSync(Buffer.from(source))),
+    );
+
+    ndjson.upsert([{ key: "a", value: "new-a" }]);
+    ndjson.upsert([{ key: "m", value: "new-m" }]);
+
+    const visited: string[] = [];
+    await ndjson.scan((record) => {
+      visited.push(`${record.key}:${record.value}`);
+      if (record.key === "m") return false;
+    });
+
+    expect(visited).toEqual(["a:new-a", "m:new-m"]);
   });
 
   it("interleaves pending keys that sort before all flushed keys", async () => {

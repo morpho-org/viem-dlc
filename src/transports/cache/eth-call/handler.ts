@@ -109,9 +109,9 @@ export async function handleEthCall(
 
     const now = Date.now();
 
-    for await (const record of ndjson.records()) {
+    await ndjson.scan((record) => {
       const match = keyToInfo.get(record.key);
-      if (!match) continue;
+      if (!match) return;
       keyToInfo.delete(record.key);
 
       if (now - record.value.fetchedAt < ttl && (record.value.success || match.subCall.allowFailure)) {
@@ -120,8 +120,8 @@ export async function handleEthCall(
         misses.push({ entryKey: record.key, ...match });
       }
 
-      if (keyToInfo.size === 0) break;
-    }
+      if (keyToInfo.size === 0) return false;
+    });
 
     // Keys not found in blob at all
     for (const [entryKey, info] of keyToInfo) {
