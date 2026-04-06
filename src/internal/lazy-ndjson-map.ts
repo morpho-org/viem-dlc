@@ -61,6 +61,8 @@ export class LazyNdjsonMap<T, K extends string = string> {
    * together.
    */
   upsert(entries: Entry<T, K>[]): void {
+    if (entries.length === 0) return;
+
     for (const entry of entries) {
       this.pending.set(entry.key, entry.value);
     }
