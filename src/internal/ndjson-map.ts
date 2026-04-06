@@ -196,7 +196,7 @@ export class NdjsonMap<T, K extends string = string> {
     extra?: ReadonlyMap<K, T>,
   ): Promise<Acc> {
     let acc = init;
-    await this.scan((record) => {
+    await this.scan((record): undefined => {
       acc = fn(acc, record);
     }, extra);
     return acc;
