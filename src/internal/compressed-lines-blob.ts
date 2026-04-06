@@ -140,10 +140,7 @@ export class CompressedLinesBlob {
    *
    * On success, swaps the slot. On abort (or error), the slot is unchanged.
    */
-  async rewrite(
-    run: (session: RewriteSession) => void | Promise<void>,
-    signal?: AbortSignal,
-  ): Promise<void> {
+  async rewrite(run: (session: RewriteSession) => void | Promise<void>, signal?: AbortSignal): Promise<void> {
     const outputChunks: Buffer[] = [];
     let emittedLineCount = 0;
     const input = new PassThrough();
@@ -205,10 +202,7 @@ export class CompressedLinesBlob {
     }
   }
 
-  private async forEachStoredLine(
-    fn: (line: string) => void | Promise<void>,
-    signal?: AbortSignal,
-  ): Promise<void> {
+  private async forEachStoredLine(fn: (line: string) => void | Promise<void>, signal?: AbortSignal): Promise<void> {
     if (this.slot.get().length === 0) return;
 
     const output = new Writable({

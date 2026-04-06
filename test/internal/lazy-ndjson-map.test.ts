@@ -3,7 +3,14 @@ import { zstdCompressSync } from "zlib";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CompressedLinesBlob, type Codec, createSlot, type Entry, type LazyEntry, LazyNdjsonMap } from "../../src/internal/index.js";
+import {
+  CompressedLinesBlob,
+  type Codec,
+  createSlot,
+  type Entry,
+  type LazyEntry,
+  LazyNdjsonMap,
+} from "../../src/internal/index.js";
 import { parse, stringify } from "../../src/utils/json.js";
 
 const codec: Codec<string> = {
@@ -80,11 +87,7 @@ describe("LazyNdjsonMap", () => {
   it("exposes pending rawValue without parsing and caches parsed value on demand", async () => {
     const toJson = vi.fn(stringify);
     const fromJson = vi.fn((value: string) => parse<string>(value, "throw"));
-    const ndjson = new LazyNdjsonMap<string, string>(
-      { toJson, fromJson },
-      noAutoFlush,
-      createSlot(),
-    );
+    const ndjson = new LazyNdjsonMap<string, string>({ toJson, fromJson }, noAutoFlush, createSlot());
 
     ndjson.upsert([{ key: "a", value: "alpha" }]);
 
@@ -428,13 +431,10 @@ describe("LazyNdjsonMap", () => {
         { key: "b", value: "new-b" },
       ]);
 
-      const result = await ndjson.flushAndFold<string[]>(
-        (acc, record) => {
-          acc.push(`${record.key}:${record.value}`);
-          return acc;
-        },
-        [],
-      );
+      const result = await ndjson.flushAndFold<string[]>((acc, record) => {
+        acc.push(`${record.key}:${record.value}`);
+        return acc;
+      }, []);
 
       expect(result).toEqual(["a:new-a", "b:new-b"]);
       // Entries are persisted — a subsequent read with no pending should match
@@ -453,13 +453,10 @@ describe("LazyNdjsonMap", () => {
         createSlot(zstdCompressSync(Buffer.from(source))),
       );
 
-      const result = await ndjson.flushAndFold<string[]>(
-        (acc, record) => {
-          acc.push(record.key);
-          return acc;
-        },
-        [],
-      );
+      const result = await ndjson.flushAndFold<string[]>((acc, record) => {
+        acc.push(record.key);
+        return acc;
+      }, []);
 
       expect(result).toEqual(["x"]);
       expect(spy).not.toHaveBeenCalled();

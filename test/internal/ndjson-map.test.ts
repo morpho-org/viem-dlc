@@ -3,7 +3,15 @@ import { zstdCompressSync } from "zlib";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { type Codec, CompressedLinesBlob, createSlot, type Entry, type LazyEntry, NdjsonMap, type Slot } from "../../src/internal/index.js";
+import {
+  type Codec,
+  CompressedLinesBlob,
+  createSlot,
+  type Entry,
+  type LazyEntry,
+  NdjsonMap,
+  type Slot,
+} from "../../src/internal/index.js";
 import { parse, stringify } from "../../src/utils/json.js";
 
 const codec: Codec<string> = {
@@ -155,10 +163,14 @@ describe("NdjsonMap", () => {
         ["z", "extra-z"], // after all stored
       ]);
 
-      const result = await map.reduce<Entry<string, string>[]>((acc, r) => {
-        acc.push({ key: r.key, value: r.value });
-        return acc;
-      }, [], extra);
+      const result = await map.reduce<Entry<string, string>[]>(
+        (acc, r) => {
+          acc.push({ key: r.key, value: r.value });
+          return acc;
+        },
+        [],
+        extra,
+      );
 
       expect(result).toEqual([
         { key: "a", value: "extra-a" },
@@ -173,10 +185,14 @@ describe("NdjsonMap", () => {
       const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
 
       const withUndefined = await collectRecords(map);
-      const withEmpty = await map.reduce<Entry<string, string>[]>((acc, r) => {
-        acc.push({ key: r.key, value: r.value });
-        return acc;
-      }, [], new Map());
+      const withEmpty = await map.reduce<Entry<string, string>[]>(
+        (acc, r) => {
+          acc.push({ key: r.key, value: r.value });
+          return acc;
+        },
+        [],
+        new Map(),
+      );
 
       expect(withUndefined).toEqual([{ key: "x", value: "val" }]);
       expect(withEmpty).toEqual(withUndefined);
