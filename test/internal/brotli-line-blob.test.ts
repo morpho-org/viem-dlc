@@ -21,21 +21,6 @@ describe("CompressedLinesBlob", () => {
     expect(await collectLines(blob)).toEqual(["alpha"]);
   });
 
-  it("supports rewriting an empty blob from flush output only", async () => {
-    const blob = new CompressedLinesBlob(createSlot());
-
-    expect(await collectLines(blob)).toEqual([]);
-
-    await blob.rewriteLines(
-      () => {},
-      (emit) => {
-        emit("tail");
-      },
-    );
-
-    expect(await collectLines(blob)).toEqual(["tail"]);
-  });
-
   it("treats an empty compressed buffer input as an empty blob", async () => {
     const slot = createSlot(Buffer.alloc(0));
     const blob = new CompressedLinesBlob(slot);
@@ -44,31 +29,73 @@ describe("CompressedLinesBlob", () => {
     expect(await collectLines(blob)).toEqual([]);
   });
 
-  it("clears the stored blob when a rewrite emits no replacement lines", async () => {
-    const slot = createSlot(zstdCompressSync(Buffer.from("keep\nremove\n")));
-    const blob = new CompressedLinesBlob(slot);
+  describe("rewrite", () => {
+    it("rewrites an empty blob and round-trips correctly", async () => {
+      const blob = new CompressedLinesBlob(createSlot());
 
-    await blob.rewriteLines(() => {});
+      await blob.rewrite(async ({ emit, forEachLine }) => {
+        await expect(forEachLine(() => {})).resolves.toBeUndefined();
+        emit("alpha");
+        emit("beta");
+        emit("gamma");
+      });
+      expect(await collectLines(blob)).toEqual(["alpha", "beta", "gamma"]);
+    });
 
-    expect(await collectLines(blob)).toEqual([]);
-    expect(slot.get()).toEqual([]);
-  });
+    it("streams existing lines through forEachLine and allows inline rewrites", async () => {
+      const blob = new CompressedLinesBlob(createSlot(zstdCompressSync(Buffer.from("alpha\nbeta\ngamma\n"))));
+      const seen: string[] = [];
 
-  it("keeps the existing blob unchanged when rewrite is aborted before commit", async () => {
-    const blob = new CompressedLinesBlob(createSlot(zstdCompressSync(Buffer.from("keep\nreplace\n"))));
-    const controller = new AbortController();
-    controller.abort();
+      await blob.rewrite(async ({ emit, forEachLine }) => {
+        await forEachLine((line) => {
+          seen.push(line);
+          if (line !== "beta") emit(line);
+        });
+        emit("tail");
+      });
 
-    await expect(
-      blob.rewriteLines(
-        (line, emit) => {
-          emit(line === "replace" ? "new" : line);
-        },
-        undefined,
-        controller.signal,
-      ),
-    ).rejects.toMatchObject({ name: "AbortError" });
+      expect(seen).toEqual(["alpha", "beta", "gamma"]);
+      expect(await collectLines(blob)).toEqual(["alpha", "gamma", "tail"]);
+    });
 
-    expect(await collectLines(blob)).toEqual(["keep", "replace"]);
+    it("clears the slot when no lines are emitted", async () => {
+      const slot = createSlot(zstdCompressSync(Buffer.from("existing\n")));
+      const blob = new CompressedLinesBlob(slot);
+
+      await blob.rewrite(async ({ forEachLine }) => {
+        await forEachLine(() => {});
+      });
+      expect(await collectLines(blob)).toEqual([]);
+      expect(slot.get()).toEqual([]);
+    });
+
+    it("keeps the blob unchanged when aborted", async () => {
+      const blob = new CompressedLinesBlob(createSlot(zstdCompressSync(Buffer.from("keep\n"))));
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        blob.rewrite(({ emit }) => {
+          emit("replaced");
+        }, controller.signal),
+      ).rejects.toMatchObject({
+        name: "AbortError",
+      });
+
+      expect(await collectLines(blob)).toEqual(["keep"]);
+    });
+
+    it("keeps the blob unchanged when rewrite throws after emitting partial output", async () => {
+      const blob = new CompressedLinesBlob(createSlot(zstdCompressSync(Buffer.from("keep\n"))));
+
+      await expect(
+        blob.rewrite(({ emit }) => {
+          emit("replaced");
+          throw new Error("boom");
+        }),
+      ).rejects.toThrow("boom");
+
+      expect(await collectLines(blob)).toEqual(["keep"]);
+    });
   });
 });

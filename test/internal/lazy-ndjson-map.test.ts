@@ -3,7 +3,7 @@ import { zstdCompressSync } from "zlib";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { type Codec, createSlot, type Entry, LazyNdjsonMap, NdjsonMap } from "../../src/internal/index.js";
+import { CompressedLinesBlob, type Codec, createSlot, type Entry, LazyNdjsonMap } from "../../src/internal/index.js";
 import { parse, stringify } from "../../src/utils/json.js";
 
 const codec: Codec<string> = {
@@ -78,24 +78,49 @@ afterEach(() => {
 });
 
 describe("LazyNdjsonMap", () => {
+  it("exposes pending rawValue without parsing and caches parsed value on demand", async () => {
+    const toJson = vi.fn(stringify);
+    const fromJson = vi.fn((value: string) => parse<string>(value, "throw"));
+    const ndjson = new LazyNdjsonMap<string, string>(
+      { toJson, fromJson },
+      noAutoFlush,
+      createSlot(),
+    );
+
+    ndjson.upsert([{ key: "a", value: "alpha" }]);
+
+    const iterator = ndjson.records();
+    const first = await iterator.next();
+    const record = first.value;
+
+    expect(first.done).toBe(false);
+    expect(record?.rawValue).toBe(stringify("alpha"));
+    expect(fromJson).not.toHaveBeenCalled();
+    expect(toJson).toHaveBeenCalledTimes(1);
+
+    expect(record?.value).toBe("alpha");
+    expect(record?.value).toBe("alpha");
+    expect(fromJson).toHaveBeenCalledTimes(1);
+  });
+
   it("merge-sorts pending writes with flushed data in sorted key order", async () => {
     const source = [serializeLine("x", "old-x"), serializeLine("y", "keep-y"), ""].join("\n");
-    const map = new LazyNdjsonMap<string, string>(
+    const ndjson = new LazyNdjsonMap<string, string>(
       codec,
       noAutoFlush,
       createSlot(zstdCompressSync(Buffer.from(source))),
     );
 
-    map.upsert([{ key: "x", value: "new-x" }]);
-    map.upsert([{ key: "z", value: "tail-z" }]);
+    ndjson.upsert([{ key: "x", value: "new-x" }]);
+    ndjson.upsert([{ key: "z", value: "tail-z" }]);
 
-    expect(await collectRecords(map)).toEqual([
+    expect(await collectRecords(ndjson)).toEqual([
       { key: "x", value: "new-x" },
       { key: "y", value: "keep-y" },
       { key: "z", value: "tail-z" },
     ]);
 
-    const reduced = await map.reduce<string[]>((acc, record) => {
+    const reduced = await ndjson.reduce<string[]>((acc, record) => {
       acc.push(`${record.key}:${record.value}`);
       return acc;
     }, []);
@@ -104,22 +129,22 @@ describe("LazyNdjsonMap", () => {
 
   it("interleaves pending keys that sort before all flushed keys", async () => {
     const source = [serializeLine("m", "old-m"), serializeLine("z", "keep-z"), ""].join("\n");
-    const map = new LazyNdjsonMap<string, string>(
+    const ndjson = new LazyNdjsonMap<string, string>(
       codec,
       noAutoFlush,
       createSlot(zstdCompressSync(Buffer.from(source))),
     );
 
-    map.upsert([{ key: "a", value: "new-a" }]);
-    map.upsert([{ key: "m", value: "new-m" }]);
+    ndjson.upsert([{ key: "a", value: "new-a" }]);
+    ndjson.upsert([{ key: "m", value: "new-m" }]);
 
-    expect(await collectRecords(map)).toEqual([
+    expect(await collectRecords(ndjson)).toEqual([
       { key: "a", value: "new-a" },
       { key: "m", value: "new-m" },
       { key: "z", value: "keep-z" },
     ]);
 
-    const reduced = await map.reduce<string[]>((acc, record) => {
+    const reduced = await ndjson.reduce<string[]>((acc, record) => {
       acc.push(`${record.key}:${record.value}`);
       return acc;
     }, []);
@@ -127,14 +152,14 @@ describe("LazyNdjsonMap", () => {
   });
 
   it("auto-flush snapshots the current pending set and leaves later writes for a subsequent auto-flush", async () => {
-    const originalUpsert = NdjsonMap.prototype.upsert;
+    const originalRewrite = CompressedLinesBlob.prototype.rewrite;
     const entered = deferred();
     const release = deferred();
     let callCount = 0;
 
-    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (
-      this: NdjsonMap<string, string>,
-      entries,
+    const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
+      this: CompressedLinesBlob,
+      run,
       signal,
     ) {
       callCount += 1;
@@ -142,43 +167,38 @@ describe("LazyNdjsonMap", () => {
         entered.resolve();
         await release.promise;
       }
-      return originalUpsert.call(this, entries, signal);
+      return originalRewrite.call(this, run, signal);
     });
 
-    const map = new LazyNdjsonMap<string, string>(codec, immediateAutoFlush, createSlot());
+    const ndjson = new LazyNdjsonMap<string, string>(codec, immediateAutoFlush, createSlot());
 
-    map.upsert([{ key: "a", value: "alpha" }]);
+    ndjson.upsert([{ key: "a", value: "alpha" }]);
     await entered.promise;
 
     // Write arrives while the first auto-flush is in progress — not included in its snapshot
-    map.upsert([{ key: "b", value: "beta" }]);
-    expect(upsertSpy.mock.calls[0]?.[0].map(({ key }: { key: string }) => key)).toEqual(["a"]);
+    ndjson.upsert([{ key: "b", value: "beta" }]);
 
     release.resolve();
 
     // Debounce re-triggers after the first auto-flush settles; wait for both to complete
-    await vi.waitFor(() => expect(upsertSpy).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
 
-    // Second auto-flush picked up "b" as a separate snapshot
-    expect(upsertSpy.mock.calls.map(([entries]) => entries.map(({ key }: { key: string }) => key))).toEqual([
-      ["a"],
-      ["b"],
-    ]);
-    expect(await collectRecords(map)).toEqual([
+    // Snapshot isolation: two separate writes happened
+    expect(await collectRecords(ndjson)).toEqual([
       { key: "a", value: "alpha" },
       { key: "b", value: "beta" },
     ]);
   });
 
   it("queues concurrent flushes and drains writes that arrive during a flush", async () => {
-    const originalUpsert = NdjsonMap.prototype.upsert;
+    const originalRewrite = CompressedLinesBlob.prototype.rewrite;
     const entered = deferred();
     const release = deferred();
     let callCount = 0;
 
-    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (
-      this: NdjsonMap<string, string>,
-      entries,
+    const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
+      this: CompressedLinesBlob,
+      run,
       signal,
     ) {
       callCount += 1;
@@ -186,31 +206,66 @@ describe("LazyNdjsonMap", () => {
         entered.resolve();
         await release.promise;
       }
-
-      return originalUpsert.call(this, entries, signal);
+      return originalRewrite.call(this, run, signal);
     });
 
-    const map = new LazyNdjsonMap<string, string>(codec, noAutoFlush, createSlot());
-    map.upsert([{ key: "a", value: "alpha" }]);
+    const ndjson = new LazyNdjsonMap<string, string>(codec, noAutoFlush, createSlot());
+    ndjson.upsert([{ key: "a", value: "alpha" }]);
 
-    const firstFlush = map.flush();
-    const secondFlush = map.flush();
+    const firstFlush = ndjson.flush();
+    const secondFlush = ndjson.flush();
 
     // Concurrent flushes queue independently (no coalescing)
     expect(secondFlush).not.toBe(firstFlush);
 
     await entered.promise;
-    map.upsert([{ key: "b", value: "beta" }]);
+    ndjson.upsert([{ key: "b", value: "beta" }]);
     release.resolve();
 
     await Promise.all([firstFlush, secondFlush]);
 
-    // First flush drained "a" then picked up "b"; second flush found pending empty
-    expect(upsertSpy.mock.calls.map(([entries]) => entries.map(({ key }: { key: string }) => key))).toEqual([
-      ["a"],
-      ["b"],
+    // First flush drained "a", second flush picked up "b" that arrived during first
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(await collectRecords(ndjson)).toEqual([
+      { key: "a", value: "alpha" },
+      { key: "b", value: "beta" },
     ]);
-    expect(await collectRecords(map)).toEqual([
+  });
+
+  it("flushAndFold snapshots pending entries and leaves later writes pending", async () => {
+    const originalRewrite = CompressedLinesBlob.prototype.rewrite;
+    const entered = deferred();
+    const release = deferred();
+    let callCount = 0;
+
+    vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
+      this: CompressedLinesBlob,
+      run,
+      signal,
+    ) {
+      callCount += 1;
+      if (callCount === 1) {
+        entered.resolve();
+        await release.promise;
+      }
+      return originalRewrite.call(this, run, signal);
+    });
+
+    const ndjson = new LazyNdjsonMap<string, string>(codec, noAutoFlush, createSlot());
+    ndjson.upsert([{ key: "a", value: "alpha" }]);
+
+    const fold = ndjson.flushAndFold<string[]>((acc, record) => {
+      acc.push(`${record.key}:${record.value}`);
+      return acc;
+    }, []);
+
+    await entered.promise;
+    ndjson.upsert([{ key: "b", value: "beta" }]);
+    release.resolve();
+
+    expect(await fold).toEqual(["a:alpha"]);
+    expect(callCount).toBe(1);
+    expect(await collectRecords(ndjson)).toEqual([
       { key: "a", value: "alpha" },
       { key: "b", value: "beta" },
     ]);
@@ -218,49 +273,49 @@ describe("LazyNdjsonMap", () => {
 
   it("caps the debounce delay at the remaining maxDelay as the window fills", () => {
     const clock = installManualTimers();
-    const map = new LazyNdjsonMap<string, string>(
+    const ndjson = new LazyNdjsonMap<string, string>(
       codec,
       { debounceMs: 100, maxDelayMs: 150, maxStalenessMs: Infinity },
       createSlot(),
     );
 
-    map.upsert([{ key: "a", value: "alpha" }]);
+    ndjson.upsert([{ key: "a", value: "alpha" }]);
     // debounce=100, maxDelayRemaining=150 → min(100,150)=100
     expect([...clock.timers.values()].map((t) => t.delay)).toEqual([100]);
 
     clock.setNow(80);
-    map.upsert([{ key: "b", value: "beta" }]);
+    ndjson.upsert([{ key: "b", value: "beta" }]);
     // debounce=100, maxDelayRemaining=150-80=70 → min(100,70)=70
     expect([...clock.timers.values()].map((t) => t.delay)).toEqual([70]);
   });
 
   it("drops stale pending work when the timer fires late (simulating freeze/thaw)", () => {
     const clock = installManualTimers();
-    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert");
+    const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite");
 
-    const map = new LazyNdjsonMap<string, string>(
+    const ndjson = new LazyNdjsonMap<string, string>(
       codec,
       { debounceMs: 100, maxDelayMs: 1_000, maxStalenessMs: 50 },
       createSlot(),
     );
 
-    map.upsert([{ key: "a", value: "stale" }]);
+    ndjson.upsert([{ key: "a", value: "stale" }]);
     clock.setNow(1_000); // simulate long freeze
     clock.timers.values().next().value?.callback(); // fire the timer late
 
-    expect(upsertSpy).not.toHaveBeenCalled();
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("drops stale queued work after an in-flight auto-flush settles", async () => {
     const clock = installManualTimers();
-    const originalUpsert = NdjsonMap.prototype.upsert;
+    const originalRewrite = CompressedLinesBlob.prototype.rewrite;
     const entered = deferred();
     const release = deferred();
     let callCount = 0;
 
-    vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (
-      this: NdjsonMap<string, string>,
-      entries,
+    vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
+      this: CompressedLinesBlob,
+      run,
       signal,
     ) {
       callCount += 1;
@@ -268,23 +323,23 @@ describe("LazyNdjsonMap", () => {
         entered.resolve();
         await release.promise;
       }
-      return originalUpsert.call(this, entries, signal);
+      return originalRewrite.call(this, run, signal);
     });
 
-    const map = new LazyNdjsonMap<string, string>(
+    const ndjson = new LazyNdjsonMap<string, string>(
       codec,
       { debounceMs: 100, maxDelayMs: 500, maxStalenessMs: 50 },
       createSlot(),
     );
 
     // upsert "a" at t=0, then fire the timer to start the flush
-    map.upsert([{ key: "a", value: "first" }]);
+    ndjson.upsert([{ key: "a", value: "first" }]);
     clock.timers.values().next().value?.callback();
     await entered.promise;
 
     // Write arrives at t=10 while flush is running
     clock.setNow(10);
-    map.upsert([{ key: "b", value: "stale" }]);
+    ndjson.upsert([{ key: "b", value: "stale" }]);
 
     // Simulate freeze: advance past staleness threshold (100 - 10 = 90 > 50)
     clock.setNow(100);
@@ -298,14 +353,14 @@ describe("LazyNdjsonMap", () => {
   });
 
   it("re-arms the timer after an in-flight auto-flush settles with fresh pending work", async () => {
-    const originalUpsert = NdjsonMap.prototype.upsert;
+    const originalRewrite = CompressedLinesBlob.prototype.rewrite;
     const entered = deferred();
     const release = deferred();
     let callCount = 0;
 
-    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (
-      this: NdjsonMap<string, string>,
-      entries,
+    const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
+      this: CompressedLinesBlob,
+      run,
       signal,
     ) {
       callCount += 1;
@@ -313,39 +368,127 @@ describe("LazyNdjsonMap", () => {
         entered.resolve();
         await release.promise;
       }
-      return originalUpsert.call(this, entries, signal);
+      return originalRewrite.call(this, run, signal);
     });
 
-    const map = new LazyNdjsonMap<string, string>(
+    const ndjson = new LazyNdjsonMap<string, string>(
       codec,
       { ...immediateAutoFlush, maxStalenessMs: Infinity },
       createSlot(),
     );
 
-    map.upsert([{ key: "a", value: "alpha" }]);
+    ndjson.upsert([{ key: "a", value: "alpha" }]);
     await entered.promise;
 
     // Write arrives while first auto-flush is running
-    map.upsert([{ key: "b", value: "beta" }]);
+    ndjson.upsert([{ key: "b", value: "beta" }]);
     release.resolve();
 
     // Should re-arm and eventually flush "b"
-    await vi.waitFor(() => expect(upsertSpy).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
 
-    expect(await collectRecords(map)).toEqual([
+    expect(await collectRecords(ndjson)).toEqual([
       { key: "a", value: "alpha" },
       { key: "b", value: "beta" },
     ]);
   });
 
+  describe("flushAndFold", () => {
+    it("folds through all entries and persists them", async () => {
+      const source = [serializeLine("b", "stored-b"), ""].join("\n");
+      const ndjson = new LazyNdjsonMap<string, string>(
+        codec,
+        noAutoFlush,
+        createSlot(zstdCompressSync(Buffer.from(source))),
+      );
+
+      ndjson.upsert([
+        { key: "a", value: "new-a" },
+        { key: "b", value: "new-b" },
+      ]);
+
+      const result = await ndjson.flushAndFold<string[]>(
+        (acc, record) => {
+          acc.push(`${record.key}:${record.value}`);
+          return acc;
+        },
+        [],
+      );
+
+      expect(result).toEqual(["a:new-a", "b:new-b"]);
+      // Entries are persisted — a subsequent read with no pending should match
+      expect(await collectRecords(ndjson)).toEqual([
+        { key: "a", value: "new-a" },
+        { key: "b", value: "new-b" },
+      ]);
+    });
+
+    it("delegates to reduce (no rewrite) when pending is empty", async () => {
+      const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite");
+      const source = [serializeLine("x", "val"), ""].join("\n");
+      const ndjson = new LazyNdjsonMap<string, string>(
+        codec,
+        noAutoFlush,
+        createSlot(zstdCompressSync(Buffer.from(source))),
+      );
+
+      const result = await ndjson.flushAndFold<string[]>(
+        (acc, record) => {
+          acc.push(record.key);
+          return acc;
+        },
+        [],
+      );
+
+      expect(result).toEqual(["x"]);
+      expect(spy).not.toHaveBeenCalled();
+    });
+  });
+
+  it("preserves a key in pending when it is overwritten during flush", async () => {
+    const originalRewrite = CompressedLinesBlob.prototype.rewrite;
+    const entered = deferred();
+    const release = deferred();
+    let callCount = 0;
+
+    vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
+      this: CompressedLinesBlob,
+      run,
+      signal,
+    ) {
+      callCount += 1;
+      if (callCount === 1) {
+        entered.resolve();
+        await release.promise;
+      }
+      return originalRewrite.call(this, run, signal);
+    });
+
+    const ndjson = new LazyNdjsonMap<string, string>(codec, noAutoFlush, createSlot());
+    ndjson.upsert([{ key: "a", value: "v1" }]);
+
+    const flushP = ndjson.flush();
+    await entered.promise;
+
+    // Overwrite same key with a new value while flush is in progress
+    ndjson.upsert([{ key: "a", value: "v2" }]);
+    release.resolve();
+    await flushP;
+
+    // "a" should still be pending with the new value — next flush writes it
+    await ndjson.flush();
+
+    expect(await collectRecords(ndjson)).toEqual([{ key: "a", value: "v2" }]);
+  });
+
   it("aborts an in-flight auto-flush before an explicit flush retries the same pending entries", async () => {
-    const originalUpsert = NdjsonMap.prototype.upsert;
+    const originalRewrite = CompressedLinesBlob.prototype.rewrite;
     const entered = deferred();
     let callCount = 0;
 
-    const upsertSpy = vi.spyOn(NdjsonMap.prototype, "upsert").mockImplementation(async function (
-      this: NdjsonMap<string, string>,
-      entries,
+    const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
+      this: CompressedLinesBlob,
+      run,
       signal,
     ) {
       callCount += 1;
@@ -368,17 +511,17 @@ describe("LazyNdjsonMap", () => {
         });
       }
 
-      return originalUpsert.call(this, entries, signal);
+      return originalRewrite.call(this, run, signal);
     });
 
-    const map = new LazyNdjsonMap<string, string>(codec, immediateAutoFlush, createSlot());
-    map.upsert([{ key: "a", value: "alpha" }]);
+    const ndjson = new LazyNdjsonMap<string, string>(codec, immediateAutoFlush, createSlot());
+    ndjson.upsert([{ key: "a", value: "alpha" }]);
 
     await entered.promise;
-    await map.flush();
+    await ndjson.flush();
 
-    expect(upsertSpy).toHaveBeenCalledTimes(2);
-    expect((upsertSpy.mock.calls[0]?.[1] as AbortSignal | undefined)?.aborted).toBe(true);
-    expect(await collectRecords(map)).toEqual([{ key: "a", value: "alpha" }]);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect((spy.mock.calls[0]?.[1] as AbortSignal | undefined)?.aborted).toBe(true);
+    expect(await collectRecords(ndjson)).toEqual([{ key: "a", value: "alpha" }]);
   });
 });

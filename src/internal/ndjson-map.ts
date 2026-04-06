@@ -57,7 +57,7 @@ export type Codec<T> = {
  */
 const KEY_PREFIX = '{"key":';
 const SEPARATOR = ',"value":';
-const KEY_START = KEY_PREFIX.length; // 7
+const KEY_START = KEY_PREFIX.length;
 
 /**
  * Extract the raw JSON key token from a line via string slicing only (no JSON.parse).
@@ -71,7 +71,7 @@ function extractRawKey(line: string): string | undefined {
 }
 
 /** Parse the full envelope: validates structure, JSON-parses the key, locates the value. */
-function parseEnvelope<K extends string>(line: string): { key: K; valueStart: number } | undefined {
+function parseEnvelope<K extends string>(line: string): { rawKey: string; key: K; valueStart: number } | undefined {
   const rawKey = extractRawKey(line);
   if (rawKey === undefined) return undefined;
 
@@ -83,7 +83,7 @@ function parseEnvelope<K extends string>(line: string): { key: K; valueStart: nu
   }
   if (typeof key !== "string") return undefined;
 
-  return { key, valueStart: KEY_START + rawKey.length + SEPARATOR.length };
+  return { rawKey, key, valueStart: KEY_START + rawKey.length + SEPARATOR.length };
 }
 
 function sortEntriesByRawKey<K extends string, V>(
@@ -140,26 +140,24 @@ export class NdjsonMap<T, K extends string = string> {
     for await (const line of this.blob.lines()) {
       if (line.length === 0) continue;
 
-      if (sorted) {
-        const rawKey = extractRawKey(line);
-        if (rawKey === undefined) continue;
+      const parsed = parseEnvelope<K>(line);
+      if (parsed === undefined) continue;
 
-        // Yield extra entries that sort before this stored key
-        while (idx < sorted.length && sorted[idx]![0] < rawKey) {
+      if (sorted) {
+        while (idx < sorted.length && sorted[idx]![0] < parsed.rawKey) {
           const [, key, value] = sorted[idx++]!;
           yield new LazyEntry(key, this.codec.toJson(value), this.codec);
         }
 
-        // Extra entry overrides this stored key — yield the override, skip stored
-        if (idx < sorted.length && sorted[idx]![0] === rawKey) {
+        if (idx < sorted.length && sorted[idx]![0] === parsed.rawKey) {
           const [, key, value] = sorted[idx++]!;
           yield new LazyEntry(key, this.codec.toJson(value), this.codec);
           continue;
         }
       }
 
-      const entry = this.parseLine(line);
-      if (entry !== undefined) yield entry;
+      const rawValue = line.slice(parsed.valueStart, line.length - 1);
+      yield new LazyEntry(parsed.key, rawValue, this.codec);
     }
 
     if (sorted) {
@@ -250,7 +248,6 @@ export class NdjsonMap<T, K extends string = string> {
       if (onEntry) onEntry(new LazyEntry(key, rawValue, codec));
     };
 
-    // Deduplicate (last write wins) then sort by raw JSON key for merge-insert
     const byKey = new Map<K, T>();
     for (const entry of entries) {
       byKey.set(entry.key, entry.value);
@@ -261,8 +258,8 @@ export class NdjsonMap<T, K extends string = string> {
     let prevRawKey: string | undefined;
     let corrupted = false;
 
-    await this.blob.rewriteLines(
-      (line, emit) => {
+    await this.blob.rewrite(async ({ emit, forEachLine }) => {
+      await forEachLine((line) => {
         if (corrupted || line.length === 0) return;
 
         const rawKey = extractRawKey(line);
@@ -278,13 +275,11 @@ export class NdjsonMap<T, K extends string = string> {
         }
         prevRawKey = rawKey;
 
-        // Merge-insert: emit sorted pending entries that belong before this key
         while (idx < sorted.length && sorted[idx]![0] < rawKey) {
           const [pKey, pOrigKey, pValue] = sorted[idx++]!;
           emitNew(emit, pKey, pOrigKey, pValue);
         }
 
-        // Replace in-place if this key is being upserted, otherwise keep existing line
         if (idx < sorted.length && sorted[idx]![0] === rawKey) {
           const [, pOrigKey, pValue] = sorted[idx++]!;
           emitNew(emit, rawKey, pOrigKey, pValue);
@@ -295,14 +290,12 @@ export class NdjsonMap<T, K extends string = string> {
             if (entry) onEntry!(entry);
           }
         }
-      },
-      (emit) => {
-        while (idx < sorted.length) {
-          const [pKey, pOrigKey, pValue] = sorted[idx++]!;
-          emitNew(emit, pKey, pOrigKey, pValue);
-        }
-      },
-      signal,
-    );
+      });
+
+      while (idx < sorted.length) {
+        const [pKey, pOrigKey, pValue] = sorted[idx++]!;
+        emitNew(emit, pKey, pOrigKey, pValue);
+      }
+    }, signal);
   }
 }
