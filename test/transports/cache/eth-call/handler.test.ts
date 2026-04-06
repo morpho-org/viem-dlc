@@ -42,7 +42,6 @@ async function populateStore(store: MemoryStore, req: ReturnType<typeof createRe
   let buffers = store.get(blobKey) ?? [];
   const ndjson = new LazyNdjsonMap<CachedEthCallEntry>(
     codec,
-    { debounceMs: 86_400_000, maxDelayMs: 86_400_000, maxStalenessMs: 86_400_000 },
     {
       get: () => buffers,
       set: (next) => {
@@ -50,6 +49,7 @@ async function populateStore(store: MemoryStore, req: ReturnType<typeof createRe
         store.set(blobKey, next);
       },
     },
+    { debounceMs: 86_400_000, maxDelayMs: 86_400_000, maxStalenessMs: 86_400_000 },
   );
 
   const cleanStateOverride = extractEthCallCachePolicy(req.params[2])?.cleanStateOverride;

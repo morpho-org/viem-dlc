@@ -84,7 +84,6 @@ export async function handleEthGetLogs(
     let buffers = (await preflight[1]) ?? [];
     const ndjson = new LazyNdjsonMap<CachedChunk>(
       { toJson: stringify, fromJson: parse },
-      { debounceMs: 500, maxDelayMs: 2_500, maxStalenessMs: 60_000 },
       {
         get: () => buffers,
         set: (value) => {
@@ -92,6 +91,7 @@ export async function handleEthGetLogs(
           void store.set(blobKey, value);
         },
       },
+      { debounceMs: 500, maxDelayMs: 2_500, maxStalenessMs: 60_000 },
     );
 
     // Determine which ranges are stale and/or missing

@@ -259,12 +259,9 @@ export class NdjsonMap<T, K extends string = string> {
     signal?: AbortSignal,
     onEntry?: (entry: LazyEntry<T, K>) => void,
   ): Promise<void> {
-    const toJson = this.codec.toJson;
-    const parseLine = onEntry ? this.parseLine.bind(this) : undefined;
-
-    const codec = this.codec;
+    const { codec } = this;
     const emitNew = (emit: (line: string) => void, rawKey: string, key: K, value: T) => {
-      const rawValue = toJson(value);
+      const rawValue = codec.toJson(value);
       emit(`${KEY_PREFIX}${rawKey}${SEPARATOR}${rawValue}}`);
       if (onEntry) onEntry(new LazyEntry(key, rawValue, codec));
     };
@@ -283,39 +280,39 @@ export class NdjsonMap<T, K extends string = string> {
       await forEachLine((line) => {
         if (corrupted || line.length === 0) return;
 
-        const rawKey = extractRawKey(line);
-        if (rawKey === undefined) return;
+        const storedRawKey = extractRawKey(line);
+        if (storedRawKey === undefined) return;
 
-        if (prevRawKey !== undefined && rawKey <= prevRawKey) {
-          const reason = rawKey === prevRawKey ? "Duplicate" : "Unsorted";
+        if (prevRawKey !== undefined && storedRawKey <= prevRawKey) {
+          const reason = storedRawKey === prevRawKey ? "Duplicate" : "Unsorted";
           console.warn(
-            `[NdjsonMap] ${reason} key in blob: ${rawKey}${rawKey === prevRawKey ? "" : ` after ${prevRawKey}`}. Discarding remaining blob lines.`,
+            `[NdjsonMap] ${reason} key in blob: ${storedRawKey}${storedRawKey === prevRawKey ? "" : ` after ${prevRawKey}`}. Discarding remaining blob lines.`,
           );
           corrupted = true;
           return;
         }
-        prevRawKey = rawKey;
+        prevRawKey = storedRawKey;
 
-        while (idx < sorted.length && sorted[idx]![0] < rawKey) {
-          const [pKey, pOrigKey, pValue] = sorted[idx++]!;
-          emitNew(emit, pKey, pOrigKey, pValue);
+        while (idx < sorted.length && sorted[idx]![0] < storedRawKey) {
+          const [rawKey, key, value] = sorted[idx++]!;
+          emitNew(emit, rawKey, key, value);
         }
 
-        if (idx < sorted.length && sorted[idx]![0] === rawKey) {
-          const [, pOrigKey, pValue] = sorted[idx++]!;
-          emitNew(emit, rawKey, pOrigKey, pValue);
+        if (idx < sorted.length && sorted[idx]![0] === storedRawKey) {
+          const [, key, value] = sorted[idx++]!;
+          emitNew(emit, storedRawKey, key, value);
         } else {
           emit(line);
-          if (parseLine) {
-            const entry = parseLine(line);
-            if (entry) onEntry!(entry);
+          if (onEntry) {
+            const entry = this.parseLine(line);
+            if (entry) onEntry(entry);
           }
         }
       });
 
       while (idx < sorted.length) {
-        const [pKey, pOrigKey, pValue] = sorted[idx++]!;
-        emitNew(emit, pKey, pOrigKey, pValue);
+        const [rawKey, key, value] = sorted[idx++]!;
+        emitNew(emit, rawKey, key, value);
       }
     }, signal);
   }

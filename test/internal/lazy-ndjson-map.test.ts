@@ -4,8 +4,8 @@ import { zstdCompressSync } from "zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  CompressedLinesBlob,
   type Codec,
+  CompressedLinesBlob,
   createSlot,
   type Entry,
   type LazyEntry,
@@ -87,7 +87,7 @@ describe("LazyNdjsonMap", () => {
   it("exposes pending rawValue without parsing and caches parsed value on demand", async () => {
     const toJson = vi.fn(stringify);
     const fromJson = vi.fn((value: string) => parse<string>(value, "throw"));
-    const ndjson = new LazyNdjsonMap<string, string>({ toJson, fromJson }, noAutoFlush, createSlot());
+    const ndjson = new LazyNdjsonMap<string, string>({ toJson, fromJson }, createSlot(), noAutoFlush);
 
     ndjson.upsert([{ key: "a", value: "alpha" }]);
 
@@ -111,8 +111,8 @@ describe("LazyNdjsonMap", () => {
     const source = [serializeLine("x", "old-x"), serializeLine("y", "keep-y"), ""].join("\n");
     const ndjson = new LazyNdjsonMap<string, string>(
       codec,
-      noAutoFlush,
       createSlot(zstdCompressSync(Buffer.from(source))),
+      noAutoFlush,
     );
 
     ndjson.upsert([{ key: "x", value: "new-x" }]);
@@ -135,8 +135,8 @@ describe("LazyNdjsonMap", () => {
     const source = [serializeLine("m", "old-m"), serializeLine("z", "keep-z"), ""].join("\n");
     const ndjson = new LazyNdjsonMap<string, string>(
       codec,
-      noAutoFlush,
       createSlot(zstdCompressSync(Buffer.from(source))),
+      noAutoFlush,
     );
 
     ndjson.upsert([{ key: "a", value: "new-a" }]);
@@ -155,8 +155,8 @@ describe("LazyNdjsonMap", () => {
     const source = [serializeLine("m", "old-m"), serializeLine("z", "keep-z"), ""].join("\n");
     const ndjson = new LazyNdjsonMap<string, string>(
       codec,
-      noAutoFlush,
       createSlot(zstdCompressSync(Buffer.from(source))),
+      noAutoFlush,
     );
 
     ndjson.upsert([{ key: "a", value: "new-a" }]);
@@ -194,7 +194,7 @@ describe("LazyNdjsonMap", () => {
       return originalRewrite.call(this, run, signal);
     });
 
-    const ndjson = new LazyNdjsonMap<string, string>(codec, immediateAutoFlush, createSlot());
+    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), immediateAutoFlush);
 
     ndjson.upsert([{ key: "a", value: "alpha" }]);
     await entered.promise;
@@ -233,7 +233,7 @@ describe("LazyNdjsonMap", () => {
       return originalRewrite.call(this, run, signal);
     });
 
-    const ndjson = new LazyNdjsonMap<string, string>(codec, noAutoFlush, createSlot());
+    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), noAutoFlush);
     ndjson.upsert([{ key: "a", value: "alpha" }]);
 
     const firstFlush = ndjson.flush();
@@ -275,7 +275,7 @@ describe("LazyNdjsonMap", () => {
       return originalRewrite.call(this, run, signal);
     });
 
-    const ndjson = new LazyNdjsonMap<string, string>(codec, noAutoFlush, createSlot());
+    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), noAutoFlush);
     ndjson.upsert([{ key: "a", value: "alpha" }]);
 
     const fold = ndjson.flushAndFold<string[]>((acc, record) => {
@@ -297,11 +297,11 @@ describe("LazyNdjsonMap", () => {
 
   it("caps the debounce delay at the remaining maxDelay as the window fills", () => {
     const clock = installManualTimers();
-    const ndjson = new LazyNdjsonMap<string, string>(
-      codec,
-      { debounceMs: 100, maxDelayMs: 150, maxStalenessMs: Infinity },
-      createSlot(),
-    );
+    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), {
+      debounceMs: 100,
+      maxDelayMs: 150,
+      maxStalenessMs: Infinity,
+    });
 
     ndjson.upsert([{ key: "a", value: "alpha" }]);
     // debounce=100, maxDelayRemaining=150 → min(100,150)=100
@@ -317,11 +317,11 @@ describe("LazyNdjsonMap", () => {
     const clock = installManualTimers();
     const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite");
 
-    const ndjson = new LazyNdjsonMap<string, string>(
-      codec,
-      { debounceMs: 100, maxDelayMs: 1_000, maxStalenessMs: 50 },
-      createSlot(),
-    );
+    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), {
+      debounceMs: 100,
+      maxDelayMs: 1_000,
+      maxStalenessMs: 50,
+    });
 
     ndjson.upsert([{ key: "a", value: "stale" }]);
     clock.setNow(1_000); // simulate long freeze
@@ -350,11 +350,11 @@ describe("LazyNdjsonMap", () => {
       return originalRewrite.call(this, run, signal);
     });
 
-    const ndjson = new LazyNdjsonMap<string, string>(
-      codec,
-      { debounceMs: 100, maxDelayMs: 500, maxStalenessMs: 50 },
-      createSlot(),
-    );
+    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), {
+      debounceMs: 100,
+      maxDelayMs: 500,
+      maxStalenessMs: 50,
+    });
 
     // upsert "a" at t=0, then fire the timer to start the flush
     ndjson.upsert([{ key: "a", value: "first" }]);
@@ -395,11 +395,10 @@ describe("LazyNdjsonMap", () => {
       return originalRewrite.call(this, run, signal);
     });
 
-    const ndjson = new LazyNdjsonMap<string, string>(
-      codec,
-      { ...immediateAutoFlush, maxStalenessMs: Infinity },
-      createSlot(),
-    );
+    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), {
+      ...immediateAutoFlush,
+      maxStalenessMs: Infinity,
+    });
 
     ndjson.upsert([{ key: "a", value: "alpha" }]);
     await entered.promise;
@@ -422,8 +421,8 @@ describe("LazyNdjsonMap", () => {
       const source = [serializeLine("b", "stored-b"), ""].join("\n");
       const ndjson = new LazyNdjsonMap<string, string>(
         codec,
-        noAutoFlush,
         createSlot(zstdCompressSync(Buffer.from(source))),
+        noAutoFlush,
       );
 
       ndjson.upsert([
@@ -449,8 +448,8 @@ describe("LazyNdjsonMap", () => {
       const source = [serializeLine("x", "val"), ""].join("\n");
       const ndjson = new LazyNdjsonMap<string, string>(
         codec,
-        noAutoFlush,
         createSlot(zstdCompressSync(Buffer.from(source))),
+        noAutoFlush,
       );
 
       const result = await ndjson.flushAndFold<string[]>((acc, record) => {
@@ -482,7 +481,7 @@ describe("LazyNdjsonMap", () => {
       return originalRewrite.call(this, run, signal);
     });
 
-    const ndjson = new LazyNdjsonMap<string, string>(codec, noAutoFlush, createSlot());
+    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), noAutoFlush);
     ndjson.upsert([{ key: "a", value: "v1" }]);
 
     const flushP = ndjson.flush();
@@ -532,7 +531,7 @@ describe("LazyNdjsonMap", () => {
       return originalRewrite.call(this, run, signal);
     });
 
-    const ndjson = new LazyNdjsonMap<string, string>(codec, immediateAutoFlush, createSlot());
+    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), immediateAutoFlush);
     ndjson.upsert([{ key: "a", value: "alpha" }]);
 
     await entered.promise;

@@ -28,7 +28,6 @@ type AutoFlush =
  */
 export class LazyNdjsonMap<T, K extends string = string> {
   private readonly inner: NdjsonMap<T, K>;
-  private readonly opts: { debounceMs: number; maxDelayMs: number; maxStalenessMs: number };
 
   /** Pending entries keyed by the original key */
   private pending = new Map<K, T>();
@@ -43,10 +42,9 @@ export class LazyNdjsonMap<T, K extends string = string> {
 
   constructor(
     codec: Codec<T>,
-    options: { debounceMs: number; maxDelayMs: number; maxStalenessMs: number },
     slot: Slot,
+    private readonly opts: { debounceMs: number; maxDelayMs: number; maxStalenessMs: number },
   ) {
-    this.opts = options;
     this.inner = new NdjsonMap<T, K>(codec, slot);
   }
 
@@ -117,8 +115,7 @@ export class LazyNdjsonMap<T, K extends string = string> {
   /**
    * Fold every entry (flushed + pending) through `fn` in sorted key order.
    *
-   * Implemented on top of the fused {@link scan} path, so it preserves
-   * read-your-writes semantics without going through {@link records}.
+   * Implemented on top of {@link scan}, so it shares the fused read path.
    */
   reduce<Acc>(fn: (acc: Acc, record: LazyEntry<T, K>) => Acc, init: Acc): Promise<Acc> {
     return this.inner.reduce(fn, init, new Map(this.pending));
