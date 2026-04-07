@@ -1,6 +1,8 @@
 import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
+import { hash } from "../../utils/hash.js";
+import { createDedupe } from "../../utils/with-dedupe.js";
 import { createRateLimit } from "../../utils/with-rate-limit.js";
 
 import { type RateLimiterSchema, stripAdditionalParameters } from "./schema.js";
@@ -33,18 +35,21 @@ export type * from "./types.js";
  */
 export function rateLimiter(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  [{ maxRequestsPerSecond = 20, maxBurstRequests = 1, maxConcurrentRequests = Infinity }]: [RateLimiterConfig],
+  [{ maxRequestsPerSecond = 20, maxBurstRequests = 1, maxConcurrentRequests = Infinity, dedupe = false }]: [
+    RateLimiterConfig,
+  ],
   // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
 ): Transport<"custom", Record<string, any>, EIP1193RequestFn<RateLimiterSchema>> {
   return (params) => {
     const transport = baseTransportFn(params);
     const { withRateLimit } = createRateLimit(maxBurstRequests, maxRequestsPerSecond, maxConcurrentRequests);
+    const { withDedupe } = createDedupe();
 
-    const request = (args: EIP1193Parameters<RateLimiterSchema>) => {
-      const [baseArgs, additional] = stripAdditionalParameters(args);
-      return withRateLimit(() => transport.request(baseArgs, { dedupe: true }), {
-        priority: additional?.[0].priority,
-      });
+    const request = (req: EIP1193Parameters<RateLimiterSchema>) => {
+      const [baseReq, additional] = stripAdditionalParameters(req);
+      const inner = () => withRateLimit(() => transport.request(baseReq), { priority: additional?.[0].priority });
+
+      return dedupe ? withDedupe(inner, { key: hash(baseReq) }) : inner();
     };
 
     return custom({ request })(params);

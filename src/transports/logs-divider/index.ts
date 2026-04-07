@@ -76,7 +76,7 @@ export function logsDivider(
 
     const request = (args: EIP1193Parameters<LogsDividerSchema>) => {
       if (args.method !== "eth_getLogs") {
-        return transport.request(args, { dedupe: true });
+        return transport.request(args);
       }
 
       return handleGetLogs(transport.request, args.params, logsDividerConfig);

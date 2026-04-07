@@ -55,7 +55,6 @@ function serializeLine(key: string, value: string): string {
 }
 
 async function compressFixtureLines(lineCount: number, valueChars: number, payloadMode: PayloadMode) {
-  // Sort indices so keys are emitted in lexicographic order (NdjsonMap invariant)
   const indices = Array.from({ length: lineCount }, (_, i) => i);
   indices.sort((a, b) => {
     const ka = `k${a}`;
@@ -67,7 +66,7 @@ async function compressFixtureLines(lineCount: number, valueChars: number, paylo
   const slot = createSlot();
   const blob = new CompressedLinesBlob(slot);
 
-  await blob.rewriteLines(
+  await blob.rewrite(
     () => {},
     (emit) => {
       for (const i of indices) {

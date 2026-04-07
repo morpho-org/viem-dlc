@@ -151,7 +151,7 @@ export function cache(
         default: {
           // Assert that all `CachedMethod` are handled explicitly
           const _: never = req.method as Extract<typeof req.method, CachedMethod>;
-          return transport.request(req, { dedupe: true });
+          return transport.request(req);
         }
       }
     };

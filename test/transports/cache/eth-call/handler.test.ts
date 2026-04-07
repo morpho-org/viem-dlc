@@ -42,7 +42,6 @@ async function populateStore(store: MemoryStore, req: ReturnType<typeof createRe
   let buffers = store.get(blobKey) ?? [];
   const ndjson = new LazyNdjsonMap<CachedEthCallEntry>(
     codec,
-    { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER },
     {
       get: () => buffers,
       set: (next) => {
@@ -50,6 +49,7 @@ async function populateStore(store: MemoryStore, req: ReturnType<typeof createRe
         store.set(blobKey, next);
       },
     },
+    { debounceMs: 86_400_000, maxDelayMs: 86_400_000, maxStalenessMs: 86_400_000 },
   );
 
   const cleanStateOverride = extractEthCallCachePolicy(req.params[2])?.cleanStateOverride;
@@ -75,7 +75,7 @@ describe("handleEthCall", () => {
     );
 
     expect(result).toBe("0x1234");
-    expect(requestFn).toHaveBeenCalledWith({ method: "eth_call", params: [{ to, data }, "latest"] }, { dedupe: true });
+    expect(requestFn).toHaveBeenCalledWith({ method: "eth_call", params: [{ to, data }, "latest"] });
   });
 
   it("fetches and caches a direct call on miss", async () => {

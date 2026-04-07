@@ -1,6 +1,7 @@
 import { type EIP1193RequestFn, hexToBigInt, type RpcLog, toHex } from "viem";
 
 import type { BlockRange, EthGetLogsHashlessFilter, RpcSignature } from "../../types.js";
+import { augment } from "../../utils/arrays.js";
 import {
   divideBlockRange,
   halveBlockRange,
@@ -49,7 +50,7 @@ async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange, prior
         params: [filter, { __rateLimiter: true, priority }],
       },
       // `retryCount: 0` so that we fail fast on block range errors
-      { dedupe: true, retryCount: 0 },
+      { retryCount: 0 },
     );
 
     // Success - invoke callback
@@ -95,14 +96,12 @@ export async function handleGetLogs(
 ): Promise<RpcLog[]> {
   // blockHash queries cannot be divided - pass through
   if (filter.blockHash) {
-    return requestFn({ method: "eth_getLogs", params: params[0] ? [filter, params[0]] : [filter] }, { dedupe: true });
+    return requestFn({ method: "eth_getLogs", params: params[0] ? [filter, params[0]] : [filter] });
   }
 
   // Get extra params
   const priority = params[0]?.priority ?? 0;
-  const latestBlockNumber = hexToBigInt(
-    params[1]?.latestBlock ?? (await requestFn({ method: "eth_blockNumber" }, { dedupe: true })),
-  );
+  const latestBlockNumber = hexToBigInt(params[1]?.latestBlock ?? (await requestFn({ method: "eth_blockNumber" })));
 
   // Resolve block tags to numbers
   const fromBlock = resolveBlockNumber(filter.fromBlock ?? "earliest", latestBlockNumber);
@@ -122,8 +121,8 @@ export async function handleGetLogs(
 
   const range: BlockRange = { fromBlock, toBlock };
   const chunks = divideBlockRange(range, config.maxBlockRange, config.alignTo);
-  const logs = await Promise.all(
-    chunks.map(async (chunk, i) => {
+  const logs = await augment(chunks).mapAsync(
+    async (chunk, i) => {
       // Take chunks to be [A, B, ..., Z] -- if we make requests without specifying priority, the queue
       // is FIFO, so *retries* for chunk A are queued after the *initial* request for chunk Z. This isn't
       // a problem here, since we need to fetch all ranges anyway, but it can produce unexpected
@@ -133,7 +132,9 @@ export async function handleGetLogs(
       // Filter out logs outside original range (in case alignment extended the range).
       // We do this per-chunk to avoid creating an extra copy of the final flattened array, which could be large.
       return result.filter(isInBlockRange(range));
-    }),
+    },
+    // NOTE: Defensive upper bound to avoid flooding EventLoop. Request concurrency is managed by `rateLimiter`.
+    { maxConcurrent: 1000 },
   );
 
   return logs.flat();

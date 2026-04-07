@@ -1,7 +1,7 @@
 import type { Address, Hex, RpcSchema } from "viem";
 
 import type { BlockRange, EIP1193Parameters } from "../../types.js";
-import { cyrb64Hash } from "../../utils/hash.js";
+import { hash } from "../../utils/hash.js";
 import { pick } from "../../utils/pick.js";
 
 import { extractEthCallCachePolicy } from "./eth-call/state-override.js";
@@ -41,10 +41,6 @@ function createKeychain<Schema extends RpcSchema, Methods extends Schema[number]
       return fns[method].entryKey(chainId, method, inputs) as ReturnType<Fns[M]["entryKey"]>;
     },
   });
-}
-
-function hash(obj: unknown) {
-  return cyrb64Hash(JSON.stringify(obj));
 }
 
 export const keychain = createKeychain<CacheSchema, CachedMethod>()({

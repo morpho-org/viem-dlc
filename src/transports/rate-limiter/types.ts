@@ -5,4 +5,6 @@ export interface RateLimiterConfig {
   maxBurstRequests?: number;
   /** Max requests that can be in-flight simultaneously. @default Infinity */
   maxConcurrentRequests?: number;
+  /** Whether to deduplicate incoming requests. @default false */
+  dedupe?: boolean;
 }

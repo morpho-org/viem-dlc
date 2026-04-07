@@ -6,27 +6,38 @@ export type Entry<T, K extends string = string> = { key: K; value: T };
  * Entry with deferred value parsing. The raw JSON value string is available
  * immediately for cheap pre-filtering (e.g. `.includes()` / regex); the
  * parsed value is materialized lazily on first `.value` access.
+ *
+ * Backed by a class so getters live on the prototype rather than as per-instance closures.
  */
-export type LazyEntry<T, K extends string = string> = { readonly key: K; readonly rawValue: string; readonly value: T };
+export class LazyEntry<T, K extends string = string> {
+  readonly key: K;
+  readonly rawValue: string;
+  private parsed: T | undefined;
+  private done = false;
+  private readonly codec: Codec<T>;
 
-/** Construct a {@link LazyEntry} whose `value` is parsed on first access. */
-export function lazyEntry<T, K extends string>(key: K, rawValue: string, parse: (raw: string) => T): LazyEntry<T, K> {
-  let cached: T | undefined;
-  let done = false;
-  return {
-    key,
-    rawValue,
-    get value(): T {
-      if (!done) {
-        cached = parse(rawValue);
-        done = true;
-      }
-      return cached!;
-    },
-  };
+  constructor(key: K, rawValue: string, codec: Codec<T>) {
+    this.key = key;
+    this.rawValue = rawValue;
+    this.codec = codec;
+  }
+
+  get value(): T {
+    if (!this.done) {
+      this.parsed = this.codec.fromJson(this.rawValue);
+      this.done = true;
+    }
+    return this.parsed as T;
+  }
 }
 
-/** Codec for the value portion of each NDJSON entry. The class handles key serialization. */
+/**
+ * Codec for the value portion of each NDJSON entry. The class handles key serialization.
+ *
+ * Must be lossless: `fromJson(toJson(x))` should deeply equal `x` for any valid value.
+ * This invariant is required for read-your-writes consistency in {@link LazyNdjsonMap}
+ * (pending entries may be surfaced before or after a codec round-trip).
+ */
 export type Codec<T> = {
   fromJson: (s: string) => T;
   /** Serializes `value` to a valid JSON string, which MUST NOT contain literal newlines. */
@@ -46,7 +57,7 @@ export type Codec<T> = {
  */
 const KEY_PREFIX = '{"key":';
 const SEPARATOR = ',"value":';
-const KEY_START = KEY_PREFIX.length; // 7
+const KEY_START = KEY_PREFIX.length;
 
 /**
  * Extract the raw JSON key token from a line via string slicing only (no JSON.parse).
@@ -60,7 +71,7 @@ function extractRawKey(line: string): string | undefined {
 }
 
 /** Parse the full envelope: validates structure, JSON-parses the key, locates the value. */
-function parseEnvelope<K extends string>(line: string): { key: K; valueStart: number } | undefined {
+function parseEnvelope<K extends string>(line: string): { rawKey: string; key: K; valueStart: number } | undefined {
   const rawKey = extractRawKey(line);
   if (rawKey === undefined) return undefined;
 
@@ -72,24 +83,15 @@ function parseEnvelope<K extends string>(line: string): { key: K; valueStart: nu
   }
   if (typeof key !== "string") return undefined;
 
-  return { key, valueStart: KEY_START + rawKey.length + SEPARATOR.length };
+  return { rawKey, key, valueStart: KEY_START + rawKey.length + SEPARATOR.length };
 }
 
-/** Produce the raw JSON key token for a given key. Inverse of JSON.parse on the token. */
-export function toRawKey(key: string): string {
-  return JSON.stringify(key);
-}
-
-function compareRawKeys(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-export function sortEntriesByRawKey<K extends string, V>(
+function sortEntriesByRawKey<K extends string, V>(
   entries: Iterable<readonly [key: K, value: V]>,
 ): [rawKey: string, key: K, value: V][] {
   return [...entries]
-    .map(([key, value]) => [toRawKey(key), key, value] as [string, K, V])
-    .sort(([a], [b]) => compareRawKeys(a, b));
+    .map(([key, value]) => [JSON.stringify(key), key, value] as [string, K, V])
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 /**
@@ -100,9 +102,18 @@ export function sortEntriesByRawKey<K extends string, V>(
  * value portion of type `T`.
  *
  * Lines are maintained in lexicographic sorted order by raw JSON key;
- * see {@link upsert}. Supports streaming reduce (without materializing
- * the full dataset) and streaming upsert (decompress → merge-insert →
- * recompress).
+ * see {@link upsert}. Read-side APIs:
+ *
+ * - {@link scan} is the fused visitor for hot paths and early-exit scans.
+ * - {@link reduce} builds on {@link scan} for full-pass folds.
+ *
+ * If an ergonomic `for await` surface is ever needed, an async-generator
+ * method can be added with merge-sort logic mirroring {@link scan} (not
+ * built on top of it, to preserve streaming).
+ *
+ * Write-side operations stay single-pass as well: {@link upsert} and
+ * {@link upsertAndFold} stream-decompress, merge, and recompress without
+ * materializing the full dataset.
  *
  * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
  * should cause `slot` to mutate or return different data.
@@ -117,33 +128,77 @@ export class NdjsonMap<T, K extends string = string> {
     this.blob = new CompressedLinesBlob(slot);
   }
 
-  /** Build a full NDJSON line from a pre-stringified JSON key token and a value. */
-  private serializeLine(rawKey: string, value: T): string {
-    return `${KEY_PREFIX}${rawKey}${SEPARATOR}${this.codec.toJson(value)}}`;
-  }
-
-  /** Parse a line into an entry, returning `undefined` if the envelope is malformed. */
-  private parseLine(line: string): Entry<T, K> | undefined {
+  /** Parse a line into a lazy entry, returning `undefined` if the envelope is malformed. */
+  private parseLine(line: string): LazyEntry<T, K> | undefined {
     const parsed = parseEnvelope<K>(line);
     if (parsed === undefined) return undefined;
-    return { key: parsed.key, value: this.codec.fromJson(line.slice(parsed.valueStart, line.length - 1)) };
+    const rawValue = line.slice(parsed.valueStart, line.length - 1);
+    return new LazyEntry(parsed.key, rawValue, this.codec);
   }
 
-  /** Async generator that yields each record from the compressed NDJSON. */
-  async *records(): AsyncGenerator<Entry<T, K>, void, void> {
+  /**
+   * Fused visitor over each record from the compressed NDJSON.
+   *
+   * This is the preferred hot read API. It walks the stored blob once,
+   * merge-sorts `extra` inline when provided, and can stop early without
+   * paying async-generator overhead.
+   *
+   * If `extra` is provided, its entries are merge-sorted into the visit order
+   * by key, with extra entries taking precedence over stored entries on key collision.
+   *
+   * Return `false` from `fn` to stop the scan early.
+   */
+  async scan(fn: (record: LazyEntry<T, K>) => boolean | undefined, extra?: ReadonlyMap<K, T>): Promise<void> {
+    const sorted = extra?.size ? sortEntriesByRawKey(extra) : undefined;
+    let idx = 0;
+    const visit = (record: LazyEntry<T, K>) => fn(record) !== false;
+
     for await (const line of this.blob.lines()) {
       if (line.length === 0) continue;
-      const entry = this.parseLine(line);
-      if (entry !== undefined) yield entry;
+
+      const parsed = parseEnvelope<K>(line);
+      if (parsed === undefined) continue;
+
+      if (sorted) {
+        while (idx < sorted.length && sorted[idx]![0] < parsed.rawKey) {
+          const [, key, value] = sorted[idx++]!;
+          if (!visit(new LazyEntry(key, this.codec.toJson(value), this.codec))) return;
+        }
+
+        if (idx < sorted.length && sorted[idx]![0] === parsed.rawKey) {
+          const [, key, value] = sorted[idx++]!;
+          if (!visit(new LazyEntry(key, this.codec.toJson(value), this.codec))) return;
+          continue;
+        }
+      }
+
+      const rawValue = line.slice(parsed.valueStart, line.length - 1);
+      if (!visit(new LazyEntry(parsed.key, rawValue, this.codec))) return;
+    }
+
+    if (sorted) {
+      while (idx < sorted.length) {
+        const [, key, value] = sorted[idx++]!;
+        if (!visit(new LazyEntry(key, this.codec.toJson(value), this.codec))) return;
+      }
     }
   }
 
-  /** Stream-decompress and fold every entry through `fn`. */
-  async reduce<Acc>(fn: (acc: Acc, record: Entry<T, K>) => Acc, init: Acc): Promise<Acc> {
+  /**
+   * Fold every entry through `fn` in sorted key order.
+   *
+   * Implemented on top of {@link scan}, so it shares the fused read path but
+   * always consumes the full merged stream.
+   */
+  async reduce<Acc>(
+    fn: (acc: Acc, record: LazyEntry<T, K>) => Acc,
+    init: Acc,
+    extra?: ReadonlyMap<K, T>,
+  ): Promise<Acc> {
     let acc = init;
-    for await (const record of this.records()) {
+    await this.scan((record): undefined => {
       acc = fn(acc, record);
-    }
+    }, extra);
     return acc;
   }
 
@@ -172,12 +227,12 @@ export class NdjsonMap<T, K extends string = string> {
 
   /**
    * Like {@link upsert}, but also folds through every entry (existing + new)
-   * in sorted key order during the rewrite pass. When `entries` is empty,
+   * in sorted key order during the same rewrite pass. When `entries` is empty,
    * degenerates to a pure {@link reduce} (no rewrite).
    */
   async upsertAndFold<Acc>(
     entries: Entry<T, K>[],
-    fn: (acc: Acc, entry: Entry<T, K>) => Acc,
+    fn: (acc: Acc, entry: LazyEntry<T, K>) => Acc,
     init: Acc,
     signal?: AbortSignal,
   ): Promise<Acc> {
@@ -197,17 +252,20 @@ export class NdjsonMap<T, K extends string = string> {
    * Core merge-insert-rewrite logic shared by {@link upsert} and {@link upsertAndFold}.
    * If `onEntry` is provided, it is called synchronously for each emitted entry
    * (existing lines kept as-is, replaced lines, and newly inserted lines) in
-   * sorted key order.
+   * sorted key order within the same decompress -> merge -> compress loop.
    */
   private async mergeAndRewrite(
     entries: Entry<T, K>[],
     signal?: AbortSignal,
-    onEntry?: (entry: Entry<T, K>) => void,
+    onEntry?: (entry: LazyEntry<T, K>) => void,
   ): Promise<void> {
-    const serializeLine = this.serializeLine.bind(this);
-    const parseLine = onEntry ? this.parseLine.bind(this) : undefined;
+    const { codec } = this;
+    const emitNew = (emit: (line: string) => void, rawKey: string, key: K, value: T) => {
+      const rawValue = codec.toJson(value);
+      emit(`${KEY_PREFIX}${rawKey}${SEPARATOR}${rawValue}}`);
+      if (onEntry) onEntry(new LazyEntry(key, rawValue, codec));
+    };
 
-    // Deduplicate (last write wins) then sort by raw JSON key for merge-insert
     const byKey = new Map<K, T>();
     for (const entry of entries) {
       byKey.set(entry.key, entry.value);
@@ -218,51 +276,43 @@ export class NdjsonMap<T, K extends string = string> {
     let prevRawKey: string | undefined;
     let corrupted = false;
 
-    await this.blob.rewriteLines(
+    await this.blob.rewrite(
       (line, emit) => {
         if (corrupted || line.length === 0) return;
 
-        const rawKey = extractRawKey(line);
-        if (rawKey === undefined) return;
+        const storedRawKey = extractRawKey(line);
+        if (storedRawKey === undefined) return;
 
-        if (prevRawKey !== undefined) {
-          const ordering = compareRawKeys(rawKey, prevRawKey);
-          if (ordering <= 0) {
-            const reason = ordering === 0 ? "Duplicate" : "Unsorted";
-            console.warn(
-              `[NdjsonMap] ${reason} key in blob: ${rawKey}${ordering === 0 ? "" : ` after ${prevRawKey}`}. Discarding remaining blob lines.`,
-            );
-            corrupted = true;
-            return;
-          }
+        if (prevRawKey !== undefined && storedRawKey <= prevRawKey) {
+          const reason = storedRawKey === prevRawKey ? "Duplicate" : "Unsorted";
+          console.warn(
+            `[NdjsonMap] ${reason} key in blob: ${storedRawKey}${storedRawKey === prevRawKey ? "" : ` after ${prevRawKey}`}. Discarding remaining blob lines.`,
+          );
+          corrupted = true;
+          return;
         }
-        prevRawKey = rawKey;
+        prevRawKey = storedRawKey;
 
-        // Merge-insert: emit sorted pending entries that belong before this key
-        while (idx < sorted.length && compareRawKeys(sorted[idx]![0], rawKey) < 0) {
-          const [pKey, pOrigKey, pValue] = sorted[idx++]!;
-          emit(serializeLine(pKey, pValue));
-          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
+        while (idx < sorted.length && sorted[idx]![0] < storedRawKey) {
+          const [rawKey, key, value] = sorted[idx++]!;
+          emitNew(emit, rawKey, key, value);
         }
 
-        // Replace in-place if this key is being upserted, otherwise keep existing line
-        if (idx < sorted.length && sorted[idx]![0] === rawKey) {
-          const [, pOrigKey, pValue] = sorted[idx++]!;
-          emit(serializeLine(rawKey, pValue));
-          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
+        if (idx < sorted.length && sorted[idx]![0] === storedRawKey) {
+          const [, key, value] = sorted[idx++]!;
+          emitNew(emit, storedRawKey, key, value);
         } else {
           emit(line);
-          if (parseLine) {
-            const entry = parseLine(line);
-            if (entry) onEntry!(entry);
+          if (onEntry) {
+            const entry = this.parseLine(line);
+            if (entry) onEntry(entry);
           }
         }
       },
       (emit) => {
         while (idx < sorted.length) {
-          const [pKey, pOrigKey, pValue] = sorted[idx++]!;
-          emit(serializeLine(pKey, pValue));
-          if (onEntry) onEntry({ key: pOrigKey, value: pValue });
+          const [rawKey, key, value] = sorted[idx++]!;
+          emitNew(emit, rawKey, key, value);
         }
       },
       signal,

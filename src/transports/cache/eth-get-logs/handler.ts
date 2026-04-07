@@ -58,7 +58,7 @@ export async function handleEthGetLogs(
     }
 
     // Optimistically kickoff `latestBlockNumber` and `buffers` promises in parallel
-    const preflight = [requestFn({ method: "eth_blockNumber" }, { dedupe: true }), store.get(blobKey)] as const;
+    const preflight = [requestFn({ method: "eth_blockNumber" }), store.get(blobKey)] as const;
 
     // Resolve block tags to numbers
     const latestBlockNumber = hexToBigInt(await preflight[0]);
@@ -84,7 +84,6 @@ export async function handleEthGetLogs(
     let buffers = (await preflight[1]) ?? [];
     const ndjson = new LazyNdjsonMap<CachedChunk>(
       { toJson: stringify, fromJson: parse },
-      { autoFlushThresholdBytes: 1 << 26 }, // 64MB (flushing too often strains CPU, flushing too late strains memory)
       {
         get: () => buffers,
         set: (value) => {
@@ -92,17 +91,18 @@ export async function handleEthGetLogs(
           void store.set(blobKey, value);
         },
       },
+      { debounceMs: 500, maxDelayMs: 2_500, maxStalenessMs: 60_000 },
     );
 
     // Determine which ranges are stale and/or missing
     const gaps: BlockRange[] = [];
 
-    for await (const record of ndjson.records()) {
+    await ndjson.scan((record) => {
       // Stop if we found all ranges *or* if key's prefix indicates we've passed all metadata
-      if (expectedMetadataRanges.size === 0 || !record.key.startsWith("0:")) break;
+      if (expectedMetadataRanges.size === 0 || !record.key.startsWith("0:")) return false;
 
       const range = expectedMetadataRanges.get(record.key);
-      if (!range) continue;
+      if (!range) return;
       expectedMetadataRanges.delete(record.key);
 
       if (
@@ -111,7 +111,7 @@ export async function handleEthGetLogs(
       ) {
         gaps.push(range);
       }
-    }
+    });
 
     for (const range of expectedMetadataRanges.values()) {
       gaps.push(range);
@@ -127,26 +127,23 @@ export async function handleEthGetLogs(
       try {
         await Promise.all(
           rangesToFetch.map((range) =>
-            requestFn(
-              {
-                method: "eth_getLogs",
-                params: [
-                  {
-                    address: filter.address,
-                    topics: filter.topics,
-                    fromBlock: toHex(range.fromBlock),
-                    toBlock: toHex(range.toBlock),
-                  },
-                  undefined,
-                  {
-                    latestBlock: toHex(latestBlockNumber),
-                    onLogsResponse: sink,
-                    onLogsResponseOnly: true,
-                  },
-                ],
-              },
-              { dedupe: true },
-            ),
+            requestFn({
+              method: "eth_getLogs",
+              params: [
+                {
+                  address: filter.address,
+                  topics: filter.topics,
+                  fromBlock: toHex(range.fromBlock),
+                  toBlock: toHex(range.toBlock),
+                },
+                undefined,
+                {
+                  latestBlock: toHex(latestBlockNumber),
+                  onLogsResponse: sink,
+                  onLogsResponseOnly: true,
+                },
+              ],
+            }),
           ),
         );
       } catch (error) {

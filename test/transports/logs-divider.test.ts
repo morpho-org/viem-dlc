@@ -98,7 +98,7 @@ describe("handleGetLogs", () => {
       expect(logs).toHaveLength(1);
       // Should not call eth_blockNumber for blockHash queries
       expect(requestFn).toHaveBeenCalledTimes(1);
-      expect(requestFn).toHaveBeenCalledWith({ method: "eth_getLogs", params: [{ blockHash }] }, { dedupe: true });
+      expect(requestFn).toHaveBeenCalledWith({ method: "eth_getLogs", params: [{ blockHash }] });
     });
 
     it("returns empty array when fromBlock > toBlock", async () => {

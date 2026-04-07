@@ -36,7 +36,11 @@ export function entryKey(fromBlock: bigint, toBlock: bigint) {
 
 export function createNdjson() {
   const slot = createSlot();
-  const ndjson = new LazyNdjsonMap<CachedChunk>(codec, { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER }, slot);
+  const ndjson = new LazyNdjsonMap<CachedChunk>(codec, slot, {
+    debounceMs: 86_400_000,
+    maxDelayMs: 86_400_000,
+    maxStalenessMs: 86_400_000,
+  });
   return { ndjson, slot };
 }
 
@@ -65,7 +69,6 @@ export async function populateStore(store: MemoryStore, blobKey: string, bins: S
   let buffers = store.get(blobKey) ?? [];
   const ndjson = new LazyNdjsonMap<CachedChunk>(
     codec,
-    { autoFlushThresholdBytes: Number.MAX_SAFE_INTEGER },
     {
       get: () => buffers,
       set: (v) => {
@@ -73,6 +76,7 @@ export async function populateStore(store: MemoryStore, blobKey: string, bins: S
         store.set(blobKey, v);
       },
     },
+    { debounceMs: 86_400_000, maxDelayMs: 86_400_000, maxStalenessMs: 86_400_000 },
   );
 
   for (const bin of bins) {
@@ -100,12 +104,11 @@ export async function populateStore(store: MemoryStore, blobKey: string, bins: S
   await ndjson.flush();
 }
 
-export async function collectRecords(ndjson: LazyNdjsonMap<CachedChunk>) {
-  const records: Entry<CachedChunk>[] = [];
-  for await (const record of ndjson.records()) {
-    records.push({ key: record.key, value: record.value });
-  }
-  return records;
+export function collectRecords(ndjson: LazyNdjsonMap<CachedChunk>) {
+  return ndjson.reduce<Entry<CachedChunk>[]>((acc, record) => {
+    acc.push({ key: record.key, value: record.value });
+    return acc;
+  }, []);
 }
 
 /**

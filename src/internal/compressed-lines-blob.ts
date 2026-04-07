@@ -9,6 +9,8 @@ export type Slot = {
   set(value: Buffer[]): void;
 };
 
+export type EmitLine = (line: string) => void;
+
 export function createSlot(compressed?: Buffer | Buffer[]): Slot {
   let chunks: Buffer[] = [];
 
@@ -74,17 +76,14 @@ class SplitLines extends Transform {
   }
 }
 
-type EmitLine = (line: string) => void;
-
 /**
  * zstd-compressed line buffer.
  *
- * Stores newline-delimited UTF-8 text in zstd-compressed form and exposes a small streaming API
- * for reading, reducing, and rewriting logical lines.
+ * Stores newline-delimited UTF-8 text in zstd-compressed form and exposes a small API
+ * for convenience iteration via {@link lines} and transactional rewrites via {@link rewrite}.
  *
- * When streaming via {@link reduceLines} or {@link rewriteLines}, peak live decompressed memory is
- * proportional to the largest logical line. Rewrites also buffer the full new **compressed blob**
- * as chunks in memory before swapping it into place.
+ * Peak live decompressed memory is proportional to the largest logical line. Rewrites also
+ * buffer the full new **compressed blob** as chunks in memory before swapping it into place.
  *
  * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
  * should cause `slot` to mutate or return different data.
@@ -95,7 +94,12 @@ export class CompressedLinesBlob {
     console.assert(chunks.length === 0 || chunks[0]!.length > 0, "Slot contains an empty buffer in array");
   }
 
-  /** Stream-decompress and yield logical lines (without trailing newline characters). */
+  /**
+   * Stream-decompress and yield logical lines (without trailing newline characters).
+   *
+   * This is the ergonomic read API. Hot paths that also need to persist data
+   * should prefer higher-level fused visitors such as `NdjsonMap.scan()`.
+   */
   async *lines(): AsyncGenerator<string, void, void> {
     if (this.slot.get().length === 0) return;
 
@@ -118,18 +122,17 @@ export class CompressedLinesBlob {
   }
 
   /**
-   * Rewrite the buffer line-by-line.
+   * Rewrite the blob line-by-line via a single decompress -> transform -> compress pipeline.
    *
-   * `rewriteLine` may emit zero or more replacement lines for each input line.
-   * `onFlush` may emit trailing lines after the source has been fully consumed.
-   * `emit` must be called synchronously before `rewriteLine`/`onFlush` returns.
+   * `onLine` is called for each existing line and may call `emit` zero or more times.
+   * `onFlush` is called after all existing lines have been consumed and may emit trailing lines.
+   * `emit` must be called synchronously before `onLine`/`onFlush` returns.
    *
-   * If `signal` is provided and aborted, the pipeline is destroyed and data
-   * remains unchanged (the assignment only happens on successful completion).
-   * The resulting `AbortError` propagates to the caller.
+   * Backpressure flows end-to-end through the pipeline automatically.
+   * On success, swaps the slot. On abort (or error), the slot is unchanged.
    */
-  async rewriteLines(
-    rewriteLine: (line: string, emit: EmitLine) => void,
+  async rewrite(
+    onLine: (line: string, emit: EmitLine) => void,
     onFlush?: (emit: EmitLine) => void,
     signal?: AbortSignal,
   ): Promise<void> {
@@ -140,7 +143,7 @@ export class CompressedLinesBlob {
       writableObjectMode: true,
       transform(this: Transform, line: string, _enc, callback) {
         try {
-          rewriteLine(line, (nextLine) => {
+          onLine(line, (nextLine) => {
             emittedLineCount += 1;
             this.push(`${nextLine}\n`);
           });
