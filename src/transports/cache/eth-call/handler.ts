@@ -25,13 +25,7 @@ export async function handleEthCall(
 ): Promise<Hex> {
   const blobKey = keychain.blobKey(chainId, req);
   if (!blobKey) {
-    return requestFn(
-      {
-        method: req.method,
-        params: req.params,
-      },
-      { dedupe: true },
-    );
+    return requestFn({ method: req.method, params: req.params });
   }
 
   // Step 1: Extract params & detect multicall
@@ -138,18 +132,15 @@ export async function handleEthCall(
         const calldata = encodeAggregate3(missedCalls);
         const multicallTxObj = { to, data: calldata };
 
-        const rpcResult = await requestFn(
-          {
-            method: "eth_call",
-            params:
-              blockOverride !== undefined
-                ? [multicallTxObj, block, stateOverride, blockOverride]
-                : stateOverride !== undefined
-                  ? [multicallTxObj, block, stateOverride]
-                  : [multicallTxObj, block],
-          },
-          { dedupe: true },
-        );
+        const rpcResult = await requestFn({
+          method: "eth_call",
+          params:
+            blockOverride !== undefined
+              ? [multicallTxObj, block, stateOverride, blockOverride]
+              : stateOverride !== undefined
+                ? [multicallTxObj, block, stateOverride]
+                : [multicallTxObj, block],
+        });
         const decoded = decodeAggregate3Result(rpcResult);
 
         const entries = misses.map((miss, i) => {
@@ -164,18 +155,15 @@ export async function handleEthCall(
         ndjson.upsert(entries);
       } else {
         // Direct eth_call (single sub-call)
-        const rpcResult = await requestFn(
-          {
-            method: "eth_call",
-            params:
-              blockOverride !== undefined
-                ? [txObj, block, stateOverride, blockOverride]
-                : stateOverride !== undefined
-                  ? [txObj, block, stateOverride]
-                  : [txObj, block],
-          },
-          { dedupe: true },
-        );
+        const rpcResult = await requestFn({
+          method: "eth_call",
+          params:
+            blockOverride !== undefined
+              ? [txObj, block, stateOverride, blockOverride]
+              : stateOverride !== undefined
+                ? [txObj, block, stateOverride]
+                : [txObj, block],
+        });
         const result: CachedEthCallEntry = { success: true, returnData: rpcResult, fetchedAt };
         ndjson.upsert([{ key: misses[0]!.entryKey, value: result }]);
         hits[0] = result;

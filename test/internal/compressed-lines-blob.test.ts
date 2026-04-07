@@ -33,26 +33,30 @@ describe("CompressedLinesBlob", () => {
     it("rewrites an empty blob and round-trips correctly", async () => {
       const blob = new CompressedLinesBlob(createSlot());
 
-      await blob.rewrite(async ({ emit, forEachLine }) => {
-        await expect(forEachLine(() => {})).resolves.toBeUndefined();
-        emit("alpha");
-        emit("beta");
-        emit("gamma");
-      });
+      await blob.rewrite(
+        () => {},
+        (emit) => {
+          emit("alpha");
+          emit("beta");
+          emit("gamma");
+        },
+      );
       expect(await collectLines(blob)).toEqual(["alpha", "beta", "gamma"]);
     });
 
-    it("streams existing lines through forEachLine and allows inline rewrites", async () => {
+    it("streams existing lines and allows inline rewrites", async () => {
       const blob = new CompressedLinesBlob(createSlot(zstdCompressSync(Buffer.from("alpha\nbeta\ngamma\n"))));
       const seen: string[] = [];
 
-      await blob.rewrite(async ({ emit, forEachLine }) => {
-        await forEachLine((line) => {
+      await blob.rewrite(
+        (line, emit) => {
           seen.push(line);
           if (line !== "beta") emit(line);
-        });
-        emit("tail");
-      });
+        },
+        (emit) => {
+          emit("tail");
+        },
+      );
 
       expect(seen).toEqual(["alpha", "beta", "gamma"]);
       expect(await collectLines(blob)).toEqual(["alpha", "gamma", "tail"]);
@@ -62,9 +66,7 @@ describe("CompressedLinesBlob", () => {
       const slot = createSlot(zstdCompressSync(Buffer.from("existing\n")));
       const blob = new CompressedLinesBlob(slot);
 
-      await blob.rewrite(async ({ forEachLine }) => {
-        await forEachLine(() => {});
-      });
+      await blob.rewrite(() => {});
       expect(await collectLines(blob)).toEqual([]);
       expect(slot.get()).toEqual([]);
     });
@@ -75,9 +77,13 @@ describe("CompressedLinesBlob", () => {
       controller.abort();
 
       await expect(
-        blob.rewrite(({ emit }) => {
-          emit("replaced");
-        }, controller.signal),
+        blob.rewrite(
+          (_line, emit) => {
+            emit("replaced");
+          },
+          undefined,
+          controller.signal,
+        ),
       ).rejects.toMatchObject({
         name: "AbortError",
       });
@@ -89,7 +95,7 @@ describe("CompressedLinesBlob", () => {
       const blob = new CompressedLinesBlob(createSlot(zstdCompressSync(Buffer.from("keep\n"))));
 
       await expect(
-        blob.rewrite(({ emit }) => {
+        blob.rewrite((_line, emit) => {
           emit("replaced");
           throw new Error("boom");
         }),

@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { PassThrough, Readable, Transform, type TransformCallback, Writable } from "stream";
+import { Readable, Transform, type TransformCallback, Writable } from "stream";
 import { pipeline } from "stream/promises";
 import { StringDecoder } from "string_decoder";
 import { createZstdCompress, createZstdDecompress, type ZstdOptions, constants as zlib } from "zlib";
@@ -9,16 +9,7 @@ export type Slot = {
   set(value: Buffer[]): void;
 };
 
-/**
- * Imperative rewrite session for {@link CompressedLinesBlob.rewrite}.
- *
- * `emit()` appends one logical line to the replacement blob.
- * `forEachLine()` streams the current blob through a synchronous callback.
- */
-export type RewriteSession = {
-  emit(line: string): void;
-  forEachLine(fn: (line: string) => void): Promise<void>;
-};
+export type EmitLine = (line: string) => void;
 
 export function createSlot(compressed?: Buffer | Buffer[]): Slot {
   let chunks: Buffer[] = [];
@@ -131,21 +122,48 @@ export class CompressedLinesBlob {
   }
 
   /**
-   * Rewrite the blob transactionally via a push-based session.
+   * Rewrite the blob line-by-line via a single decompress -> transform -> compress pipeline.
    *
-   * `emit()` appends one logical line to the replacement blob.
-   * `forEachLine()` streams existing logical lines through a synchronous callback.
-   * This keeps rewrite producers imperative, so higher-level callers can fuse
-   * read/transform/write work into one decompress -> process -> compress pass.
+   * `onLine` is called for each existing line and may call `emit` zero or more times.
+   * `onFlush` is called after all existing lines have been consumed and may emit trailing lines.
+   * `emit` must be called synchronously before `onLine`/`onFlush` returns.
    *
+   * Backpressure flows end-to-end through the pipeline automatically.
    * On success, swaps the slot. On abort (or error), the slot is unchanged.
    */
-  async rewrite(run: (session: RewriteSession) => void | Promise<void>, signal?: AbortSignal): Promise<void> {
+  async rewrite(
+    onLine: (line: string, emit: EmitLine) => void,
+    onFlush?: (emit: EmitLine) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const outputChunks: Buffer[] = [];
     let emittedLineCount = 0;
-    const input = new PassThrough();
-    let writableReady: Promise<void> | undefined;
-
+    const rewriteStream = new Transform({
+      readableObjectMode: false,
+      writableObjectMode: true,
+      transform(this: Transform, line: string, _enc, callback) {
+        try {
+          onLine(line, (nextLine) => {
+            emittedLineCount += 1;
+            this.push(`${nextLine}\n`);
+          });
+          callback();
+        } catch (error) {
+          callback(error as Error);
+        }
+      },
+      flush(this: Transform, callback) {
+        try {
+          onFlush?.((line) => {
+            emittedLineCount += 1;
+            this.push(`${line}\n`);
+          });
+          callback();
+        } catch (error) {
+          callback(error as Error);
+        }
+      },
+    });
     const output = new Writable({
       write(chunk, _enc, cb) {
         outputChunks.push(chunk as Buffer);
@@ -153,68 +171,22 @@ export class CompressedLinesBlob {
       },
     });
 
-    const done = pipeline(input, createZstdCompress(zstdOptions), output, { signal });
-    const waitForWritable = () => writableReady ?? Promise.resolve();
-
-    const emit = (line: string) => {
-      emittedLineCount += 1;
-      if (input.write(`${line}\n`)) return;
-
-      writableReady ??= new Promise<void>((resolve, reject) => {
-        const cleanup = () => {
-          input.off("drain", onDrain);
-          input.off("error", onError);
-        };
-        const onDrain = () => {
-          cleanup();
-          writableReady = undefined;
-          resolve();
-        };
-        const onError = (error: Error) => {
-          cleanup();
-          writableReady = undefined;
-          reject(error);
-        };
-
-        input.once("drain", onDrain);
-        input.once("error", onError);
+    if (this.slot.get().length === 0) {
+      await pipeline(Readable.from([] as string[]), rewriteStream, createZstdCompress(zstdOptions), output, {
+        signal,
       });
-    };
-
-    try {
-      await run({
-        emit,
-        forEachLine: async (fn) => {
-          await this.forEachStoredLine(async (line) => {
-            fn(line);
-            await waitForWritable();
-          }, signal);
-        },
-      });
-      await waitForWritable();
-      input.end();
-      await done;
-      this.slot.set(emittedLineCount === 0 ? [] : outputChunks);
-    } catch (error) {
-      input.destroy(error as Error);
-      await done.catch(() => {});
-      throw error;
+    } else {
+      await pipeline(
+        Readable.from(this.slot.get()),
+        createZstdDecompress(),
+        new SplitLines(),
+        rewriteStream,
+        createZstdCompress(zstdOptions),
+        output,
+        { signal },
+      );
     }
-  }
 
-  private async forEachStoredLine(fn: (line: string) => void | Promise<void>, signal?: AbortSignal): Promise<void> {
-    if (this.slot.get().length === 0) return;
-
-    const output = new Writable({
-      objectMode: true,
-      write(chunk, _enc, cb) {
-        Promise.resolve(fn(chunk as string)).then(
-          () => cb(),
-          (error) => cb(error as Error),
-        );
-      },
-    });
-
-    await pipeline(Readable.from(this.slot.get()), createZstdDecompress(), new SplitLines(), output, { signal });
+    this.slot.set(emittedLineCount === 0 ? [] : outputChunks);
   }
 }

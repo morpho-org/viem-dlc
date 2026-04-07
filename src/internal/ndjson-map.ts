@@ -276,8 +276,8 @@ export class NdjsonMap<T, K extends string = string> {
     let prevRawKey: string | undefined;
     let corrupted = false;
 
-    await this.blob.rewrite(async ({ emit, forEachLine }) => {
-      await forEachLine((line) => {
+    await this.blob.rewrite(
+      (line, emit) => {
         if (corrupted || line.length === 0) return;
 
         const storedRawKey = extractRawKey(line);
@@ -308,12 +308,14 @@ export class NdjsonMap<T, K extends string = string> {
             if (entry) onEntry(entry);
           }
         }
-      });
-
-      while (idx < sorted.length) {
-        const [rawKey, key, value] = sorted[idx++]!;
-        emitNew(emit, rawKey, key, value);
-      }
-    }, signal);
+      },
+      (emit) => {
+        while (idx < sorted.length) {
+          const [rawKey, key, value] = sorted[idx++]!;
+          emitNew(emit, rawKey, key, value);
+        }
+      },
+      signal,
+    );
   }
 }

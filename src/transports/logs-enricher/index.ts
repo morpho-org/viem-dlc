@@ -19,10 +19,10 @@ export function logsEnricher<T extends Base>(
 
     const request = async (args: EIP1193Parameters<T>) => {
       if (args.method !== "eth_getLogs") {
-        return requestFn(args, { dedupe: true });
+        return requestFn(args);
       }
 
-      const logs = await requestFn(args as EIP1193Parameters<Base, "eth_getLogs">, { dedupe: true });
+      const logs = await requestFn(args as EIP1193Parameters<Base, "eth_getLogs">);
 
       if (!blockTimestamp) return logs;
 
@@ -42,7 +42,7 @@ export function logsEnricher<T extends Base>(
         [...blockNumbers].map(async (blockNumber) => {
           const block = await requestFn(
             { method: "eth_getBlockByNumber", params: [blockNumber, false] },
-            { dedupe: true, retryCount, retryDelay },
+            { retryCount, retryDelay },
           );
           timestamps.set(blockNumber, block !== null ? block.timestamp : null);
         }),

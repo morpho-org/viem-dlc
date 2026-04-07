@@ -66,13 +66,16 @@ async function compressFixtureLines(lineCount: number, valueChars: number, paylo
   const slot = createSlot();
   const blob = new CompressedLinesBlob(slot);
 
-  await blob.rewrite(({ emit }) => {
-    for (const i of indices) {
-      const line = serializeLine(`k${i}`, makePayload(payloadMode, i, valueChars));
-      uncompressedBytes += Buffer.byteLength(`${line}\n`);
-      emit(line);
-    }
-  });
+  await blob.rewrite(
+    () => {},
+    (emit) => {
+      for (const i of indices) {
+        const line = serializeLine(`k${i}`, makePayload(payloadMode, i, valueChars));
+        uncompressedBytes += Buffer.byteLength(`${line}\n`);
+        emit(line);
+      }
+    },
+  );
 
   return { compressed: Buffer.concat(slot.get()), uncompressedBytes };
 }

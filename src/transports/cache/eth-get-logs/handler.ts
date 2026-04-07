@@ -58,7 +58,7 @@ export async function handleEthGetLogs(
     }
 
     // Optimistically kickoff `latestBlockNumber` and `buffers` promises in parallel
-    const preflight = [requestFn({ method: "eth_blockNumber" }, { dedupe: true }), store.get(blobKey)] as const;
+    const preflight = [requestFn({ method: "eth_blockNumber" }), store.get(blobKey)] as const;
 
     // Resolve block tags to numbers
     const latestBlockNumber = hexToBigInt(await preflight[0]);
@@ -127,26 +127,23 @@ export async function handleEthGetLogs(
       try {
         await Promise.all(
           rangesToFetch.map((range) =>
-            requestFn(
-              {
-                method: "eth_getLogs",
-                params: [
-                  {
-                    address: filter.address,
-                    topics: filter.topics,
-                    fromBlock: toHex(range.fromBlock),
-                    toBlock: toHex(range.toBlock),
-                  },
-                  undefined,
-                  {
-                    latestBlock: toHex(latestBlockNumber),
-                    onLogsResponse: sink,
-                    onLogsResponseOnly: true,
-                  },
-                ],
-              },
-              { dedupe: true },
-            ),
+            requestFn({
+              method: "eth_getLogs",
+              params: [
+                {
+                  address: filter.address,
+                  topics: filter.topics,
+                  fromBlock: toHex(range.fromBlock),
+                  toBlock: toHex(range.toBlock),
+                },
+                undefined,
+                {
+                  latestBlock: toHex(latestBlockNumber),
+                  onLogsResponse: sink,
+                  onLogsResponseOnly: true,
+                },
+              ],
+            }),
           ),
         );
       } catch (error) {

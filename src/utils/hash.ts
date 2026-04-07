@@ -63,3 +63,7 @@ export function cyrb64Hash(str: string, radix = 36, seed = 777777) {
   const padding = computePadding(32, radix);
   return h2.toString(radix).padStart(padding, "0") + h1.toString(radix).padStart(padding, "0");
 }
+
+export function hash(obj: unknown) {
+  return cyrb64Hash(JSON.stringify(obj));
+}

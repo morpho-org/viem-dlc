@@ -183,7 +183,8 @@ describe("LazyNdjsonMap", () => {
 
     const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
       this: CompressedLinesBlob,
-      run,
+      onLine,
+      onFlush,
       signal,
     ) {
       callCount += 1;
@@ -191,7 +192,7 @@ describe("LazyNdjsonMap", () => {
         entered.resolve();
         await release.promise;
       }
-      return originalRewrite.call(this, run, signal);
+      return originalRewrite.call(this, onLine, onFlush, signal);
     });
 
     const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), immediateAutoFlush);
@@ -222,7 +223,8 @@ describe("LazyNdjsonMap", () => {
 
     const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
       this: CompressedLinesBlob,
-      run,
+      onLine,
+      onFlush,
       signal,
     ) {
       callCount += 1;
@@ -230,7 +232,7 @@ describe("LazyNdjsonMap", () => {
         entered.resolve();
         await release.promise;
       }
-      return originalRewrite.call(this, run, signal);
+      return originalRewrite.call(this, onLine, onFlush, signal);
     });
 
     const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), noAutoFlush);
@@ -264,7 +266,8 @@ describe("LazyNdjsonMap", () => {
 
     vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
       this: CompressedLinesBlob,
-      run,
+      onLine,
+      onFlush,
       signal,
     ) {
       callCount += 1;
@@ -272,7 +275,7 @@ describe("LazyNdjsonMap", () => {
         entered.resolve();
         await release.promise;
       }
-      return originalRewrite.call(this, run, signal);
+      return originalRewrite.call(this, onLine, onFlush, signal);
     });
 
     const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), noAutoFlush);
@@ -339,7 +342,8 @@ describe("LazyNdjsonMap", () => {
 
     vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
       this: CompressedLinesBlob,
-      run,
+      onLine,
+      onFlush,
       signal,
     ) {
       callCount += 1;
@@ -347,7 +351,7 @@ describe("LazyNdjsonMap", () => {
         entered.resolve();
         await release.promise;
       }
-      return originalRewrite.call(this, run, signal);
+      return originalRewrite.call(this, onLine, onFlush, signal);
     });
 
     const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), {
@@ -384,7 +388,8 @@ describe("LazyNdjsonMap", () => {
 
     const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
       this: CompressedLinesBlob,
-      run,
+      onLine,
+      onFlush,
       signal,
     ) {
       callCount += 1;
@@ -392,7 +397,7 @@ describe("LazyNdjsonMap", () => {
         entered.resolve();
         await release.promise;
       }
-      return originalRewrite.call(this, run, signal);
+      return originalRewrite.call(this, onLine, onFlush, signal);
     });
 
     const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), {
@@ -470,7 +475,8 @@ describe("LazyNdjsonMap", () => {
 
     vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
       this: CompressedLinesBlob,
-      run,
+      onLine,
+      onFlush,
       signal,
     ) {
       callCount += 1;
@@ -478,7 +484,7 @@ describe("LazyNdjsonMap", () => {
         entered.resolve();
         await release.promise;
       }
-      return originalRewrite.call(this, run, signal);
+      return originalRewrite.call(this, onLine, onFlush, signal);
     });
 
     const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), noAutoFlush);
@@ -505,7 +511,8 @@ describe("LazyNdjsonMap", () => {
 
     const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
       this: CompressedLinesBlob,
-      run,
+      onLine,
+      onFlush,
       signal,
     ) {
       callCount += 1;
@@ -528,7 +535,7 @@ describe("LazyNdjsonMap", () => {
         });
       }
 
-      return originalRewrite.call(this, run, signal);
+      return originalRewrite.call(this, onLine, onFlush, signal);
     });
 
     const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), immediateAutoFlush);
@@ -538,7 +545,7 @@ describe("LazyNdjsonMap", () => {
     await ndjson.flush();
 
     expect(spy).toHaveBeenCalledTimes(2);
-    expect((spy.mock.calls[0]?.[1] as AbortSignal | undefined)?.aborted).toBe(true);
+    expect((spy.mock.calls[0]?.[2] as AbortSignal | undefined)?.aborted).toBe(true);
     expect(await collectRecords(ndjson)).toEqual([{ key: "a", value: "alpha" }]);
   });
 });
