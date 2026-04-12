@@ -80,8 +80,8 @@ export class UpstashStore implements Store {
 
     this.options = options;
     this.redis = options.redis
-      ? new Redis({ ...options.redis, automaticDeserialization: false })
-      : Redis.fromEnv({ automaticDeserialization: false });
+      ? new Redis({ ...options.redis, automaticDeserialization: false, responseEncoding: false })
+      : Redis.fromEnv({ automaticDeserialization: false, responseEncoding: false });
   }
 
   private async _get(key: string): Promise<{ value: Buffer[] | null; motivatesRetry: boolean }> {

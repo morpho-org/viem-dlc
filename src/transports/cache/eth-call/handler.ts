@@ -37,11 +37,11 @@ export async function handleEthCall(
   const ttl = extracted.policy.ttl;
   const stateOverride = extracted.cleanStateOverride;
 
-  // Normalization strips txObj to { to, data } when blobKey is present
+  // Normalization strips txObj to { to?, data } when blobKey is present
   const { to, data } = txObj;
 
-  if (to === undefined || data === undefined) {
-    throw new Error("[cache] eth_call with blobKey requires `to` and `data`");
+  if (data === undefined) {
+    throw new Error("[cache] eth_call with blobKey requires `data`");
   }
 
   const multicall = isMulticall3(to as Address, data);

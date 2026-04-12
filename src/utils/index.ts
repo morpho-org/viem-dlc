@@ -10,4 +10,5 @@ export * from "./omit.js";
 export * from "./pick.js";
 export * from "./strings.js";
 export * from "./tuples.js";
+export * from "./with-dedupe.js";
 export * from "./with-rate-limit.js";

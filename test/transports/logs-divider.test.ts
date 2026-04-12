@@ -1,7 +1,7 @@
 import { type Hex, type LogTopic, type RpcLog, toHex } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { handleGetLogs } from "../../src/transports/logs-divider/handlers.js";
+import { handleEthGetLogs } from "../../src/transports/logs-divider/handlers.js";
 import type { LogsResponse } from "../../src/transports/logs-divider/types.js";
 
 function createMockLog(blockNumber: bigint, logIndex = 0): RpcLog {
@@ -78,12 +78,12 @@ const defaultConfig = {
   maxConcurrentChunks: 5,
 };
 
-describe("handleGetLogs", () => {
+describe("handleEthGetLogs", () => {
   describe("basic functionality", () => {
     it("returns logs for a simple request within maxBlockRange", async () => {
       const requestFn = createMockRequestFn({ logsPerRequest: 2 });
 
-      const logs = await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], defaultConfig);
+      const logs = await handleEthGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], defaultConfig);
 
       expect(logs).toHaveLength(2);
       expect(requestFn).toHaveBeenCalledTimes(2); // eth_blockNumber + eth_getLogs
@@ -93,7 +93,7 @@ describe("handleGetLogs", () => {
       const requestFn = createMockRequestFn({ logsPerRequest: 1 });
       const blockHash: Hex = `0x${"a".repeat(64)}`;
 
-      const logs = await handleGetLogs(requestFn, [{ blockHash }], defaultConfig);
+      const logs = await handleEthGetLogs(requestFn, [{ blockHash }], defaultConfig);
 
       expect(logs).toHaveLength(1);
       // Should not call eth_blockNumber for blockHash queries
@@ -104,7 +104,7 @@ describe("handleGetLogs", () => {
     it("returns empty array when fromBlock > toBlock", async () => {
       const requestFn = createMockRequestFn({});
 
-      const logs = await handleGetLogs(requestFn, [{ fromBlock: "0x100", toBlock: "0x50" }], defaultConfig);
+      const logs = await handleEthGetLogs(requestFn, [{ fromBlock: "0x100", toBlock: "0x50" }], defaultConfig);
 
       expect(logs).toEqual([]);
       // Should only call eth_blockNumber
@@ -114,7 +114,7 @@ describe("handleGetLogs", () => {
     it('resolves "latest" block tag correctly', async () => {
       const requestFn = createMockRequestFn({ latestBlock: 500n, logsPerRequest: 1 });
 
-      await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "latest" }], {
+      await handleEthGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "latest" }], {
         ...defaultConfig,
         maxBlockRange: 1000,
       });
@@ -127,7 +127,7 @@ describe("handleGetLogs", () => {
     it('resolves "earliest" block tag to 0', async () => {
       const requestFn = createMockRequestFn({ latestBlock: 500n, logsPerRequest: 1 });
 
-      await handleGetLogs(requestFn, [{ fromBlock: "earliest", toBlock: "0x50" }], defaultConfig);
+      await handleEthGetLogs(requestFn, [{ fromBlock: "earliest", toBlock: "0x50" }], defaultConfig);
 
       const getLogsCall = requestFn.mock.calls.find((call) => call[0].method === "eth_getLogs");
       expect(getLogsCall?.[0].params[0].fromBlock).toBe(toHex(0n));
@@ -138,7 +138,7 @@ describe("handleGetLogs", () => {
       const largeLog = { ...createMockLog(0n, 1), data: `0x${"a".repeat(1_000)}` as Hex };
       const requestFn = createMockRequestFn({ logGenerator: () => [smallLog, largeLog] });
 
-      const logs = await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], defaultConfig);
+      const logs = await handleEthGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], defaultConfig);
 
       expect(logs).toEqual([smallLog, largeLog]);
     });
@@ -151,7 +151,7 @@ describe("handleGetLogs", () => {
         logGenerator: (from) => [createMockLog(from)],
       });
 
-      const logs = await handleGetLogs(
+      const logs = await handleEthGetLogs(
         requestFn,
         [{ fromBlock: "0x0", toBlock: "0x12b" }], // 0 to 299
         { ...defaultConfig, maxBlockRange: 100 },
@@ -169,7 +169,7 @@ describe("handleGetLogs", () => {
         logGenerator: (from) => [createMockLog(from)],
       });
 
-      const logs = await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x12b" }], {
+      const logs = await handleEthGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x12b" }], {
         ...defaultConfig,
         maxBlockRange: 100,
       });
@@ -184,7 +184,7 @@ describe("handleGetLogs", () => {
       const address = "0x1234567890123456789012345678901234567890";
       const topics: LogTopic[] = [["0xabc"], null, ["0xdef"]];
 
-      await handleGetLogs(
+      await handleEthGetLogs(
         requestFn,
         [{ fromBlock: "0x0", toBlock: "0xc7", address, topics }], // 0 to 199
         { ...defaultConfig, maxBlockRange: 100 },
@@ -212,7 +212,7 @@ describe("handleGetLogs", () => {
         logGenerator: (from) => [createMockLog(from)],
       });
 
-      await handleGetLogs(
+      await handleEthGetLogs(
         requestFn,
         [{ fromBlock: "0x0", toBlock: "0x1f3" }], // 0 to 499 = 5 chunks
         { ...defaultConfig, maxBlockRange: 100 },
@@ -234,7 +234,7 @@ describe("handleGetLogs", () => {
         logGenerator: (from) => [createMockLog(from)],
       });
 
-      await handleGetLogs(
+      await handleEthGetLogs(
         requestFn,
         [
           { fromBlock: "0x0", toBlock: "0xc7" },
@@ -268,7 +268,7 @@ describe("handleGetLogs", () => {
         return [createMockLog(BigInt(filter.fromBlock))];
       });
 
-      await handleGetLogs(
+      await handleEthGetLogs(
         requestFn,
         [{ fromBlock: "0x0", toBlock: "0x63" }], // 100 blocks, 1 chunk -> halved to 2
         { ...defaultConfig, maxBlockRange: 100 },
@@ -302,7 +302,7 @@ describe("handleGetLogs", () => {
         return [createMockLog(BigInt(filter.fromBlock))];
       });
 
-      const logs = await handleGetLogs(
+      const logs = await handleEthGetLogs(
         requestFn,
         [{ fromBlock: "0x0", toBlock: "0x63" }], // 0 to 99 = 100 blocks
         { ...defaultConfig, maxBlockRange: 100 },
@@ -330,7 +330,7 @@ describe("handleGetLogs", () => {
         return [createMockLog(BigInt(filter.fromBlock))];
       });
 
-      const logs = await handleGetLogs(
+      const logs = await handleEthGetLogs(
         requestFn,
         [{ fromBlock: "0x0", toBlock: "0x7" }], // 0 to 7 = 8 blocks
         { ...defaultConfig, maxBlockRange: 10 },
@@ -348,7 +348,7 @@ describe("handleGetLogs", () => {
         throw new Error("Network error");
       });
 
-      await expect(handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], defaultConfig)).rejects.toThrow(
+      await expect(handleEthGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], defaultConfig)).rejects.toThrow(
         "Network error",
       );
     });
@@ -362,7 +362,7 @@ describe("handleGetLogs", () => {
         throw createRangeError(-32000, "block range error");
       });
 
-      await expect(handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x0" }], defaultConfig)).rejects.toThrow(
+      await expect(handleEthGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x0" }], defaultConfig)).rejects.toThrow(
         "block range error",
       );
     });
@@ -376,7 +376,7 @@ describe("handleGetLogs", () => {
         logGenerator: (from) => [createMockLog(from)],
       });
 
-      await handleGetLogs(
+      await handleEthGetLogs(
         requestFn,
         [
           { fromBlock: "0x0", toBlock: "0xc7" }, // 2 chunks
@@ -402,7 +402,7 @@ describe("handleGetLogs", () => {
       const logsResponses: LogsResponse[] = [];
       const requestFn = createMockRequestFn({ logGenerator: () => [smallLog, largeLog] });
 
-      await handleGetLogs(
+      await handleEthGetLogs(
         requestFn,
         [
           { fromBlock: "0x0", toBlock: "0x50" },
@@ -437,7 +437,7 @@ describe("handleGetLogs", () => {
         return [createMockLog(BigInt(filter.fromBlock))];
       });
 
-      await handleGetLogs(
+      await handleEthGetLogs(
         requestFn,
         [
           { fromBlock: "0x0", toBlock: "0x63" }, // 100 blocks -> halved to 2x50
@@ -461,7 +461,7 @@ describe("handleGetLogs", () => {
         logGenerator: () => [],
       });
 
-      const logs = await handleGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], defaultConfig);
+      const logs = await handleEthGetLogs(requestFn, [{ fromBlock: "0x0", toBlock: "0x50" }], defaultConfig);
 
       expect(logs).toEqual([]);
     });
@@ -469,7 +469,7 @@ describe("handleGetLogs", () => {
     it("handles single block range", async () => {
       const requestFn = createMockRequestFn({ logsPerRequest: 1 });
 
-      const logs = await handleGetLogs(
+      const logs = await handleEthGetLogs(
         requestFn,
         [{ fromBlock: "0x64", toBlock: "0x64" }], // Just block 100
         defaultConfig,
@@ -483,7 +483,7 @@ describe("handleGetLogs", () => {
         logGenerator: (from) => [createMockLog(from)],
       });
 
-      const logs = await handleGetLogs(
+      const logs = await handleEthGetLogs(
         requestFn,
         [{ fromBlock: "0x0", toBlock: "0x63" }], // Exactly 100 blocks
         { ...defaultConfig, maxBlockRange: 100 },
@@ -501,7 +501,7 @@ describe("handleGetLogs", () => {
         logGenerator: () => [],
       });
 
-      const logs = await handleGetLogs(
+      const logs = await handleEthGetLogs(
         requestFn,
         [{ fromBlock: "0x0", toBlock: "0xf423f" }], // 0 to 999999
         { ...defaultConfig, maxBlockRange: 100000 },

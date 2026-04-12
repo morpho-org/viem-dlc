@@ -89,7 +89,7 @@ async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange, prior
  * Main handler for eth_getLogs requests.
  * Divides large ranges, assigns chunk priorities, and handles retries.
  */
-export async function handleGetLogs(
+export async function handleEthGetLogs(
   requestFn: EIP1193RequestFn<RateLimiterSchema>,
   [filter, ...params]: RpcSignature<LogsDividerSchema, "eth_getLogs">["Parameters"],
   config: LogsDividerConfig,

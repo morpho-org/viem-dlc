@@ -171,7 +171,7 @@ export class LazyNdjsonMap<T, K extends string = string> {
     this.auto = { phase: "armed", timer, since };
   }
 
-  /** Timer callback: enqueue a single drain pass if the pending data is still fresh. */
+  /** Timer callback: enqueue a drain loop if the pending data is still fresh. */
   private fireAutoFlush() {
     this.auto = undefined;
     if (Date.now() - this.lastPokedAt > this.opts.maxStalenessMs) return;
@@ -179,7 +179,11 @@ export class LazyNdjsonMap<T, K extends string = string> {
     const ac = new AbortController();
     this.auto = { phase: "running", ac };
 
-    this.enqueue(() => this.drainOnce(ac.signal))
+    this.enqueue(async () => {
+      while (this.pending.size > 0 && !ac.signal.aborted) {
+        await this.drainOnce(ac.signal);
+      }
+    })
       .catch(() => {}) // auto-flush errors are silently dropped
       .finally(() => {
         if (this.auto?.phase !== "running" || this.auto.ac !== ac) return; // cancelled
