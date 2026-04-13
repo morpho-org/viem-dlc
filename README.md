@@ -247,33 +247,54 @@ const logs = await getLogs2(client, {
 ### `eth_call` `cachePolicy`
 
 Creates a `stateOverride` entry that tells the `cache` transport how to cache an `eth_call`.
-Works with viem's built-in `call`, `readContract`, and `multicall` actions — no wrappers needed.
-Automatically detects Multicall3 `aggregate3` calls and caches individual sub-calls.
-
-The first argument (`blobKey`) groups cached results into a named store entry (the blob is
-extended by new results, not replaced). The second (`ttl`) sets the maximum age in milliseconds
-before a cached result is considered stale.
+Works with viem's `call` action against a contract exposing a single dynamic-array input
+and a single dynamic-array output (e.g. `balancesOf(address[]) -> uint256[]`), invoked via
+viem's deployless-factory pattern (`call({ factory, factoryData, to, data, ... })`). The
+handler decodes the outer array structurally — element bytes round-trip through the cache
+untouched, so tuples, nested arrays, and other complex element types are supported.
 
 ```ts
+cachePolicy(blobKey: string, ttl: number, opts: { batchSize?: number; abi: AbiFunction })
+```
+
+- **`blobKey`** — groups cached results into a named store entry. Encode any state
+  context (block, target contract identity, caller-dependent overrides) that would
+  invalidate results across requests.
+- **`ttl`** — maximum age in milliseconds before a cached entry is considered stale.
+- **`opts.abi`** — the `AbiFunction` fragment for the callee. Must have exactly one
+  input and one output, both dynamic arrays.
+- **`opts.batchSize`** — maximum bytes of the `eth_call` `data` field when fetching
+  misses. Misses are greedy-packed into chunks under this limit and fetched in parallel.
+  Defaults to no splitting.
+
+```ts
+import { encodeFunctionData, parseAbiItem } from 'viem'
+import { call } from 'viem/actions'
 import { cachePolicy } from '@morpho-org/viem-dlc/actions'
 
-// readContract
-const totalAssets = await client.readContract({
-  address: '0x...',
-  abi: vaultAbi,
-  functionName: 'totalAssets',
-  stateOverride: [cachePolicy('morpho-blue', 60_000)],
+const positionsAbi = parseAbiItem(
+  'function positions((bytes32 id, address user)[] inputs) view returns ((uint256,uint128,uint128)[])'
+)
+
+const policy = cachePolicy('morpho-positions', 300_000, {
+  batchSize: 1 << 15,
+  abi: positionsAbi,
 })
 
-// multicall
-const results = await client.multicall({
-  contracts: [
-    { address: '0x...', abi: vaultAbi, functionName: 'totalAssets' },
-    { address: '0x...', abi: vaultAbi, functionName: 'totalSupply' },
-  ],
-  stateOverride: [cachePolicy('morpho-blue', 60_000)],
+const result = await call(client, {
+  factory,      // deployed factory address
+  factoryData,  // calldata that makes `factory` deploy the lens helper
+  to,           // deterministic deployment address of the lens
+  data: encodeFunctionData({ abi: [positionsAbi], functionName: 'positions', args: [inputs] }),
+  stateOverride: [policy],
 })
 ```
+
+Cache keys are derived from `(targetTo, factory, factoryData, selector, inputElement)`,
+so repeat elements collapse into a single blob entry and novel elements are appended to
+the blob on the next fetch. The handler rejects any tx envelope field besides `data`
+(`from`, `gas`, `value`, etc.) — if results depend on caller identity, encode that into
+`blobKey`.
 
 ### `getDeploymentBlockNumber`
 

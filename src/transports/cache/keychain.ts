@@ -7,7 +7,7 @@ import { pick } from "../../utils/pick.js";
 import { extractEthCallCachePolicy } from "./eth-call/state-override.js";
 import type { CachedMethod, CacheSchema } from "./schema.js";
 
-const DOMAIN = 'viemdlc' as const
+const DOMAIN = "viemdlc" as const;
 
 /**
  * Creates a keychain with proper typing for the `Schema` and `Methods`.
@@ -22,7 +22,10 @@ function createKeychain<Schema extends RpcSchema, Methods extends Schema[number]
   return <
     Fns extends {
       [M in Methods]: {
-        blobKey: (chainId: number, req: EIP1193Parameters<Schema, M>) => `${typeof DOMAIN}:${number}:${M}:v${string}:${string}` | null;
+        blobKey: (
+          chainId: number,
+          req: EIP1193Parameters<Schema, M>,
+        ) => `${typeof DOMAIN}:${number}:${M}:v${string}:${string}` | null;
         // biome-ignore lint/suspicious/noExplicitAny: necessary to infer types
         entryKey: (chainId: number, method: M, inputs: any) => Record<string, string>;
       };
@@ -49,12 +52,18 @@ export const keychain = createKeychain<CacheSchema, CachedMethod>()({
   eth_call: {
     blobKey(chainId, req) {
       const custom = extractEthCallCachePolicy(req.params[2])?.policy.blobKey;
-      return custom ? `${DOMAIN}:${chainId}:${req.method}:v002:${hash(custom)}` : null;
+      return custom ? `${DOMAIN}:${chainId}:${req.method}:v003:${hash(custom)}` : null;
     },
     entryKey(
       _chainId,
       _method,
-      inputs: { to: Address | undefined; data: Hex; block: unknown; stateOverride: unknown; blockOverride: unknown },
+      inputs: {
+        targetTo: Address;
+        factory: Address;
+        factoryData: Hex;
+        selector: Hex;
+        inputElement: Hex;
+      },
     ) {
       return { data: `${0}:${hash(inputs)}` as const };
     },
