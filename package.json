@@ -40,6 +40,11 @@
       "import": "./dist/stores/upstash.js",
       "default": "./dist/stores/upstash.js"
     },
+    "./stores/vercel": {
+      "types": "./dist/stores/vercel.d.ts",
+      "import": "./dist/stores/vercel.js",
+      "default": "./dist/stores/vercel.js"
+    },
     "./transports": {
       "types": "./dist/transports/index.d.ts",
       "import": "./dist/transports/index.js",
@@ -71,10 +76,14 @@
   },
   "peerDependencies": {
     "@upstash/redis": "^1.0.0",
+    "@vercel/blob": "^2.3.0",
     "viem": "^2.0.0"
   },
   "peerDependenciesMeta": {
     "@upstash/redis": {
+      "optional": true
+    },
+    "@vercel/blob": {
       "optional": true
     }
   },
@@ -84,6 +93,7 @@
     "@tsconfig/node24": "24.0.4",
     "@types/node": "25.2.0",
     "@upstash/redis": "1.36.1",
+    "@vercel/blob": "^2.3.3",
     "tsx": "4.21.0",
     "typescript": "5.9.3",
     "viem": "2.45.1",
