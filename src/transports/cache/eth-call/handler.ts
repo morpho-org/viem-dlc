@@ -69,6 +69,9 @@ export async function handleEthCall(
         factoryData,
         selector: resolved.selector,
         inputElement: element,
+        block,
+        stateOverride: cleanStateOverride,
+        blockOverride,
       }).data;
       const existing = keyToInfo.get(ek);
       if (existing) {

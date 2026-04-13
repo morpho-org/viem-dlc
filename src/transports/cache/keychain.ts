@@ -63,6 +63,9 @@ export const keychain = createKeychain<CacheSchema, CachedMethod>()({
         factoryData: Hex;
         selector: Hex;
         inputElement: Hex;
+        block: unknown;
+        stateOverride: unknown;
+        blockOverride: unknown;
       },
     ) {
       return { data: `${0}:${hash(inputs)}` as const };

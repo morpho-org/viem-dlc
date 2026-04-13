@@ -118,6 +118,9 @@ function entryKeyFor(element: Hex) {
     factoryData: FACTORY_DATA,
     selector: toFunctionSelector(balancesOfAbi),
     inputElement: element,
+    block: "latest",
+    stateOverride: undefined,
+    blockOverride: undefined,
   }).data;
 }
 
