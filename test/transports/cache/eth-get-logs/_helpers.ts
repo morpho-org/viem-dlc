@@ -39,7 +39,6 @@ export function createNdjson() {
   const ndjson = new LazyNdjsonMap<CachedChunk>(codec, slot, {
     debounceMs: 86_400_000,
     maxDelayMs: 86_400_000,
-    maxStalenessMs: 86_400_000,
   });
   return { ndjson, slot };
 }
@@ -76,7 +75,7 @@ export async function populateStore(store: MemoryStore, blobKey: string, bins: S
         store.set(blobKey, v);
       },
     },
-    { debounceMs: 86_400_000, maxDelayMs: 86_400_000, maxStalenessMs: 86_400_000 },
+    { debounceMs: 86_400_000, maxDelayMs: 86_400_000 },
   );
 
   for (const bin of bins) {

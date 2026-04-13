@@ -7,7 +7,7 @@ import type { LogsEnricherConfig } from "../logs-enricher/types.js";
 import { type LogsSieveConfig, logsSieve } from "../logs-sieve/index.js";
 import { type RateLimiterConfig, rateLimiter } from "../rate-limiter/index.js";
 
-import { handleGetLogs } from "./handlers.js";
+import { handleEthGetLogs } from "./handlers.js";
 import type { LogsDividerSchema } from "./schema.js";
 import type { LogsDividerConfig } from "./types.js";
 
@@ -79,7 +79,7 @@ export function logsDivider(
         return transport.request(args);
       }
 
-      return handleGetLogs(transport.request, args.params, logsDividerConfig);
+      return handleEthGetLogs(transport.request, args.params, logsDividerConfig);
     };
 
     return custom({ request })(params);
