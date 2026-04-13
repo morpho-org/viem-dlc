@@ -97,9 +97,7 @@ export class VercelStore implements Store {
       options.cacheControlMaxAge !== undefined &&
       (!Number.isFinite(options.cacheControlMaxAge) || options.cacheControlMaxAge < 60)
     ) {
-      throw new Error(
-        `[VercelStore] cacheControlMaxAge must be >= 60 seconds (got ${options.cacheControlMaxAge})`,
-      );
+      throw new Error(`[VercelStore] cacheControlMaxAge must be >= 60 seconds (got ${options.cacheControlMaxAge})`);
     }
 
     this.options = options;
@@ -158,9 +156,7 @@ export class VercelStore implements Store {
       // Auto-enable multipart for payloads > 100 MB per Vercel's recommendation.
       // The SDK handles part splitting and reassembly transparently.
       multipart: body.byteLength > MULTIPART_THRESHOLD_BYTES,
-      ...(this.options.cacheControlMaxAge !== undefined
-        ? { cacheControlMaxAge: this.options.cacheControlMaxAge }
-        : {}),
+      ...(this.options.cacheControlMaxAge !== undefined ? { cacheControlMaxAge: this.options.cacheControlMaxAge } : {}),
       ...this.tokenOption,
     });
   }
@@ -175,9 +171,7 @@ export class VercelStore implements Store {
 
   async delete(key: string): Promise<void> {
     try {
-      await this.inFlight.track(
-        Promise.resolve(del(this.resolvePathname(key), this.tokenOption)),
-      );
+      await this.inFlight.track(Promise.resolve(del(this.resolvePathname(key), this.tokenOption)));
     } catch (err) {
       console.warn(`[VercelStore] Failed to delete key "${key}":`, err);
     }
