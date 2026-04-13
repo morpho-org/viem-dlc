@@ -91,7 +91,7 @@ export async function handleEthGetLogs(
           void store.set(blobKey, value);
         },
       },
-      { debounceMs: 500, maxDelayMs: 2_500, maxStalenessMs: 60_000 },
+      { debounceMs: 500, maxDelayMs: 2_500 },
     );
 
     // Determine which ranges are stale and/or missing

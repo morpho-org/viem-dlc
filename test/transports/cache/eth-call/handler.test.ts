@@ -136,7 +136,7 @@ async function populateStore(
         store.set(blobKey, next);
       },
     },
-    { debounceMs: 86_400_000, maxDelayMs: 86_400_000, maxStalenessMs: 86_400_000 },
+    { debounceMs: 86_400_000, maxDelayMs: 86_400_000 },
   );
   ndjson.upsert(entries);
   await ndjson.flush();

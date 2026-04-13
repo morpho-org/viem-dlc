@@ -37,13 +37,11 @@ export class LazyNdjsonMap<T, K extends string = string> {
 
   /** Auto-flush state machine: undefined → armed → running → undefined. */
   private auto: AutoFlush | undefined;
-  /** Timestamp of the most recent upsert (for staleness detection). */
-  private lastPokedAt = 0;
 
   constructor(
     codec: Codec<T>,
     slot: Slot,
-    private readonly opts: { debounceMs: number; maxDelayMs: number; maxStalenessMs: number },
+    private readonly opts: { debounceMs: number; maxDelayMs: number },
   ) {
     this.inner = new NdjsonMap<T, K>(codec, slot);
   }
@@ -156,12 +154,11 @@ export class LazyNdjsonMap<T, K extends string = string> {
     ];
   }
 
-  /** Update staleness timestamp and arm the auto-flush timer (unless an auto-flush is already in flight). */
+  /** Arm the auto-flush timer (unless an auto-flush is already in flight). */
   private poke() {
-    this.lastPokedAt = Date.now();
     if (this.auto?.phase === "running") return; // will re-poke on settle
 
-    const now = this.lastPokedAt;
+    const now = Date.now();
     const since = this.auto?.phase === "armed" ? this.auto.since : now;
     if (this.auto?.phase === "armed") clearTimeout(this.auto.timer);
 
@@ -171,11 +168,8 @@ export class LazyNdjsonMap<T, K extends string = string> {
     this.auto = { phase: "armed", timer, since };
   }
 
-  /** Timer callback: enqueue a drain loop if the pending data is still fresh. */
+  /** Timer callback: enqueue a drain loop. */
   private fireAutoFlush() {
-    this.auto = undefined;
-    if (Date.now() - this.lastPokedAt > this.opts.maxStalenessMs) return;
-
     const ac = new AbortController();
     this.auto = { phase: "running", ac };
 
@@ -188,9 +182,7 @@ export class LazyNdjsonMap<T, K extends string = string> {
       .finally(() => {
         if (this.auto?.phase !== "running" || this.auto.ac !== ac) return; // cancelled
         this.auto = undefined;
-        if (this.pending.size > 0 && Date.now() - this.lastPokedAt <= this.opts.maxStalenessMs) {
-          this.poke();
-        }
+        if (this.pending.size > 0) this.poke();
       });
   }
 

@@ -19,9 +19,9 @@ const codec: Codec<string> = {
 };
 
 /** Options that effectively disable auto-flush so tests control timing. 24h is safe for 32-bit setTimeout. */
-const noAutoFlush = { debounceMs: 86_400_000, maxDelayMs: 86_400_000, maxStalenessMs: Infinity };
+const noAutoFlush = { debounceMs: 86_400_000, maxDelayMs: 86_400_000 };
 /** Options that trigger auto-flush immediately (0ms debounce and maxDelay). */
-const immediateAutoFlush = { debounceMs: 0, maxDelayMs: 0, maxStalenessMs: Infinity };
+const immediateAutoFlush = { debounceMs: 0, maxDelayMs: 0 };
 
 function serializeLine(key: string, value: string) {
   return `{"key":${JSON.stringify(key)},"value":${stringify(value)}}`;
@@ -303,7 +303,6 @@ describe("LazyNdjsonMap", () => {
     const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), {
       debounceMs: 100,
       maxDelayMs: 150,
-      maxStalenessMs: Infinity,
     });
 
     ndjson.upsert([{ key: "a", value: "alpha" }]);
@@ -314,70 +313,6 @@ describe("LazyNdjsonMap", () => {
     ndjson.upsert([{ key: "b", value: "beta" }]);
     // debounce=100, maxDelayRemaining=150-80=70 → min(100,70)=70
     expect([...clock.timers.values()].map((t) => t.delay)).toEqual([70]);
-  });
-
-  it("drops stale pending work when the timer fires late (simulating freeze/thaw)", () => {
-    const clock = installManualTimers();
-    const spy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite");
-
-    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), {
-      debounceMs: 100,
-      maxDelayMs: 1_000,
-      maxStalenessMs: 50,
-    });
-
-    ndjson.upsert([{ key: "a", value: "stale" }]);
-    clock.setNow(1_000); // simulate long freeze
-    clock.timers.values().next().value?.callback(); // fire the timer late
-
-    expect(spy).not.toHaveBeenCalled();
-  });
-
-  it("drops stale queued work after an in-flight auto-flush settles", async () => {
-    const clock = installManualTimers();
-    const originalRewrite = CompressedLinesBlob.prototype.rewrite;
-    const entered = deferred();
-    const release = deferred();
-    let callCount = 0;
-
-    vi.spyOn(CompressedLinesBlob.prototype, "rewrite").mockImplementation(async function (
-      this: CompressedLinesBlob,
-      onLine,
-      onFlush,
-      signal,
-    ) {
-      callCount += 1;
-      if (callCount === 1) {
-        entered.resolve();
-        await release.promise;
-      }
-      return originalRewrite.call(this, onLine, onFlush, signal);
-    });
-
-    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), {
-      debounceMs: 100,
-      maxDelayMs: 500,
-      maxStalenessMs: 50,
-    });
-
-    // upsert "a" at t=0, then fire the timer to start the flush
-    ndjson.upsert([{ key: "a", value: "first" }]);
-    clock.timers.values().next().value?.callback();
-    await entered.promise;
-
-    // Write arrives at t=10 while flush is running
-    clock.setNow(10);
-    ndjson.upsert([{ key: "b", value: "stale" }]);
-
-    // Simulate freeze: advance past staleness threshold (100 - 10 = 90 > 50)
-    clock.setNow(100);
-    release.resolve();
-
-    // Let the finally callback and any subsequent microtasks settle
-    await vi.waitFor(() => expect(callCount).toBe(1));
-
-    // "b" was stale — no second auto-flush should have fired
-    expect(callCount).toBe(1);
   });
 
   it("re-arms the timer after an in-flight auto-flush settles with fresh pending work", async () => {
@@ -400,10 +335,7 @@ describe("LazyNdjsonMap", () => {
       return originalRewrite.call(this, onLine, onFlush, signal);
     });
 
-    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), {
-      ...immediateAutoFlush,
-      maxStalenessMs: Infinity,
-    });
+    const ndjson = new LazyNdjsonMap<string, string>(codec, createSlot(), immediateAutoFlush);
 
     ndjson.upsert([{ key: "a", value: "alpha" }]);
     await entered.promise;

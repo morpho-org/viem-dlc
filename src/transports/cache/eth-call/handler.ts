@@ -24,7 +24,7 @@ export async function handleEthCall(
   }
 
   const blobKey = keychain.blobKey(chainId, req)!;
-  const { ttl, batchSize } = extracted.policy;
+  const { ttl, delta, batchSize } = extracted.policy;
   const { resolved, cleanStateOverride } = extracted;
 
   const txObj = req.params[0];
@@ -89,7 +89,7 @@ export async function handleEthCall(
           void store.set(blobKey, value);
         },
       },
-      { debounceMs: 500, maxDelayMs: 2_500, maxStalenessMs: 60_000 },
+      { debounceMs: 500, maxDelayMs: 2_500 },
     );
 
     const hits = new Array<Hex>(n);
@@ -101,7 +101,9 @@ export async function handleEthCall(
       if (!match) return;
       keyToInfo.delete(record.key);
 
-      if (now - record.value.fetchedAt < ttl) {
+      const age = now - record.value.fetchedAt;
+      const xfetch = delta ? delta * Math.log(1 - Math.random()) : 0;
+      if (age - xfetch < ttl) {
         for (const idx of match.indices) hits[idx] = record.value.output;
       } else {
         misses.push({ entryKey: record.key, ...match });

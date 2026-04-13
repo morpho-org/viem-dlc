@@ -25,6 +25,7 @@ export function extractEthCallCachePolicy(stateOverride: RpcStateOverride | unde
   const policy = JSON.parse(fromHex(entry.code, "string")) as {
     blobKey: string;
     ttl: number;
+    delta?: number;
     batchSize?: number;
     abi: AbiFunction;
   };

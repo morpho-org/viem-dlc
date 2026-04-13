@@ -254,7 +254,7 @@ handler decodes the outer array structurally — element bytes round-trip throug
 untouched, so tuples, nested arrays, and other complex element types are supported.
 
 ```ts
-cachePolicy(blobKey: string, ttl: number, opts: { batchSize?: number; abi: AbiFunction })
+cachePolicy(blobKey: string, ttl: number, opts: { delta?: number; batchSize?: number; abi: AbiFunction })
 ```
 
 - **`blobKey`** — groups cached results into a named store entry. Encode any state
@@ -263,6 +263,12 @@ cachePolicy(blobKey: string, ttl: number, opts: { batchSize?: number; abi: AbiFu
 - **`ttl`** — maximum age in milliseconds before a cached entry is considered stale.
 - **`opts.abi`** — the `AbiFunction` fragment for the callee. Must have exactly one
   input and one output, both dynamic arrays.
+- **`opts.delta`** — XFetch early-refresh scale in milliseconds. On each freshness
+  check the handler samples `u ~ Uniform(0, 1]` and treats the entry as stale once
+  `age - delta * ln(u) >= ttl`, so entries may refresh up to several `delta` before
+  `ttl` but never later. Desynchronizes refreshes across many keys populated together,
+  avoiding stampedes. Based on Vattani et al., "Optimal Probabilistic Cache Stampede
+  Prevention" (2015), assuming constant recompute cost. Defaults to 0 (disabled).
 - **`opts.batchSize`** — maximum bytes of the `eth_call` `data` field when fetching
   misses. Misses are greedy-packed into chunks under this limit and fetched in parallel.
   Defaults to no splitting.

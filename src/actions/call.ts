@@ -25,6 +25,13 @@ import { ETH_CALL_CACHE_POLICY_ADDRESS } from "../transports/cache/eth-call/stat
  *   state context (block, target contract identity, overrides) that would invalidate
  *   results across requests. Two requests with the same `blobKey` share a blob.
  * @param ttl Maximum age (ms) of a cached entry before it is considered stale and re-fetched.
+ * @param opts.delta XFetch early-refresh scale (ms). On each freshness check, the handler
+ *   samples `u ~ Uniform(0, 1]` and treats the entry as stale once
+ *   `age - delta * ln(u) >= ttl`. Since `ln(u) <= 0`, the effective expiry is always `<= ttl`
+ *   but may fire up to several `delta` earlier, with probability rising as `age` approaches
+ *   `ttl`. Desynchronizes refreshes across many keys populated together, avoiding stampedes.
+ *   Based on the XFetch algorithm from Vattani et al., "Optimal Probabilistic Cache Stampede
+ *   Prevention" (2015), assuming constant recompute cost. Defaults to 0 (disabled).
  * @param opts.batchSize Maximum bytes of the `eth_call` `data` field when fetching misses.
  *   Misses are greedy-packed into chunks under this limit and fetched in parallel.
  *   Defaults to no splitting.
@@ -33,10 +40,14 @@ import { ETH_CALL_CACHE_POLICY_ADDRESS } from "../transports/cache/eth-call/stat
 export function cachePolicy(
   blobKey: string,
   ttl: number,
-  opts: { batchSize?: number; abi: AbiFunction },
+  opts: { delta?: number; batchSize?: number; abi: AbiFunction },
 ): StateOverride[number] {
+  const delta = opts.delta ?? 0;
+  if (delta < 0) {
+    throw new Error(`[cache] cachePolicy: delta (${delta}) must be >= 0`);
+  }
   return {
     address: ETH_CALL_CACHE_POLICY_ADDRESS,
-    code: toHex(JSON.stringify({ blobKey, ttl, batchSize: opts.batchSize, abi: opts.abi })),
+    code: toHex(JSON.stringify({ blobKey, ttl, delta, batchSize: opts.batchSize, abi: opts.abi })),
   };
 }
