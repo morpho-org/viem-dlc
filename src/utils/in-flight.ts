@@ -9,14 +9,11 @@ export function createInFlightBarrier() {
 
   return {
     track<T>(promise: Promise<T>): Promise<T> {
-      const settled = Promise.resolve(promise)
-        .then(
-          () => {},
-          () => {},
-        )
-        .finally(() => {
-          inFlight.delete(settled);
-        });
+      let settled!: Promise<void>;
+      const cleanup = () => {
+        inFlight.delete(settled);
+      };
+      settled = promise.then(cleanup, cleanup);
 
       inFlight.add(settled);
 

@@ -1,4 +1,4 @@
-import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
+import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 import { estimateUtf8Bytes } from "../../utils/json.js";
@@ -9,6 +9,8 @@ export type * from "./types.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
+const key = "viem-dlc-logs-sieve" as const;
+
 /**
  * Creates a transport wrapper that filters oversized `eth_getLogs` entries.
  *
@@ -18,8 +20,7 @@ type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 export function logsSieve<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
   [{ maxBytes }]: [LogsSieveConfig],
-  // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
-): Transport<"custom", Record<string, any>, EIP1193RequestFn<T>> {
+): Transport<typeof key, unknown, EIP1193RequestFn<T>> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new Error(`[logsSieve] maxBytes must be a safe integer >= 1 (got ${maxBytes})`);
   }
@@ -36,6 +37,13 @@ export function logsSieve<T extends Base>(
       return logs.filter((log) => estimateUtf8Bytes(log) <= maxBytes);
     };
 
-    return custom({ request })(params);
+    return createTransport({
+      key,
+      name: "[viem-dlc] logs-sieve",
+      request: request as EIP1193RequestFn,
+      retryCount: params.retryCount,
+      timeout: params.timeout,
+      type: key,
+    });
   };
 }

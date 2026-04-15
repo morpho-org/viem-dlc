@@ -1,4 +1,4 @@
-import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
+import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
 import { hash } from "../../utils/hash.js";
@@ -10,6 +10,8 @@ import type { RateLimiterConfig } from "./types.js";
 
 export type * from "./schema.js";
 export type * from "./types.js";
+
+const key = "viem-dlc-rate-limiter" as const;
 
 /**
  * Creates a transport wrapper that rate-limits all RPC requests using a token bucket.
@@ -38,8 +40,7 @@ export function rateLimiter(
   [{ maxRequestsPerSecond = 20, maxBurstRequests = 1, maxConcurrentRequests = Infinity, dedupe = false }]: [
     RateLimiterConfig,
   ],
-  // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
-): Transport<"custom", Record<string, any>, EIP1193RequestFn<RateLimiterSchema>> {
+): Transport<typeof key, unknown, EIP1193RequestFn<RateLimiterSchema>> {
   return (params) => {
     const transport = baseTransportFn(params);
     const { withRateLimit } = createRateLimit(maxBurstRequests, maxRequestsPerSecond, maxConcurrentRequests);
@@ -52,6 +53,13 @@ export function rateLimiter(
       return dedupe ? withDedupe(inner, { key: hash(baseReq) }) : inner();
     };
 
-    return custom({ request })(params);
+    return createTransport({
+      key,
+      name: "[viem-dlc] rate-limiter",
+      request: request as EIP1193RequestFn,
+      retryCount: params.retryCount,
+      timeout: params.timeout,
+      type: key,
+    });
   };
 }

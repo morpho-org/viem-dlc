@@ -1,4 +1,6 @@
 /// <reference types="node" />
+import { createHash } from "crypto";
+
 import { del, get, put } from "@vercel/blob";
 
 import type { Store } from "../types.js";
@@ -106,9 +108,10 @@ export class VercelStore implements Store {
   }
 
   private resolvePathname(key: string): string {
-    // Encode so arbitrary keys (which may contain `/`, `:`, etc.) round-trip
-    // safely as a single blob pathname segment.
-    const encoded = encodeURIComponent(key);
+    // sha256 hex keeps the pathname in a safe [0-9a-f] subset (Vercel's backend chokes on
+    // some %-encoded bytes), fixed-length well under the 950-char pathname cap, and
+    // collision-free at any realistic key count.
+    const encoded = createHash("sha256").update(key).digest("hex");
     return this.prefix ? `${this.prefix}/${encoded}` : encoded;
   }
 

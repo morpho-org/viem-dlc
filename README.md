@@ -257,12 +257,15 @@ untouched, so tuples, nested arrays, and other complex element types are support
 cachePolicy(blobKey: string, ttl: number, opts: { delta?: number; batchSize?: number; abi: AbiFunction })
 ```
 
-- **`blobKey`** — groups cached results into a named store entry. Encode any state
-  context (block, target contract identity, caller-dependent overrides) that would
-  invalidate results across requests.
+- **`blobKey`** — identifies the backing store blob. Requests with the same
+  `blobKey` share storage; different `blobKey`s are isolated into different blobs.
 - **`ttl`** — maximum age in milliseconds before a cached entry is considered stale.
 - **`opts.abi`** — the `AbiFunction` fragment for the callee. Must have exactly one
   input and one output, both dynamic arrays.
+- **Semantic requirement** — beyond the ABI shape, the callee must be elementwise:
+  for an input array `[x0, ..., xn]`, it must return `[y0, ..., yn]` with the same
+  length and order, where each `yi` depends only on `xi` plus shared chain state,
+  not on other elements, their multiplicity, or their order.
 - **`opts.delta`** — XFetch early-refresh scale in milliseconds. On each freshness
   check the handler samples `u ~ Uniform(0, 1]` and treats the entry as stale once
   `age - delta * ln(u) >= ttl`, so entries may refresh up to several `delta` before
@@ -299,8 +302,7 @@ const result = await call(client, {
 Cache keys are derived from `(targetTo, factory, factoryData, selector, inputElement)`,
 so repeat elements collapse into a single blob entry and novel elements are appended to
 the blob on the next fetch. The handler rejects any tx envelope field besides `data`
-(`from`, `gas`, `value`, etc.) — if results depend on caller identity, encode that into
-`blobKey`.
+(`from`, `gas`, `value`, etc.).
 
 ### `getDeploymentBlockNumber`
 
