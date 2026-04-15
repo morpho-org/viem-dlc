@@ -1,4 +1,4 @@
-import { custom, type EIP1193RequestFn, type Hex, type PublicRpcSchema, type Transport } from "viem";
+import { createTransport, type EIP1193RequestFn, type Hex, type PublicRpcSchema, type Transport } from "viem";
 
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 
@@ -8,12 +8,13 @@ export type * from "./types.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
+const key = "viem-dlc-logs-enricher" as const;
+
 /** Creates a transport wrapper that enriches `eth_getLogs` responses. */
 export function logsEnricher<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
   [{ retryCount, retryDelay, blockTimestamp }]: [LogsEnricherConfig],
-  // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
-): Transport<"custom", Record<string, any>, EIP1193RequestFn<T>> {
+): Transport<typeof key, unknown, EIP1193RequestFn<T>> {
   return (params) => {
     const requestFn = baseTransportFn(params).request as EIP1193RequestFn<Base>;
 
@@ -63,6 +64,13 @@ export function logsEnricher<T extends Base>(
       }, []);
     };
 
-    return custom({ request })(params);
+    return createTransport({
+      key,
+      name: "[viem-dlc] logs-enricher",
+      request: request as EIP1193RequestFn,
+      retryCount: params.retryCount,
+      timeout: params.timeout,
+      type: key,
+    });
   };
 }

@@ -1,5 +1,4 @@
-import type { PublicRpcSchema, Transport } from "viem";
-import { custom, type EIP1193RequestFn } from "viem";
+import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
 import { logsEnricher } from "../logs-enricher/index.js";
@@ -13,6 +12,8 @@ import type { LogsDividerConfig } from "./types.js";
 
 export type * from "./schema.js";
 export type * from "./types.js";
+
+const key = "viem-dlc-logs-divider" as const;
 
 /**
  * Creates a transport wrapper that divides large eth_getLogs requests into smaller chunks.
@@ -63,8 +64,7 @@ export function logsDivider(
     LogsSieveConfig,
     RateLimiterConfig,
   ],
-  // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
-): Transport<"custom", Record<string, any>, EIP1193RequestFn<LogsDividerSchema>> {
+): Transport<typeof key, unknown, EIP1193RequestFn<LogsDividerSchema>> {
   if (Number.isNaN(logsDividerConfig.maxBlockRange) || logsDividerConfig.maxBlockRange < 1) {
     throw new Error(`[logsDivider] maxBlockRange must be >= 1 (got ${logsDividerConfig.maxBlockRange})`);
   }
@@ -82,6 +82,13 @@ export function logsDivider(
       return handleEthGetLogs(transport.request, args.params, logsDividerConfig);
     };
 
-    return custom({ request })(params);
+    return createTransport({
+      key,
+      name: "[viem-dlc] logs-divider",
+      request: request as EIP1193RequestFn,
+      retryCount: params.retryCount,
+      timeout: params.timeout,
+      type: key,
+    });
   };
 }

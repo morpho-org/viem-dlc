@@ -1,6 +1,6 @@
-import { custom, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
+import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
-import type { EIP1193Parameters } from "../../types.js";
+import type { EIP1193Parameters, Store } from "../../types.js";
 import { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
 import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
 import type { LogsEnricherConfig } from "../logs-enricher/types.js";
@@ -74,6 +74,8 @@ export function createSimpleInvalidation(
   };
 }
 
+const key = "viem-dlc-cache" as const;
+
 /**
  * Creates an all-in-one caching transport for eth_getLogs calls.
  *
@@ -115,8 +117,7 @@ export function cache(
     LogsSieveConfig,
     RateLimiterConfig,
   ],
-  // biome-ignore lint/suspicious/noExplicitAny: this `any` matches the underlying viem type's default
-): Transport<"custom", Record<string, any>, EIP1193RequestFn<CacheSchema>> {
+): Transport<typeof key, { store: Store }, EIP1193RequestFn<CacheSchema>> {
   return (params) => {
     if (params.chain === undefined) {
       throw new Error("You must pass a chain to the cache transport.");
@@ -156,7 +157,16 @@ export function cache(
       }
     };
 
-    // TODO: have a better way of creating the transport so we can apply custom name and other props.
-    return custom({ request })(params);
+    return createTransport(
+      {
+        key,
+        name: "[viem-dlc] cache",
+        request: request as EIP1193RequestFn,
+        retryCount: params.retryCount,
+        timeout: params.timeout,
+        type: key,
+      },
+      { store },
+    );
   };
 }
