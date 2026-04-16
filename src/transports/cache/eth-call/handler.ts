@@ -44,7 +44,7 @@ export async function handleEthCall(
   // `stateOverride` must be overwritten with the cleaned/extracted version.
   // trailing undefined args must be removed for RPC compatibility.
   if (restOfEthCallParams.length >= 2) {
-    restOfEthCallParams[1] = extracted.stateOverride;
+    restOfEthCallParams[1] = extracted.stateOverride ?? (restOfEthCallParams[2] ? {} : undefined);
     const lastDefinedParamIdx = restOfEthCallParams.reduce((acc, x, i) => (x === undefined ? acc : i), -1);
     restOfEthCallParams.splice(lastDefinedParamIdx + 1);
   }
