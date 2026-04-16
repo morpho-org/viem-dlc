@@ -244,50 +244,67 @@ const logs = await getLogs2(client, {
 })
 ```
 
-### `eth_call` `cachePolicy`
+### `eth_call` `policy`
 
-Creates a `stateOverride` entry that tells the `cache` transport how to cache an `eth_call`.
-Works with viem's `call` action against a contract exposing a single dynamic-array input
-and a single dynamic-array output (e.g. `balancesOf(address[]) -> uint256[]`), invoked via
-viem's deployless-factory pattern (`call({ factory, factoryData, to, data, ... })`). The
-handler decodes the outer array structurally — element bytes round-trip through the cache
-untouched, so tuples, nested arrays, and other complex element types are supported.
+Creates a `stateOverride` entry that tells the `cache` transport how to handle an
+`eth_call`. Works with viem's `call` action against a contract exposing a single
+dynamic-array input and a single dynamic-array output (e.g.
+`balancesOf(address[]) -> uint256[]`), invoked via viem's deployless-factory pattern
+(`call({ factory, factoryData, to, data, ... })`). The handler decodes the outer
+array structurally — element bytes round-trip through the cache untouched, so tuples,
+nested arrays, and other complex element types are supported.
 
 ```ts
-cachePolicy(blobKey: string, ttl: number, opts: { delta?: number; batchSize?: number; abi: AbiFunction })
+policy(opts: {
+  abi: AbiFunction
+  batchSize?: number
+  cache?: {
+    blobKey: string
+    ttl: number
+    delta?: number
+  }
+})
 ```
 
-- **`blobKey`** — identifies the backing store blob. Requests with the same
-  `blobKey` share storage; different `blobKey`s are isolated into different blobs.
-- **`ttl`** — maximum age in milliseconds before a cached entry is considered stale.
 - **`opts.abi`** — the `AbiFunction` fragment for the callee. Must have exactly one
   input and one output, both dynamic arrays.
+- **`opts.batchSize`** — maximum bytes of the `eth_call` `data` field when fetching
+  misses. Misses are greedy-packed into chunks under this limit and fetched in parallel.
+  Defaults to no splitting.
+- **`opts.cache`** — optional cache config. If omitted, caching is disabled but
+  `batchSize` is still honored.
+- **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same
+  `blobKey` share storage; different `blobKey`s are isolated into different blobs.
+- **`opts.cache.ttl`** — maximum age in milliseconds before a cached entry is
+  considered stale.
 - **Semantic requirement** — beyond the ABI shape, the callee must be elementwise:
   for an input array `[x0, ..., xn]`, it must return `[y0, ..., yn]` with the same
   length and order, where each `yi` depends only on `xi` plus shared chain state,
   not on other elements, their multiplicity, or their order.
-- **`opts.delta`** — XFetch early-refresh scale in milliseconds. On each freshness
-  check the handler samples `u ~ Uniform(0, 1]` and treats the entry as stale once
-  `age - delta * ln(u) >= ttl`, so entries may refresh up to several `delta` before
-  `ttl` but never later. Desynchronizes refreshes across many keys populated together,
-  avoiding stampedes. Based on Vattani et al., "Optimal Probabilistic Cache Stampede
-  Prevention" (2015), assuming constant recompute cost. Defaults to 0 (disabled).
-- **`opts.batchSize`** — maximum bytes of the `eth_call` `data` field when fetching
-  misses. Misses are greedy-packed into chunks under this limit and fetched in parallel.
-  Defaults to no splitting.
+- **`opts.cache.delta`** — XFetch early-refresh scale in milliseconds. On each
+  freshness check the handler samples `u ~ Uniform(0, 1]` and treats the entry as
+  stale once `age - delta * ln(u) >= ttl`, so entries may refresh up to several
+  `delta` before `ttl` but never later. Desynchronizes refreshes across many keys
+  populated together, avoiding stampedes. Based on Vattani et al., "Optimal
+  Probabilistic Cache Stampede Prevention" (2015), assuming constant recompute
+  cost. Defaults to 0 (disabled).
 
 ```ts
 import { encodeFunctionData, parseAbiItem } from 'viem'
 import { call } from 'viem/actions'
-import { cachePolicy } from '@morpho-org/viem-dlc/actions'
+import { policy } from '@morpho-org/viem-dlc/actions'
 
 const positionsAbi = parseAbiItem(
   'function positions((bytes32 id, address user)[] inputs) view returns ((uint256,uint128,uint128)[])'
 )
 
-const policy = cachePolicy('morpho-positions', 300_000, {
+const cachePolicy = policy({
   batchSize: 1 << 15,
   abi: positionsAbi,
+  cache: {
+    blobKey: 'morpho-positions',
+    ttl: 300_000,
+  },
 })
 
 const result = await call(client, {
@@ -295,7 +312,7 @@ const result = await call(client, {
   factoryData,  // calldata that makes `factory` deploy the lens helper
   to,           // deterministic deployment address of the lens
   data: encodeFunctionData({ abi: [positionsAbi], functionName: 'positions', args: [inputs] }),
-  stateOverride: [policy],
+  stateOverride: [cachePolicy],
 })
 ```
 

@@ -3,8 +3,8 @@ import type { Address, Hex, RpcSchema } from "viem";
 import type { BlockRange, EIP1193Parameters } from "../../types.js";
 import { hash } from "../../utils/hash.js";
 import { pick } from "../../utils/pick.js";
+import { extractEthCallPolicy } from "../state-overrides.js";
 
-import { extractEthCallCachePolicy } from "./eth-call/state-override.js";
 import type { CachedMethod, CacheSchema } from "./schema.js";
 
 const DOMAIN = "viemdlc" as const;
@@ -51,7 +51,7 @@ function createKeychain<Schema extends RpcSchema, Methods extends Schema[number]
 export const keychain = createKeychain<CacheSchema, CachedMethod>()({
   eth_call: {
     blobKey(chainId, req) {
-      const custom = extractEthCallCachePolicy(req.params[2])?.policy.blobKey;
+      const custom = extractEthCallPolicy(req.params[2])?.policy?.cache?.blobKey;
       return custom ? `${DOMAIN}:${chainId}:${req.method}:v003:${hash(custom)}` : null;
     },
     entryKey(

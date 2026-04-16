@@ -17,7 +17,7 @@ import { describe, expect, it, vi } from "vitest";
 import { LazyNdjsonMap } from "../../../../src/internal/index.js";
 import { MemoryStore } from "../../../../src/stores/memory.js";
 import { handleEthCall } from "../../../../src/transports/cache/eth-call/handler.js";
-import { ETH_CALL_CACHE_POLICY_ADDRESS } from "../../../../src/transports/cache/eth-call/state-override.js";
+import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { CachedEthCallEntry } from "../../../../src/transports/cache/eth-call/types.js";
 import { keychain } from "../../../../src/transports/cache/keychain.js";
 import type { CacheSchema } from "../../../../src/transports/cache/schema.js";
@@ -65,8 +65,14 @@ function buildDeploylessCall(targetData: Hex): Hex {
 
 function cachePolicySentinel(abi: AbiFunction, batchSize?: number) {
   return {
-    [ETH_CALL_CACHE_POLICY_ADDRESS]: {
-      code: toHex(JSON.stringify({ blobKey: "test-blob", ttl, batchSize, abi })),
+    [ETH_CALL_POLICY_ADDRESS]: {
+      code: toHex(
+        JSON.stringify({
+          abi,
+          batchSize,
+          cache: { blobKey: "test-blob", ttl },
+        }),
+      ),
     },
   };
 }
