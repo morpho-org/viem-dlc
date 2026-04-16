@@ -1,6 +1,7 @@
 import type { Hex } from "viem";
 
-import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
+import { LinesBlobCompressed } from "../../../internal/lines-blob-compressed.js";
+import { NdjsonMapLazy } from "../../../internal/ndjson-map-lazy.js";
 import type { EIP1193Parameters } from "../../../types.js";
 import { cyrb64Hash } from "../../../utils/hash.js";
 import { parse, stringify } from "../../../utils/json.js";
@@ -83,15 +84,15 @@ export async function handleEthCall(
 
     // Open blob lazily — read once, buffer writes, flush when done.
     let buffers = (await store.get(blobKey)) ?? [];
-    const ndjson = new LazyNdjsonMap<CachedEthCallEntry>(
+    const ndjson = new NdjsonMapLazy<CachedEthCallEntry>(
       { toJson: stringify, fromJson: parse },
-      {
+      new LinesBlobCompressed({
         get: () => buffers,
         set: (value) => {
           buffers = value;
           void store.set(blobKey, value);
         },
-      },
+      }),
       { debounceMs: 500, maxDelayMs: 2_500 },
     );
 

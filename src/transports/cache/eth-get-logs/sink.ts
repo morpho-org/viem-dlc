@@ -1,6 +1,6 @@
 import type { RpcLog } from "viem";
 
-import type { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
+import type { NdjsonMapLazy } from "../../../internal/ndjson-map-lazy.js";
 import type { BlockRange } from "../../../types.js";
 import { isInBlockRange, mergeBlockRanges, sortRpcLogs } from "../../../utils/blocks.js";
 import { max, min } from "../../../utils/math.js";
@@ -13,8 +13,8 @@ export interface SinkConfig {
   chainId: number;
   /** Cache entry size in blocks. Responses are accumulated until each bin is complete. */
   binSize: number;
-  /** LazyNdjsonMap instance to write to */
-  ndjson: LazyNdjsonMap<CachedChunk>;
+  /** NdjsonMapLazy instance to write to */
+  ndjson: NdjsonMapLazy<CachedChunk>;
 }
 
 interface BinAccumulator {

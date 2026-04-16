@@ -1,6 +1,6 @@
 import { memoryUsage, resourceUsage } from "process";
 
-import { type Codec, CompressedLinesBlob, createSlot, type Entry, NdjsonMap } from "../../dist/internal/index.js";
+import { type Codec, createSlot, type Entry, LinesBlobCompressed, NdjsonMap } from "../../dist/internal/index.js";
 import { parse, stringify } from "../../dist/utils/json.js";
 
 const MARKER = "__NDJSON_MEMORY__";
@@ -64,7 +64,7 @@ async function compressFixtureLines(lineCount: number, valueChars: number, paylo
 
   let uncompressedBytes = 0;
   const slot = createSlot();
-  const blob = new CompressedLinesBlob(slot);
+  const blob = new LinesBlobCompressed(slot);
 
   await blob.rewrite(
     () => {},
@@ -124,7 +124,7 @@ async function main() {
     payloadMode,
   );
   const slot = createSlot(compressed);
-  const map = new NdjsonMap<string, string>(codec, slot);
+  const map = new NdjsonMap<string, string>(codec, new LinesBlobCompressed(slot));
 
   forceGc();
 

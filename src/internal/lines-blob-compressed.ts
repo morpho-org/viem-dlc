@@ -4,34 +4,12 @@ import { pipeline } from "stream/promises";
 import { StringDecoder } from "string_decoder";
 import { createZstdCompress, createZstdDecompress, type ZstdOptions, constants as zlib } from "zlib";
 
-export type Slot = {
-  get(): Buffer[];
-  set(value: Buffer[]): void;
-};
+import type { EmitLine, LinesBlob, Slot } from "./lines-blob.js";
 
-export type EmitLine = (line: string) => void;
-
-export function createSlot(compressed?: Buffer | Buffer[]): Slot {
-  let chunks: Buffer[] = [];
-
-  if (compressed) {
-    if (Array.isArray(compressed)) {
-      chunks = compressed;
-    } else if (compressed.length > 0) {
-      chunks = [compressed];
-    }
-  }
-
-  return {
-    get: () => chunks,
-    set: (v) => {
-      chunks = v;
-    },
-  };
-}
+export { createSlot, type EmitLine, type LinesBlob, type Slot } from "./lines-blob.js";
 
 // NOTE: Default sliding window for level 1 is 512KB
-const zstdOptions: ZstdOptions = {
+export const zstdOptions: ZstdOptions = {
   params: {
     [zlib.ZSTD_c_compressionLevel]: 1,
   },
@@ -41,7 +19,7 @@ const zstdOptions: ZstdOptions = {
  * Transform that splits a byte stream into individual lines (object-mode output).
  * Handles both `\n` and `\r\n` line endings.
  */
-class SplitLines extends Transform {
+export class SplitLines extends Transform {
   private readonly decoder = new StringDecoder("utf8");
   private remainder = "";
 
@@ -88,7 +66,7 @@ class SplitLines extends Transform {
  * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
  * should cause `slot` to mutate or return different data.
  */
-export class CompressedLinesBlob {
+export class LinesBlobCompressed implements LinesBlob {
   constructor(private readonly slot: Slot) {
     const chunks = slot.get();
     console.assert(chunks.length === 0 || chunks[0]!.length > 0, "Slot contains an empty buffer in array");

@@ -1,4 +1,4 @@
-import { CompressedLinesBlob, type Slot } from "./compressed-lines-blob.js";
+import type { LinesBlob } from "./lines-blob.js";
 
 export type Entry<T, K extends string = string> = { key: K; value: T };
 
@@ -35,7 +35,7 @@ export class LazyEntry<T, K extends string = string> {
  * Codec for the value portion of each NDJSON entry. The class handles key serialization.
  *
  * Must be lossless: `fromJson(toJson(x))` should deeply equal `x` for any valid value.
- * This invariant is required for read-your-writes consistency in {@link LazyNdjsonMap}
+ * This invariant is required for read-your-writes consistency in {@link NdjsonMapLazy}
  * (pending entries may be surfaced before or after a codec round-trip).
  */
 export type Codec<T> = {
@@ -95,7 +95,7 @@ function sortEntriesByRawKey<K extends string, V>(
 }
 
 /**
- * Streaming NDJSON container backed by a compressed line buffer.
+ * Streaming NDJSON container backed by a {@link LinesBlob}.
  *
  * Each line is `{"key":<json-key>,"value":<codec-value>}`. The class owns the
  * envelope (key serialization via `JSON.stringify`); the codec handles only the
@@ -112,21 +112,17 @@ function sortEntriesByRawKey<K extends string, V>(
  * built on top of it, to preserve streaming).
  *
  * Write-side operations stay single-pass as well: {@link upsert} and
- * {@link upsertAndFold} stream-decompress, merge, and recompress without
+ * {@link upsertAndFold} stream the underlying blob, merge, and rewrite without
  * materializing the full dataset.
  *
- * @dev IMPORTANT: Each instance expects to own its `slot`, i.e., no other entity
- * should cause `slot` to mutate or return different data.
+ * @dev IMPORTANT: Each instance expects to own its `blob` (and the slot beneath it),
+ * i.e., no other entity should cause it to mutate or return different data.
  */
 export class NdjsonMap<T, K extends string = string> {
-  private readonly blob: CompressedLinesBlob;
-
   constructor(
     private readonly codec: Codec<T>,
-    slot: Slot,
-  ) {
-    this.blob = new CompressedLinesBlob(slot);
-  }
+    private readonly blob: LinesBlob,
+  ) {}
 
   /** Parse a line into a lazy entry, returning `undefined` if the envelope is malformed. */
   private parseLine(line: string): LazyEntry<T, K> | undefined {
@@ -137,7 +133,7 @@ export class NdjsonMap<T, K extends string = string> {
   }
 
   /**
-   * Fused visitor over each record from the compressed NDJSON.
+   * Fused visitor over each record from the underlying NDJSON blob.
    *
    * This is the preferred hot read API. It walks the stored blob once,
    * merge-sorts `extra` inline when provided, and can stop early without
@@ -203,15 +199,14 @@ export class NdjsonMap<T, K extends string = string> {
   }
 
   /**
-   * Stream-decompress existing data, merge-insert entries by key, and recompress.
+   * Stream existing data, merge-insert entries by key, and rewrite the blob.
    *
    * Maintains lexicographic sorted order by raw JSON key: pending entries are
    * sorted, then interleaved with existing (already-sorted) lines during
    * rewrite. Entries whose keys match an upsert are replaced in-place; new
-   * keys are inserted at their sorted position. Rewrites use the current
-   * {@link CompressedLinesBlob} codec and settings.
+   * keys are inserted at their sorted position.
    *
-   * Mutates the underlying slot via {@link CompressedLinesBlob}.
+   * Mutates the underlying {@link LinesBlob} (and the slot beneath it).
    * Callers must not overlap `upsert()` calls on the same instance; concurrent
    * upserts are unsafe and may lose writes.
    *
@@ -252,7 +247,7 @@ export class NdjsonMap<T, K extends string = string> {
    * Core merge-insert-rewrite logic shared by {@link upsert} and {@link upsertAndFold}.
    * If `onEntry` is provided, it is called synchronously for each emitted entry
    * (existing lines kept as-is, replaced lines, and newly inserted lines) in
-   * sorted key order within the same decompress -> merge -> compress loop.
+   * sorted key order within the same read -> merge -> write loop.
    */
   private async mergeAndRewrite(
     entries: Entry<T, K>[],

@@ -1,4 +1,4 @@
-import type { Slot } from "./compressed-lines-blob.js";
+import type { LinesBlob } from "./lines-blob.js";
 import { type Codec, type Entry, type LazyEntry, NdjsonMap } from "./ndjson-map.js";
 
 /** Allow the process to exit even if this timer is still pending. */
@@ -13,20 +13,20 @@ type AutoFlush =
   | { phase: "running"; ac: AbortController };
 
 /**
- * Lazy wrapper around {@link NdjsonMap} that buffers upserts and defers the
- * decompress/recompress cycle until an auto-flush timer fires or the caller
- * explicitly requests serialization via {@link flush} or {@link flushAndFold}.
+ * Lazy wrapper around {@link NdjsonMap} that buffers upserts and defers blob
+ * rewrites until an auto-flush timer fires or the caller explicitly requests
+ * serialization via {@link flush} or {@link flushAndFold}.
  *
  * Read-side APIs provide read-your-writes semantics by merge-sorting pending
- * entries with the underlying compressed data:
+ * entries with the underlying blob's data:
  *
  * - {@link scan} is the fused visitor for hot paths and early-exit scans.
  * - {@link reduce} builds on {@link scan} for full folds.
  *
- * @dev Each instance expects to own its `slot`, i.e., no other entity should
- * cause `slot` to mutate or return different data.
+ * @dev Each instance expects to own its `blob` (and the slot beneath it),
+ * i.e., no other entity should cause it to mutate or return different data.
  */
-export class LazyNdjsonMap<T, K extends string = string> {
+export class NdjsonMapLazy<T, K extends string = string> {
   private readonly inner: NdjsonMap<T, K>;
 
   /** Pending entries keyed by the original key */
@@ -40,10 +40,10 @@ export class LazyNdjsonMap<T, K extends string = string> {
 
   constructor(
     codec: Codec<T>,
-    slot: Slot,
+    blob: LinesBlob,
     private readonly opts: { debounceMs: number; maxDelayMs: number },
   ) {
-    this.inner = new NdjsonMap<T, K>(codec, slot);
+    this.inner = new NdjsonMap<T, K>(codec, blob);
   }
 
   /*//////////////////////////////////////////////////////////////

@@ -3,9 +3,9 @@ import { zstdCompressSync } from "zlib";
 
 import { describe, expect, it } from "vitest";
 
-import { CompressedLinesBlob, createSlot } from "../../src/internal/compressed-lines-blob.js";
+import { createSlot, LinesBlobCompressed } from "../../src/internal/lines-blob-compressed.js";
 
-async function collectLines(blob: CompressedLinesBlob) {
+async function collectLines(blob: LinesBlobCompressed) {
   const lines: string[] = [];
   for await (const line of blob.lines()) {
     lines.push(line);
@@ -13,17 +13,17 @@ async function collectLines(blob: CompressedLinesBlob) {
   return lines;
 }
 
-describe("CompressedLinesBlob", () => {
+describe("LinesBlobCompressed", () => {
   it("reads input and trims a trailing carriage return on the final unterminated line", async () => {
     const compressed = zstdCompressSync(Buffer.from("alpha\r"));
-    const blob = new CompressedLinesBlob(createSlot(compressed));
+    const blob = new LinesBlobCompressed(createSlot(compressed));
 
     expect(await collectLines(blob)).toEqual(["alpha"]);
   });
 
   it("treats an empty compressed buffer input as an empty blob", async () => {
     const slot = createSlot(Buffer.alloc(0));
-    const blob = new CompressedLinesBlob(slot);
+    const blob = new LinesBlobCompressed(slot);
 
     expect(slot.get()).toEqual([]);
     expect(await collectLines(blob)).toEqual([]);
@@ -31,7 +31,7 @@ describe("CompressedLinesBlob", () => {
 
   describe("rewrite", () => {
     it("rewrites an empty blob and round-trips correctly", async () => {
-      const blob = new CompressedLinesBlob(createSlot());
+      const blob = new LinesBlobCompressed(createSlot());
 
       await blob.rewrite(
         () => {},
@@ -45,7 +45,7 @@ describe("CompressedLinesBlob", () => {
     });
 
     it("streams existing lines and allows inline rewrites", async () => {
-      const blob = new CompressedLinesBlob(createSlot(zstdCompressSync(Buffer.from("alpha\nbeta\ngamma\n"))));
+      const blob = new LinesBlobCompressed(createSlot(zstdCompressSync(Buffer.from("alpha\nbeta\ngamma\n"))));
       const seen: string[] = [];
 
       await blob.rewrite(
@@ -64,7 +64,7 @@ describe("CompressedLinesBlob", () => {
 
     it("clears the slot when no lines are emitted", async () => {
       const slot = createSlot(zstdCompressSync(Buffer.from("existing\n")));
-      const blob = new CompressedLinesBlob(slot);
+      const blob = new LinesBlobCompressed(slot);
 
       await blob.rewrite(() => {});
       expect(await collectLines(blob)).toEqual([]);
@@ -72,7 +72,7 @@ describe("CompressedLinesBlob", () => {
     });
 
     it("keeps the blob unchanged when aborted", async () => {
-      const blob = new CompressedLinesBlob(createSlot(zstdCompressSync(Buffer.from("keep\n"))));
+      const blob = new LinesBlobCompressed(createSlot(zstdCompressSync(Buffer.from("keep\n"))));
       const controller = new AbortController();
       controller.abort();
 
@@ -92,7 +92,7 @@ describe("CompressedLinesBlob", () => {
     });
 
     it("keeps the blob unchanged when rewrite throws after emitting partial output", async () => {
-      const blob = new CompressedLinesBlob(createSlot(zstdCompressSync(Buffer.from("keep\n"))));
+      const blob = new LinesBlobCompressed(createSlot(zstdCompressSync(Buffer.from("keep\n"))));
 
       await expect(
         blob.rewrite((_line, emit) => {

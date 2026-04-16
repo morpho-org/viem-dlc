@@ -1,7 +1,8 @@
 import { hexToBigInt, type RpcLog, toHex } from "viem";
 
-import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
+import { LinesBlobCompressed } from "../../../internal/lines-blob-compressed.js";
 import type { LazyEntry } from "../../../internal/ndjson-map.js";
+import { NdjsonMapLazy } from "../../../internal/ndjson-map-lazy.js";
 import type { BlockRange, EIP1193Parameters } from "../../../types.js";
 import { divideBlockRange, extractRangeFromFilter, isInBlockRange, mergeBlockRanges } from "../../../utils/blocks.js";
 import { tryCatch } from "../../../utils/errors.js";
@@ -80,17 +81,17 @@ export async function handleEthGetLogs(
       expectedDataKeys.add(ek.data);
     }
 
-    // Create LazyNdjsonMap streaming wrapper around data from the store. Thanks to mutex, we own buffers here.
+    // Create NdjsonMapLazy streaming wrapper around data from the store. Thanks to mutex, we own buffers here.
     let buffers = (await preflight[1]) ?? [];
-    const ndjson = new LazyNdjsonMap<CachedChunk>(
+    const ndjson = new NdjsonMapLazy<CachedChunk>(
       { toJson: stringify, fromJson: parse },
-      {
+      new LinesBlobCompressed({
         get: () => buffers,
         set: (value) => {
           buffers = value;
           void store.set(blobKey, value);
         },
-      },
+      }),
       { debounceMs: 500, maxDelayMs: 2_500 },
     );
 

@@ -1,7 +1,7 @@
 import { type RpcLog, toHex } from "viem";
 import { type Mock, vi } from "vitest";
 
-import { createSlot, LazyNdjsonMap } from "../../../../src/internal/index.js";
+import { createSlot, LinesBlobCompressed, NdjsonMapLazy } from "../../../../src/internal/index.js";
 import type { Entry } from "../../../../src/internal/ndjson-map.js";
 import type { MemoryStore } from "../../../../src/stores/memory.js";
 import type { CachedChunk, CachedLogs, CachedMetadata } from "../../../../src/transports/cache/eth-get-logs/types.js";
@@ -36,7 +36,7 @@ export function entryKey(fromBlock: bigint, toBlock: bigint) {
 
 export function createNdjson() {
   const slot = createSlot();
-  const ndjson = new LazyNdjsonMap<CachedChunk>(codec, slot, {
+  const ndjson = new NdjsonMapLazy<CachedChunk>(codec, new LinesBlobCompressed(slot), {
     debounceMs: 86_400_000,
     maxDelayMs: 86_400_000,
   });
@@ -66,15 +66,15 @@ type StoredBin = {
 /** Pre-populate a store with metadata + logs entries for one or more bins. */
 export async function populateStore(store: MemoryStore, blobKey: string, bins: StoredBin[]) {
   let buffers = store.get(blobKey) ?? [];
-  const ndjson = new LazyNdjsonMap<CachedChunk>(
+  const ndjson = new NdjsonMapLazy<CachedChunk>(
     codec,
-    {
+    new LinesBlobCompressed({
       get: () => buffers,
       set: (v) => {
         buffers = v;
         store.set(blobKey, v);
       },
-    },
+    }),
     { debounceMs: 86_400_000, maxDelayMs: 86_400_000 },
   );
 
@@ -103,7 +103,7 @@ export async function populateStore(store: MemoryStore, blobKey: string, bins: S
   await ndjson.flush();
 }
 
-export function collectRecords(ndjson: LazyNdjsonMap<CachedChunk>) {
+export function collectRecords(ndjson: NdjsonMapLazy<CachedChunk>) {
   return ndjson.reduce<Entry<CachedChunk>[]>((acc, record) => {
     acc.push({ key: record.key, value: record.value });
     return acc;

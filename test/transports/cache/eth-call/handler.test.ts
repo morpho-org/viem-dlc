@@ -14,7 +14,7 @@ import {
 } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { LazyNdjsonMap } from "../../../../src/internal/index.js";
+import { LinesBlobCompressed, NdjsonMapLazy } from "../../../../src/internal/index.js";
 import { MemoryStore } from "../../../../src/stores/memory.js";
 import { handleEthCall } from "../../../../src/transports/cache/eth-call/handler.js";
 import { ETH_CALL_CACHE_POLICY_ADDRESS } from "../../../../src/transports/cache/eth-call/state-override.js";
@@ -130,15 +130,15 @@ async function populateStore(
   entries: { key: string; value: CachedEthCallEntry }[],
 ) {
   let buffers = store.get(blobKey) ?? [];
-  const ndjson = new LazyNdjsonMap<CachedEthCallEntry>(
+  const ndjson = new NdjsonMapLazy<CachedEthCallEntry>(
     codec,
-    {
+    new LinesBlobCompressed({
       get: () => buffers,
       set: (next) => {
         buffers = next;
         store.set(blobKey, next);
       },
-    },
+    }),
     { debounceMs: 86_400_000, maxDelayMs: 86_400_000 },
   );
   ndjson.upsert(entries);

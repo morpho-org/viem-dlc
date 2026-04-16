@@ -5,10 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   type Codec,
-  CompressedLinesBlob,
   createSlot,
   type Entry,
   type LazyEntry,
+  LinesBlobCompressed,
   NdjsonMap,
   type Slot,
 } from "../../src/internal/index.js";
@@ -31,7 +31,7 @@ function collectRecords<T, K extends string>(map: NdjsonMap<T, K>) {
 }
 
 async function collectRawLines(slot: Slot) {
-  const blob = new CompressedLinesBlob(createSlot(slot.get()));
+  const blob = new LinesBlobCompressed(createSlot(slot.get()));
   const lines: string[] = [];
   for await (const line of blob.lines()) {
     lines.push(line);
@@ -48,7 +48,7 @@ describe("NdjsonMap", () => {
     const fromJson = vi.fn((value: string) => parse<string>(value, "throw"));
     const map = new NdjsonMap<string, string>(
       { fromJson, toJson: stringify },
-      createSlot(zstdCompressSync(Buffer.from(`${serializeLine("a", "alpha")}\n`))),
+      new LinesBlobCompressed(createSlot(zstdCompressSync(Buffer.from(`${serializeLine("a", "alpha")}\n`)))),
     );
 
     let record: LazyEntry<string> | undefined;
@@ -71,7 +71,7 @@ describe("NdjsonMap", () => {
     const invalidEscapedKey = '{"key":"\\uZZZZ","value":"bad"}';
     const source = `\nnot-json\n{"key":1,"value":"bad"}\n${invalidEscapedKey}\n${serializeLine(trickyKey, "ok")}\n`;
     const compressed = zstdCompressSync(Buffer.from(source));
-    const map = new NdjsonMap<string, string>(codec, createSlot(compressed));
+    const map = new NdjsonMap<string, string>(codec, new LinesBlobCompressed(createSlot(compressed)));
 
     expect(await collectRecords(map)).toEqual([{ key: trickyKey, value: "ok" }]);
 
@@ -86,7 +86,10 @@ describe("NdjsonMap", () => {
     const source = [serializeLine("x", "old-x"), serializeLine("y", "keep-y"), serializeLine("z", "keep-z"), ""].join(
       "\n",
     );
-    const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
+    const map = new NdjsonMap<string, string>(
+      codec,
+      new LinesBlobCompressed(createSlot(zstdCompressSync(Buffer.from(source)))),
+    );
 
     await map.upsert([
       { key: "x", value: "new-x" },
@@ -105,7 +108,7 @@ describe("NdjsonMap", () => {
   it("preserves a line with a malformed value during rewrite", async () => {
     const source = ['{"key":"a","value":oops}', serializeLine("b", "keep-b"), ""].join("\n");
     const slot = createSlot(zstdCompressSync(Buffer.from(source)));
-    const map = new NdjsonMap<string, string>(codec, slot);
+    const map = new NdjsonMap<string, string>(codec, new LinesBlobCompressed(slot));
 
     await map.upsert([{ key: "c", value: "new-c" }]);
 
@@ -121,7 +124,7 @@ describe("NdjsonMap", () => {
       "\n",
     );
     const slot = createSlot(zstdCompressSync(Buffer.from(source)));
-    const map = new NdjsonMap<string, string>(codec, slot);
+    const map = new NdjsonMap<string, string>(codec, new LinesBlobCompressed(slot));
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await map.upsert([
@@ -142,7 +145,7 @@ describe("NdjsonMap", () => {
       "",
     ].join("\n");
     const slot = createSlot(zstdCompressSync(Buffer.from(source)));
-    const map = new NdjsonMap<string, string>(codec, slot);
+    const map = new NdjsonMap<string, string>(codec, new LinesBlobCompressed(slot));
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await map.upsert([{ key: "d", value: "new-d" }]);
@@ -155,7 +158,10 @@ describe("NdjsonMap", () => {
   describe("scan(extra) merge-sort", () => {
     it("interleaves extra entries before, between, and after stored keys and overrides collisions", async () => {
       const source = [serializeLine("c", "stored-c"), serializeLine("f", "stored-f"), ""].join("\n");
-      const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
+      const map = new NdjsonMap<string, string>(
+        codec,
+        new LinesBlobCompressed(createSlot(zstdCompressSync(Buffer.from(source)))),
+      );
 
       const extra = new Map<string, string>([
         ["a", "extra-a"], // before all stored
@@ -182,7 +188,10 @@ describe("NdjsonMap", () => {
 
     it("returns stored entries unchanged when extra is undefined or empty", async () => {
       const source = [serializeLine("x", "val"), ""].join("\n");
-      const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
+      const map = new NdjsonMap<string, string>(
+        codec,
+        new LinesBlobCompressed(createSlot(zstdCompressSync(Buffer.from(source)))),
+      );
 
       const withUndefined = await collectRecords(map);
       const withEmpty = await map.reduce<Entry<string, string>[]>(
@@ -202,7 +211,10 @@ describe("NdjsonMap", () => {
   describe("scan(extra)", () => {
     it("merge-sorts extra entries and stops early when the visitor returns false", async () => {
       const source = [serializeLine("c", "stored-c"), serializeLine("f", "stored-f"), ""].join("\n");
-      const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
+      const map = new NdjsonMap<string, string>(
+        codec,
+        new LinesBlobCompressed(createSlot(zstdCompressSync(Buffer.from(source)))),
+      );
       const extra = new Map<string, string>([
         ["a", "extra-a"],
         ["c", "extra-c"],
@@ -220,7 +232,10 @@ describe("NdjsonMap", () => {
 
     it("stops early during trailing extras after all stored lines are consumed", async () => {
       const source = [serializeLine("a", "stored-a"), ""].join("\n");
-      const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
+      const map = new NdjsonMap<string, string>(
+        codec,
+        new LinesBlobCompressed(createSlot(zstdCompressSync(Buffer.from(source)))),
+      );
       const extra = new Map<string, string>([
         ["x", "extra-x"],
         ["y", "extra-y"],
@@ -239,7 +254,10 @@ describe("NdjsonMap", () => {
 
   it("folds through merged entries during rewrite in sorted key order", async () => {
     const source = [serializeLine("x", "old-x"), serializeLine("y", "keep-y"), ""].join("\n");
-    const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
+    const map = new NdjsonMap<string, string>(
+      codec,
+      new LinesBlobCompressed(createSlot(zstdCompressSync(Buffer.from(source)))),
+    );
 
     const reduced = await map.upsertAndFold<string[]>(
       [
@@ -263,8 +281,11 @@ describe("NdjsonMap", () => {
 
   it("uses reduce directly when upsertAndFold receives no entries", async () => {
     const source = [serializeLine("a", "alpha"), serializeLine("b", "beta"), ""].join("\n");
-    const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
-    const rewriteSpy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite");
+    const map = new NdjsonMap<string, string>(
+      codec,
+      new LinesBlobCompressed(createSlot(zstdCompressSync(Buffer.from(source)))),
+    );
+    const rewriteSpy = vi.spyOn(LinesBlobCompressed.prototype, "rewrite");
 
     const reduced = await map.upsertAndFold<string[]>(
       [],
