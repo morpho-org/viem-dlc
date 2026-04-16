@@ -29,7 +29,7 @@ export type Inits<T extends Tuple> = T extends readonly [infer H, ...infer R]
 //////////////////////////////////////////////////////////////*/
 
 /** Type of `T[0]` — handles both required and optional leading elements. */
-type Head<T extends Tuple> = T extends readonly [infer H, ...any[]]
+export type Head<T extends Tuple> = T extends readonly [infer H, ...any[]]
   ? H
   : T["length"] extends 0
     ? never
@@ -38,7 +38,7 @@ type Head<T extends Tuple> = T extends readonly [infer H, ...any[]]
       : never;
 
 /** Rest of `T` after removing the first element — handles both required and optional leading elements. */
-type Tail<T extends Tuple> = T extends readonly [any, ...infer R]
+export type Tail<T extends Tuple> = T extends readonly [any, ...infer R]
   ? R
   : T["length"] extends 0
     ? never

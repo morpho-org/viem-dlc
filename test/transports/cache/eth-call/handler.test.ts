@@ -1,11 +1,12 @@
-import type { Address, Hex } from "viem";
 import {
   type AbiFunction,
+  type Address,
   concat,
   decodeAbiParameters,
   deploylessCallViaFactoryBytecode,
   encodeAbiParameters,
   encodeDeployData,
+  type Hex,
   pad,
   parseAbiItem,
   parseAbiParameters,
@@ -17,11 +18,11 @@ import { describe, expect, it, vi } from "vitest";
 import { LazyNdjsonMap } from "../../../../src/internal/index.js";
 import { MemoryStore } from "../../../../src/stores/memory.js";
 import { handleEthCall } from "../../../../src/transports/cache/eth-call/handler.js";
-import { ETH_CALL_CACHE_POLICY_ADDRESS } from "../../../../src/transports/cache/eth-call/state-override.js";
 import type { CachedEthCallEntry } from "../../../../src/transports/cache/eth-call/types.js";
 import { keychain } from "../../../../src/transports/cache/keychain.js";
 import type { CacheSchema } from "../../../../src/transports/cache/schema.js";
 import type { HandlerContext } from "../../../../src/transports/cache/types.js";
+import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
@@ -65,8 +66,14 @@ function buildDeploylessCall(targetData: Hex): Hex {
 
 function cachePolicySentinel(abi: AbiFunction, batchSize?: number) {
   return {
-    [ETH_CALL_CACHE_POLICY_ADDRESS]: {
-      code: toHex(JSON.stringify({ blobKey: "test-blob", ttl, batchSize, abi })),
+    [ETH_CALL_POLICY_ADDRESS]: {
+      code: toHex(
+        JSON.stringify({
+          abi,
+          batchSize,
+          cache: { blobKey: "test-blob", ttl },
+        }),
+      ),
     },
   };
 }
@@ -113,14 +120,10 @@ function mockBalancesOfFn() {
 
 function entryKeyFor(element: Hex) {
   return keychain.entryKey(chainId, "eth_call", {
-    targetTo: TARGET_TO,
-    factory: FACTORY,
-    factoryData: FACTORY_DATA,
+    target: { address: TARGET_TO, factory: FACTORY, factoryData: FACTORY_DATA },
     selector: toFunctionSelector(balancesOfAbi),
-    inputElement: element,
-    block: "latest",
-    stateOverride: undefined,
-    blockOverride: undefined,
+    element,
+    restOfEthCallParams: ["latest"],
   }).data;
 }
 
