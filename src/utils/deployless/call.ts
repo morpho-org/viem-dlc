@@ -1,25 +1,17 @@
 import type { EIP1193RequestFn, Hex, PublicRpcSchema } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
+import type { Tail } from "../tuples.js";
 
 import { type DeploylessTarget, wrapDeploylessFactoryCall } from "./codec.envelope.js";
 import { arrayToCalldata, hexToArray, type ResolvedArrayFunction } from "./codec.inner.js";
 
-type EthCallParams = EIP1193Parameters<PublicRpcSchema, "eth_call">["params"];
-
-/** Everything needed to issue an `eth_call` against a specific block and state. */
-export type EthCallRpcContext = {
-  block: EthCallParams[1];
-  stateOverride: EthCallParams[2];
-  blockOverride: EthCallParams[3];
-};
-
-export type FetchArrayElementsBatchedParams = {
+type FactorisedFactoryCallParams = {
+  target: DeploylessTarget;
   elements: readonly Hex[];
   solidity: ResolvedArrayFunction;
   batchSize: number | undefined;
-  target: DeploylessTarget;
-  rpcContext: EthCallRpcContext;
+  restOfEthCallParams: Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 };
 
 /**
@@ -29,13 +21,7 @@ export type FetchArrayElementsBatchedParams = {
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  {
-    elements,
-    solidity,
-    batchSize,
-    target,
-    rpcContext: { block, stateOverride, blockOverride },
-  }: FetchArrayElementsBatchedParams,
+  { target, elements, solidity, batchSize, restOfEthCallParams }: FactorisedFactoryCallParams,
 ): Promise<Hex[]> {
   const wrap = (els: readonly Hex[]): Hex =>
     wrapDeploylessFactoryCall({ target, targetData: arrayToCalldata(solidity, els) });
@@ -63,13 +49,7 @@ export async function factorisedFactoryCall(
 
       const returndata = await requestFn({
         method: "eth_call",
-        params: (blockOverride !== undefined
-          ? [{ data: chunkWrapped }, block, stateOverride, blockOverride]
-          : stateOverride !== undefined
-            ? [{ data: chunkWrapped }, block, stateOverride]
-            : block !== undefined
-              ? [{ data: chunkWrapped }, block]
-              : [{ data: chunkWrapped }]) as EthCallParams,
+        params: [{ data: chunkWrapped }, ...restOfEthCallParams],
       });
 
       const chunkOutputs = hexToArray(solidity.outputLayout, returndata);

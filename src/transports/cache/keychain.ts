@@ -1,8 +1,10 @@
-import type { Address, Hex, RpcSchema } from "viem";
+import type { Hex, RpcSchema } from "viem";
 
 import type { BlockRange, EIP1193Parameters } from "../../types.js";
 import { hash } from "../../utils/hash.js";
+import { type DeploylessTarget, deepTransform } from "../../utils/index.js";
 import { pick } from "../../utils/pick.js";
+import type { Tail } from "../../utils/tuples.js";
 import { extractEthCallPolicy } from "../state-overrides.js";
 
 import type { CachedMethod, CacheSchema } from "./schema.js";
@@ -58,17 +60,13 @@ export const keychain = createKeychain<CacheSchema, CachedMethod>()({
       _chainId,
       _method,
       inputs: {
-        targetTo: Address;
-        factory: Address;
-        factoryData: Hex;
+        target: DeploylessTarget;
         selector: Hex;
-        inputElement: Hex;
-        block: unknown;
-        stateOverride: unknown;
-        blockOverride: unknown;
+        element: Hex;
+        restOfEthCallParams: Tail<EIP1193Parameters<CacheSchema, "eth_call">["params"]>;
       },
     ) {
-      return { data: `${0}:${hash(inputs)}` as const };
+      return { data: `${0}:${hash(deepTransform(inputs, { sortKeys: true }))}` as const };
     },
   },
   eth_getLogs: {

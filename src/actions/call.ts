@@ -7,14 +7,14 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  * Returns a StateOverride entry encoding the `eth_call` policy. Pass it in the
  * `stateOverride` array.
  *
- * Caches per-element results of a single-input, single-output array function invoked via
- * viem's deployless-factory pattern (`call({ factory, factoryData, to, data, ... })`).
+ * Marks a single-input, single-output array function invoked via viem's deployless-factory
+ * pattern (`call({ factory, factoryData, to, data, ... })`) for special handling by the
+ * `deployless` or `cache` transport.
  *
- * The handler decodes the outer dynamic array structurally (without instantiating element
- * values), hashes each raw element against `(targetTo, factory, factoryData, selector, element)`
- * to derive a cache key, fetches misses by re-packing a subset of elements into a new
- * deployless-factory call, and merges fresh results with cached ones. Element bytes round-
- * trip through the cache untouched.
+ * Both transports decode the outer dynamic array structurally (without instantiating element
+ * values) and can re-pack subsets of elements into new deployless-factory calls to honor
+ * `batchSize`. When used with `cache`, raw element bytes are additionally keyed by
+ * `(targetTo, factory, factoryData, selector, element)` and cached per element.
  *
  * Requirements:
  * - The callee must be elementwise: for an input array `[x0, ..., xn]`, it must return
@@ -30,11 +30,11 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  * - Element types may be static (uint/int/bool/address/bytesN, tuples, fixed-size arrays)
  *   or dynamic (string, bytes, nested arrays, dynamic tuples).
  *
- * @param opts.batchSize Maximum bytes of the `eth_call` `data` field when fetching misses.
- *   Misses are greedy-packed into chunks under this limit and fetched in parallel.
+ * @param opts.batchSize Maximum bytes of the `eth_call` `data` field when fetching chunks.
+ *   Input elements are greedy-packed under this limit and fetched in parallel.
  *   Defaults to no splitting.
- * @param opts.cache Optional cache config. If omitted, caching is disabled but `batchSize`
- *   is still honored.
+ * @param opts.cache Optional cache config. Honored by the `cache` transport only; if omitted,
+ *   or when used with `deployless`, `batchSize` is still honored without caching.
  * @param opts.cache.blobKey Identifies the backing cache blob. Requests with the same
  *   `blobKey` share storage; different `blobKey`s are isolated into different blobs.
  * @param opts.cache.ttl Maximum age (ms) of a cached entry before it is considered stale
@@ -46,7 +46,7 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  *   `ttl`. Desynchronizes refreshes across many keys populated together, avoiding stampedes.
  *   Based on the XFetch algorithm from Vattani et al., "Optimal Probabilistic Cache Stampede
  *   Prevention" (2015), assuming constant recompute cost. Defaults to 0 (disabled).
- * @param opts.abi The function fragment describing the cached callee.
+ * @param opts.abi The function fragment describing the marked callee.
  */
 export function policy(opts: EthCallPolicy): StateOverride[number] {
   return {

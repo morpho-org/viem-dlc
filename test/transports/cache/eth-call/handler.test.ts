@@ -119,14 +119,10 @@ function mockBalancesOfFn() {
 
 function entryKeyFor(element: Hex) {
   return keychain.entryKey(chainId, "eth_call", {
-    targetTo: TARGET_TO,
-    factory: FACTORY,
-    factoryData: FACTORY_DATA,
+    target: { address: TARGET_TO, factory: FACTORY, factoryData: FACTORY_DATA },
     selector: toFunctionSelector(balancesOfAbi),
-    inputElement: element,
-    block: "latest",
-    stateOverride: undefined,
-    blockOverride: undefined,
+    element,
+    restOfEthCallParams: ["latest"],
   }).data;
 }
 

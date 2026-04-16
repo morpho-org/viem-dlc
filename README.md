@@ -1,8 +1,8 @@
 # @morpho-org/viem-dlc
 
 A collection of flexible [viem](https://viem.sh) extensions with a focus on intelligent caching.
-Provides composable transport wrappers for optimized `eth_getLogs` and `eth_call` handling with
-caching, rate limiting, automatic request splitting, and oversized-log filtering.
+Provides composable transport wrappers for optimized `eth_getLogs` and deployless `eth_call`
+handling with caching, rate limiting, automatic request splitting, and oversized-log filtering.
 
 ## Installation
 
@@ -13,6 +13,43 @@ pnpm add @morpho-org/viem-dlc
 Also available on the [GitHub Package Registry](https://npm.pkg.github.com).
 
 ## Transports
+
+### `deployless`
+
+Thin transport wrapper for deployless `eth_call` splitting. It only intercepts calls carrying
+the `policy(...)` sentinel in `stateOverride`, re-packs the marked input array into one or more
+deployless-factory calls under `batchSize`, and forwards everything else unchanged.
+
+```ts
+import { createPublicClient, encodeFunctionData, http, parseAbiItem } from 'viem'
+import { call } from 'viem/actions'
+import { deployless } from '@morpho-org/viem-dlc/transports'
+import { policy } from '@morpho-org/viem-dlc/actions'
+
+const positionsAbi = parseAbiItem(
+  'function positions((bytes32 id, address user)[] inputs) view returns ((uint256,uint128,uint128)[])'
+)
+
+const client = createPublicClient({
+  transport: deployless(http(rpcUrl)),
+})
+
+const result = await call(client, {
+  factory,
+  factoryData,
+  to,
+  data: encodeFunctionData({ abi: [positionsAbi], functionName: 'positions', args: [inputs] }),
+  stateOverride: [
+    policy({
+      abi: positionsAbi,
+      batchSize: 1 << 15,
+    }),
+  ],
+})
+```
+
+If `policy.cache` is present, `deployless(...)` ignores it and still behaves as split-only mode.
+Use `cache(...)` when you want the same marked calls to populate and read from a backing store.
 
 ### `cache`
 
@@ -246,13 +283,13 @@ const logs = await getLogs2(client, {
 
 ### `eth_call` `policy`
 
-Creates a `stateOverride` entry that tells the `cache` transport how to handle an
-`eth_call`. Works with viem's `call` action against a contract exposing a single
-dynamic-array input and a single dynamic-array output (e.g.
+Creates a `stateOverride` entry that tells the `deployless` or `cache` transport how
+to handle a deployless `eth_call`. Works with viem's `call` action against a contract
+exposing a single dynamic-array input and a single dynamic-array output (e.g.
 `balancesOf(address[]) -> uint256[]`), invoked via viem's deployless-factory pattern
-(`call({ factory, factoryData, to, data, ... })`). The handler decodes the outer
-array structurally — element bytes round-trip through the cache untouched, so tuples,
-nested arrays, and other complex element types are supported.
+(`call({ factory, factoryData, to, data, ... })`). The transports decode the outer
+array structurally; when used with `cache`, element bytes round-trip through the cache
+untouched, so tuples, nested arrays, and other complex element types are supported.
 
 ```ts
 policy(opts: {
@@ -269,10 +306,10 @@ policy(opts: {
 - **`opts.abi`** — the `AbiFunction` fragment for the callee. Must have exactly one
   input and one output, both dynamic arrays.
 - **`opts.batchSize`** — maximum bytes of the `eth_call` `data` field when fetching
-  misses. Misses are greedy-packed into chunks under this limit and fetched in parallel.
+  chunks. Input elements are greedy-packed under this limit and fetched in parallel.
   Defaults to no splitting.
-- **`opts.cache`** — optional cache config. If omitted, caching is disabled but
-  `batchSize` is still honored.
+- **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
+  or when used with `deployless(...)`, `batchSize` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same
   `blobKey` share storage; different `blobKey`s are isolated into different blobs.
 - **`opts.cache.ttl`** — maximum age in milliseconds before a cached entry is

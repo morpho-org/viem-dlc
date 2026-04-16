@@ -6,7 +6,6 @@ import { cyrb64Hash } from "../../../utils/hash.js";
 import {
   arrayToHex,
   calldataToArray,
-  type EthCallRpcContext,
   factorisedFactoryCall,
   resolveArrayFunction,
   unwrapDeploylessFactoryCall,
@@ -23,21 +22,18 @@ export async function handleEthCall(
   { store, coalesce, requestFn, chainId }: HandlerContext,
   req: EIP1193Parameters<CacheSchema, "eth_call">,
 ): Promise<Hex> {
-  const [txn, block, , blockOverride] = req.params;
   const extracted = extractEthCallPolicy(req.params[2]);
-
-  /*//////////////////////////////////////////////////////////////
-                          INPUT VALIDATION
-  //////////////////////////////////////////////////////////////*/
-
   if (!extracted) {
-    return requestFn({ method: req.method, params: req.params });
+    return requestFn(req);
   }
+
+  const [txn, ...restOfEthCallParams] = req.params;
   if (txn.data === undefined) {
     throw new Error("[cache] eth_call with policy requires `data`");
   }
   {
     const txnKeys = Object.keys(txn).filter((k) => txn[k as keyof typeof txn] !== undefined);
+    // `txn.data` must be the only field on `txn`
     if (txnKeys.length > 1) {
       const extras = txnKeys.filter((k) => k !== "data");
       throw new Error(
@@ -45,10 +41,16 @@ export async function handleEthCall(
       );
     }
   }
+  // `stateOverride` must be overwritten with the cleaned/extracted version.
+  // trailing undefined args must be removed for RPC compatibility.
+  if (restOfEthCallParams.length >= 2) {
+    restOfEthCallParams[1] = extracted.stateOverride;
+    const lastDefinedParamIdx = restOfEthCallParams.reduce((acc, x, i) => (x === undefined ? acc : i), 0);
+    restOfEthCallParams.splice(lastDefinedParamIdx + 1);
+  }
 
-  const { stateOverride, policy } = extracted;
-  const solidity = resolveArrayFunction(policy.abi);
   const { target, targetData } = unwrapDeploylessFactoryCall(txn.data);
+  const solidity = resolveArrayFunction(extracted.policy.abi);
   const inputElements = calldataToArray(solidity, targetData);
 
   if (inputElements.length === 0) {
@@ -56,18 +58,17 @@ export async function handleEthCall(
   }
 
   const blobKey = keychain.blobKey(chainId, req);
-  const { ttl, delta } = policy.cache ?? {};
-  const rpcContext: EthCallRpcContext = { block, stateOverride, blockOverride };
+  const { ttl, delta } = extracted.policy.cache ?? {};
 
   // No TTL → caching disabled. Still honor `batchSize` by splitting the call, but skip
   // all cache reads, writes, coalescing, and dedup.
   if (!blobKey || ttl === undefined) {
     const outputs = await factorisedFactoryCall(requestFn, {
+      target,
       elements: inputElements,
       solidity,
-      batchSize: policy.batchSize,
-      target,
-      rpcContext,
+      batchSize: extracted.policy.batchSize,
+      restOfEthCallParams,
     });
     return arrayToHex(solidity.outputLayout, outputs);
   }
@@ -81,14 +82,10 @@ export async function handleEthCall(
     const keyToInfo = new Map<string, { indices: number[]; element: Hex }>();
     inputElements.forEach((element, i) => {
       const ek = keychain.entryKey(chainId, "eth_call", {
-        targetTo: target.address,
-        factory: target.factory,
-        factoryData: target.factoryData,
+        target,
         selector: solidity.selector,
-        inputElement: element,
-        block,
-        stateOverride,
-        blockOverride,
+        element,
+        restOfEthCallParams,
       }).data;
       const existing = keyToInfo.get(ek);
       if (existing) {
@@ -141,11 +138,11 @@ export async function handleEthCall(
       const fetchedAt = Date.now();
 
       const outputs = await factorisedFactoryCall(requestFn, {
+        target,
         elements: misses.map((m) => m.element),
         solidity,
-        batchSize: policy.batchSize,
-        target,
-        rpcContext,
+        batchSize: extracted.policy.batchSize,
+        restOfEthCallParams,
       });
 
       const allEntries = misses.map((miss, i) => {

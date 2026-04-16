@@ -156,9 +156,7 @@ export function calldataToArray(resolved: ResolvedArrayFunction, calldata: Hex):
   }
   const givenSelector = calldata.slice(0, 10).toLowerCase();
   if (givenSelector !== resolved.selector.toLowerCase()) {
-    throw new Error(
-      `[cache] eth_call selector ${givenSelector} does not match policy abi selector ${resolved.selector}`,
-    );
+    throw new Error(`eth_call selector ${givenSelector} does not match policy abi selector ${resolved.selector}`);
   }
   return hexToArray(resolved.inputLayout, `0x${calldata.slice(10)}` as Hex);
 }
@@ -183,7 +181,7 @@ function readUint256(hex: string, byteOffset: number): number {
   const value = hex.slice(start, start + 64);
   const n = Number.parseInt(value, 16);
   if (!Number.isSafeInteger(n)) {
-    throw new Error(`[cache] array length or offset exceeds safe integer range`);
+    throw new Error(`array length or offset exceeds safe integer range`);
   }
   return n;
 }
