@@ -25,7 +25,7 @@ export type DeploylessFactoryCall = {
  * target calldata.
  */
 export function unwrapDeploylessFactoryCall(data: Hex): DeploylessFactoryCall {
-  if (!data.startsWith(FACTORY_BYTECODE)) {
+  if (!data.toLowerCase().startsWith(FACTORY_BYTECODE)) {
     throw new Error("eth_call data is not a deployless factory wrapper");
   }
   const argsHex = `0x${data.slice(FACTORY_BYTECODE.length)}` as Hex;
