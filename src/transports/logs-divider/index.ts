@@ -13,7 +13,7 @@ import type { LogsDividerConfig } from "./types.js";
 export type * from "./schema.js";
 export type * from "./types.js";
 
-const key = "viem-dlc-logs-divider" as const;
+export const key = "viem-dlc-logs-divider" as const;
 
 /**
  * Creates a transport wrapper that divides large eth_getLogs requests into smaller chunks.

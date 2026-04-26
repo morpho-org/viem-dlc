@@ -8,7 +8,7 @@ import { extractEthCallPolicy } from "../state-overrides.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
-const key = "viem-dlc-deployless" as const;
+export const key = "viem-dlc-deployless" as const;
 
 /**
  * Creates a thin transport wrapper that splits marked deployless `eth_call`s by `batchSize`.
@@ -81,7 +81,7 @@ async function handleEthCall(requestFn: EIP1193RequestFn<Base>, req: EIP1193Para
     target,
     elements: inputElements,
     solidity,
-    batchSize: extracted.policy.batchSize,
+    batch: extracted.policy.batch,
     restOfEthCallParams,
   });
   return arrayToHex(solidity.outputLayout, outputs);

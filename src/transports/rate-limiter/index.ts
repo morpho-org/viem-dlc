@@ -11,7 +11,7 @@ import type { RateLimiterConfig } from "./types.js";
 export type * from "./schema.js";
 export type * from "./types.js";
 
-const key = "viem-dlc-rate-limiter" as const;
+export const key = "viem-dlc-rate-limiter" as const;
 
 /**
  * Creates a transport wrapper that rate-limits all RPC requests using a token bucket.

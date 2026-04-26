@@ -8,7 +8,7 @@ export type * from "./types.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
-const key = "viem-dlc-logs-enricher" as const;
+export const key = "viem-dlc-logs-enricher" as const;
 
 /** Creates a transport wrapper that enriches `eth_getLogs` responses. */
 export function logsEnricher<T extends Base>(

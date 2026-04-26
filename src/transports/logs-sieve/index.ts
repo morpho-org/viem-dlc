@@ -9,7 +9,7 @@ export type * from "./types.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
-const key = "viem-dlc-logs-sieve" as const;
+export const key = "viem-dlc-logs-sieve" as const;
 
 /**
  * Creates a transport wrapper that filters oversized `eth_getLogs` entries.

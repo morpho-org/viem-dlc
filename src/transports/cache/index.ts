@@ -74,7 +74,7 @@ export function createSimpleInvalidation(
   };
 }
 
-const key = "viem-dlc-cache" as const;
+export const key = "viem-dlc-cache" as const;
 
 /**
  * Creates an all-in-one caching transport for eth_getLogs calls.

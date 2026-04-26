@@ -30,11 +30,15 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  * - Element types may be static (uint/int/bool/address/bytesN, tuples, fixed-size arrays)
  *   or dynamic (string, bytes, nested arrays, dynamic tuples).
  *
- * @param opts.batchSize Maximum bytes of the `eth_call` `data` field when fetching chunks.
+ * @param opts.batch Optional batching config. Omit to send all elements in a single
+ *   upstream `eth_call`.
+ * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk.
  *   Input elements are greedy-packed under this limit and fetched in parallel.
- *   Defaults to no splitting.
+ * @param opts.batch.exfil Outer wrapper mode. Defaults to `'return'` (viem's stock RETURN-mode
+ *   wrapper). Set to `'revert'` to exfiltrate via `REVERT` instead, which lifts the EIP-170
+ *   24KB returndata cap at the cost of relying on the RPC preserving revert data.
  * @param opts.cache Optional cache config. Honored by the `cache` transport only; if omitted,
- *   or when used with `deployless`, `batchSize` is still honored without caching.
+ *   or when used with `deployless`, `batch` is still honored without caching.
  * @param opts.cache.blobKey Identifies the backing cache blob. Requests with the same
  *   `blobKey` share storage; different `blobKey`s are isolated into different blobs.
  * @param opts.cache.ttl Maximum age (ms) of a cached entry before it is considered stale

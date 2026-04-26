@@ -60,14 +60,14 @@ export async function handleEthCall(
   const blobKey = keychain.blobKey(chainId, req);
   const { ttl, delta } = extracted.policy.cache ?? {};
 
-  // No TTL → caching disabled. Still honor `batchSize` by splitting the call, but skip
+  // No TTL → caching disabled. Still honor `batch` by splitting the call, but skip
   // all cache reads, writes, coalescing, and dedup.
   if (!blobKey || ttl === undefined) {
     const outputs = await factorisedFactoryCall(requestFn, {
       target,
       elements: inputElements,
       solidity,
-      batchSize: extracted.policy.batchSize,
+      batch: extracted.policy.batch,
       restOfEthCallParams,
     });
     return arrayToHex(solidity.outputLayout, outputs);
@@ -141,7 +141,7 @@ export async function handleEthCall(
         target,
         elements: misses.map((m) => m.element),
         solidity,
-        batchSize: extracted.policy.batchSize,
+        batch: extracted.policy.batch,
         restOfEthCallParams,
       });
 

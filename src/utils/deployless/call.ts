@@ -3,28 +3,37 @@ import type { EIP1193RequestFn, Hex, PublicRpcSchema } from "viem";
 import type { EIP1193Parameters } from "../../types.js";
 import type { Tail } from "../tuples.js";
 
-import { type DeploylessTarget, wrapDeploylessFactoryCall } from "./codec.envelope.js";
+import {
+  type DeploylessExfilMode,
+  type DeploylessTarget,
+  extractRevertData,
+  wrapDeploylessFactoryCall,
+} from "./codec.envelope.js";
 import { arrayToCalldata, hexToArray, type ResolvedArrayFunction } from "./codec.inner.js";
+
+type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
 type FactorisedFactoryCallParams = {
   target: DeploylessTarget;
   elements: readonly Hex[];
   solidity: ResolvedArrayFunction;
-  batchSize: number | undefined;
-  restOfEthCallParams: Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
+  batch?: { batchSize: number; exfil?: DeploylessExfilMode };
+  restOfEthCallParams: RestOfEthCallParams;
 };
 
 /**
  * Packs `elements` into one or more deployless-factory `eth_call` chunks (respecting
- * `batchSize` bytes on the outgoing `data` field), fetches them in parallel, and returns
- * the per-element output slices aligned to `elements`.
+ * `batch.batchSize` bytes on the outgoing `data` field), fetches them in parallel, and
+ * returns the per-element output slices aligned to `elements`. When `batch` is undefined,
+ * sends all elements in a single upstream call.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  { target, elements, solidity, batchSize, restOfEthCallParams }: FactorisedFactoryCallParams,
+  { target, elements, solidity, batch, restOfEthCallParams }: FactorisedFactoryCallParams,
 ): Promise<Hex[]> {
+  const exfil: DeploylessExfilMode = batch?.exfil ?? "return";
   const wrap = (els: readonly Hex[]): Hex =>
-    wrapDeploylessFactoryCall({ target, targetData: arrayToCalldata(solidity, els) });
+    wrapDeploylessFactoryCall({ target, targetData: arrayToCalldata(solidity, els) }, exfil);
 
   // Per-element byte contribution: static layouts contribute a constant `layout.size`;
   // dynamic layouts contribute one offset word plus the already-padded element bytes.
@@ -40,17 +49,15 @@ export async function factorisedFactoryCall(
   const referenceBytes = (referenceWrapped.length - 2) / 2;
   const overheadBytes = referenceBytes - perElementBytes.reduce((a, b) => a + b, 0);
 
-  const ranges = packByCalldataBytes(perElementBytes, overheadBytes, batchSize);
+  const ranges = packByCalldataBytes(perElementBytes, overheadBytes, batch?.batchSize);
   const outputs = new Array<Hex>(elements.length);
+
+  const fetchChunk = exfil === "return" ? fetchChunkReturn : fetchChunkRevert;
 
   await Promise.all(
     ranges.map(async ([start, end]) => {
       const chunkWrapped = ranges.length === 1 ? referenceWrapped : wrap(elements.slice(start, end));
-
-      const returndata = await requestFn({
-        method: "eth_call",
-        params: [{ data: chunkWrapped }, ...restOfEthCallParams],
-      });
+      const returndata = await fetchChunk(requestFn, chunkWrapped, restOfEthCallParams);
 
       const chunkOutputs = hexToArray(solidity.outputLayout, returndata);
       if (chunkOutputs.length !== end - start) {
@@ -63,6 +70,29 @@ export async function factorisedFactoryCall(
   );
 
   return outputs;
+}
+
+async function fetchChunkReturn(
+  requestFn: EIP1193RequestFn<PublicRpcSchema>,
+  data: Hex,
+  rest: RestOfEthCallParams,
+): Promise<Hex> {
+  return requestFn({ method: "eth_call", params: [{ data }, ...rest] });
+}
+
+async function fetchChunkRevert(
+  requestFn: EIP1193RequestFn<PublicRpcSchema>,
+  data: Hex,
+  rest: RestOfEthCallParams,
+): Promise<Hex> {
+  try {
+    await requestFn({ method: "eth_call", params: [{ data }, ...rest] });
+  } catch (e) {
+    const decoded = extractRevertData(e);
+    if (!decoded.ok) throw e;
+    return decoded.returnData;
+  }
+  throw new Error("revert-mode wrapper returned without reverting");
 }
 
 type BatchRange = readonly [start: number, end: number];
