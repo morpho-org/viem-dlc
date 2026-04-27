@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "fs/promises";
 import { join } from "path";
 
@@ -64,13 +64,15 @@ export class NodeFsStore implements Store {
   }
 
   private async _set(key: string, value: Buffer[]): Promise<void> {
+    const path = this.resolvePath(key);
+    const tmpPath = `${path}.${randomUUID()}.tmp`;
     try {
       await this.ensureDir();
-      const path = this.resolvePath(key);
-      await writeFile(`${path}.tmp`, Buffer.concat(value));
-      await rename(`${path}.tmp`, path);
+      await writeFile(tmpPath, Buffer.concat(value));
+      await rename(tmpPath, path);
     } catch (err) {
       console.warn(`[NodeFsStore] Failed to set key "${key}":`, err);
+      unlink(tmpPath).catch(() => undefined);
     }
   }
 
