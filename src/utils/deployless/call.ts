@@ -10,7 +10,6 @@ import {
   wrapDeploylessFactoryCall,
 } from "./codec.envelope.js";
 import { arrayToCalldata, hexToArray, type ResolvedArrayFunction } from "./codec.inner.js";
-import { flzDecompress } from "./flz.js";
 
 type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
@@ -54,15 +53,12 @@ export async function factorisedFactoryCall(
   const ranges = packByCalldataBytes(perElementBytes, overheadBytes, batch?.batchSize);
   const outputs = new Array<Hex>(elements.length);
 
-  const fetchChunk =
-    exfil === "return"
-      ? (data: Hex, rest: RestOfEthCallParams) => fetchChunkReturn(requestFn, data, rest, compress)
-      : (data: Hex, rest: RestOfEthCallParams) => fetchChunkRevert(requestFn, data, rest, compress);
+  const fetchChunk = exfil === "return" ? fetchChunkReturn : fetchChunkRevert;
 
   async function fetchRecursive(els: readonly Hex[], startIdx: number, precomputed?: Hex): Promise<void> {
     const wrapped = precomputed ?? wrap(els);
     try {
-      const returndata = await fetchChunk(wrapped, restOfEthCallParams);
+      const returndata = await fetchChunk(requestFn, wrapped, restOfEthCallParams);
       const chunkOutputs = hexToArray(solidity.outputLayout, returndata);
       if (chunkOutputs.length !== els.length) {
         throw new Error(`eth_call returned ${chunkOutputs.length} output elements, expected ${els.length}`);
@@ -90,28 +86,17 @@ export async function factorisedFactoryCall(
   return outputs;
 }
 
-async function fetchChunkReturn(
-  requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  data: Hex,
-  rest: RestOfEthCallParams,
-  compress: boolean,
-): Promise<Hex> {
-  const result = await requestFn({ method: "eth_call", params: [{ data }, ...rest] });
-  return compress ? flzDecompress(result) : result;
+async function fetchChunkReturn(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: Hex, rest: RestOfEthCallParams) {
+  return requestFn({ method: "eth_call", params: [{ data }, ...rest] });
 }
 
-async function fetchChunkRevert(
-  requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  data: Hex,
-  rest: RestOfEthCallParams,
-  compress: boolean,
-): Promise<Hex> {
+async function fetchChunkRevert(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: Hex, rest: RestOfEthCallParams) {
   try {
     await requestFn({ method: "eth_call", params: [{ data }, ...rest] });
   } catch (e) {
     const decoded = extractRevertData(e);
     if (!decoded.ok) throw e;
-    return compress ? flzDecompress(decoded.returnData) : decoded.returnData;
+    return decoded.returnData;
   }
   throw new Error("revert-mode wrapper returned without reverting");
 }

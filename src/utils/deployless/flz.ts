@@ -77,6 +77,15 @@ export function flzCompress(data: Hex): Hex {
     let e = b - i3;
     for (; l < e; l++) e *= ib[r3 + l] === ib[i3 + l] ? 1 : 0;
 
+    // Skip 3-byte-only matches: emitting a type=0 token (l=0 → top 3 bits = 0)
+    // is indistinguishable from a literal-run header, so the decompressor would
+    // corrupt the output. Let the bytes fall through to the next literal flush.
+    if (l === 0) {
+      a = i;
+      i++;
+      continue;
+    }
+
     // Emit match token(s).
     i += l;
     const dd = d - 1;

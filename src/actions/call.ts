@@ -37,10 +37,10 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  * @param opts.batch.exfil Outer wrapper mode. Defaults to `'return'` (viem's stock RETURN-mode
  *   wrapper). Set to `'revert'` to exfiltrate via `REVERT` instead, which lifts the EIP-170
  *   24_576 bytes returndata cap at the cost of relying on the RPC preserving revert data.
- * @param opts.batch.compress Whether to use FastLZ (LZ77) compression on the wire (to/from RPC).
+ * @param opts.batch.compress Whether to use FastLZ (LZ77) compression on the wire (to RPC).
  *   EIP-3860 limits initcode to 49_152 bytes. For deployless reads, that constrains calldata,
- *   so compression can help squeeze more entities into the request at the cost of a few
- *   milliseconds of encode/decode time.
+ *   so compression can help squeeze more entities into the request at the cost of extra
+ *   pre-request encoding time.
  * @param opts.cache Optional cache config. Honored by the `cache` transport only; if omitted,
  *   or when used with `deployless`, `batch` is still honored without caching.
  * @param opts.cache.blobKey Identifies the backing cache blob. Requests with the same

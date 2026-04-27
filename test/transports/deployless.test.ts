@@ -20,7 +20,7 @@ import { deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
 import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../src/utils/deployless/codec.envelope.js";
-import { flzCompress, flzDecompress } from "../../src/utils/deployless/flz.js";
+import { flzDecompress } from "../../src/utils/deployless/flz.js";
 
 type EthCallRequest = EIP1193Parameters<import("viem").PublicRpcSchema, "eth_call">;
 
@@ -110,8 +110,8 @@ function mockBalancesOfFn() {
 
 /**
  * Full-fidelity mock for any (exfil, compress) combination.
- * - Decompresses incoming targetData when compress=true.
- * - Compresses the encoded response when compress=true.
+ * - Decompresses incoming targetData when compress=true (input-only compression).
+ * - Returns raw (uncompressed) output regardless of compress flag.
  * - Returns (return mode) or throws with sentinel (revert mode).
  */
 function mockCompressibleFn(exfil: "return" | "revert", compress: boolean) {
@@ -122,9 +122,8 @@ function mockCompressibleFn(exfil: "return" | "revert", compress: boolean) {
     const [addrs] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
     const outputs = (addrs as readonly Address[]).map((a) => BigInt(a));
     const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
-    const payload = compress ? flzCompress(encoded) : encoded;
-    if (exfil === "return") return payload;
-    throw revertWithSentinel(payload);
+    if (exfil === "return") return encoded;
+    throw revertWithSentinel(encoded);
   });
 }
 
@@ -383,7 +382,9 @@ describe("deployless", () => {
       const requestFn = mockCompressibleFn(exfil, true);
       const transport = createTransport(requestFn);
 
-      const result = await transport.request(createRequest(addrs, { batch: { batchSize: 8192, exfil, compress: true } }));
+      const result = await transport.request(
+        createRequest(addrs, { batch: { batchSize: 8192, exfil, compress: true } }),
+      );
 
       const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
       expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
@@ -393,7 +394,9 @@ describe("deployless", () => {
       const requestFn = mockCompressibleFn("return", true);
       const transport = createTransport(requestFn);
 
-      await transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return", compress: true } }));
+      await transport.request(
+        createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return", compress: true } }),
+      );
 
       const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
       expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(false);
@@ -431,9 +434,9 @@ describe("deployless", () => {
       const requestFn = vi.fn().mockRejectedValue(batchSizeError);
       const transport = createTransport(requestFn);
 
-      await expect(transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return" } }))).rejects.toThrow(
-        "request body too large",
-      );
+      await expect(
+        transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return" } })),
+      ).rejects.toThrow("request body too large");
       expect(requestFn).toHaveBeenCalledTimes(1);
     });
 

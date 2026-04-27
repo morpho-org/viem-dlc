@@ -25,7 +25,7 @@ import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overri
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
 import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../../../src/utils/deployless/codec.envelope.js";
-import { flzCompress, flzDecompress } from "../../../../src/utils/deployless/flz.js";
+import { flzDecompress } from "../../../../src/utils/deployless/flz.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
 
 type EthCallRequest = EIP1193Parameters<CacheSchema, "eth_call">;
@@ -141,10 +141,9 @@ function mockCompressibleFn(exfil: "return" | "revert", compress: boolean) {
     const [addrs] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
     const outputs = (addrs as readonly Address[]).map((a) => BigInt(a));
     const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
-    const payload = compress ? flzCompress(encoded) : encoded;
-    if (exfil === "return") return payload;
+    if (exfil === "return") return encoded;
     const err = new Error("execution reverted") as Error & { data: Hex };
-    err.data = `${OK_SENTINEL}${payload.slice(2)}` as Hex;
+    err.data = `${OK_SENTINEL}${encoded.slice(2)}` as Hex;
     throw err;
   });
 }
@@ -460,9 +459,9 @@ describe("handleEthCall", () => {
     });
 
     it("rethrows when a single-element batch fails with a batch-size error", async () => {
-      const requestFn = vi.fn().mockRejectedValue(
-        Object.assign(new Error("request body too large"), { data: "0x" as Hex }),
-      );
+      const requestFn = vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("request body too large"), { data: "0x" as Hex }));
       const req = createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return" } });
 
       await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow("request body too large");
