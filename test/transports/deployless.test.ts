@@ -20,6 +20,7 @@ import { deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
 import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../src/utils/deployless/codec.envelope.js";
+import { flzCompress, flzDecompress } from "../../src/utils/deployless/flz.js";
 
 type EthCallRequest = EIP1193Parameters<import("viem").PublicRpcSchema, "eth_call">;
 
@@ -54,7 +55,7 @@ function buildDeploylessCall(targetData: Hex): Hex {
 }
 
 type PolicyOpts = {
-  batch?: { batchSize: number; exfil?: "return" | "revert" };
+  batch?: { batchSize: number; exfil?: "return" | "revert"; compress?: boolean };
   withCache?: boolean;
 };
 
@@ -104,6 +105,26 @@ function mockBalancesOfFn() {
       return encoded;
     }
     throw revertWithSentinel(encoded);
+  });
+}
+
+/**
+ * Full-fidelity mock for any (exfil, compress) combination.
+ * - Decompresses incoming targetData when compress=true.
+ * - Compresses the encoded response when compress=true.
+ * - Returns (return mode) or throws with sentinel (revert mode).
+ */
+function mockCompressibleFn(exfil: "return" | "revert", compress: boolean) {
+  return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
+    const data = (args.params[0] as { data: Hex }).data;
+    const { targetData: raw } = unwrapDeploylessFactoryCall(data);
+    const targetData = compress ? flzDecompress(raw) : raw;
+    const [addrs] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
+    const outputs = (addrs as readonly Address[]).map((a) => BigInt(a));
+    const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+    const payload = compress ? flzCompress(encoded) : encoded;
+    if (exfil === "return") return payload;
+    throw revertWithSentinel(payload);
   });
 }
 
@@ -353,6 +374,29 @@ describe("deployless", () => {
 
       const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
       expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(true);
+    });
+  });
+
+  describe("compress=true", () => {
+    it.each(["return", "revert"] as const)("round-trips addresses correctly for exfil=%s", async (exfil) => {
+      const addrs = [addr(1), addr(2), addr(3)];
+      const requestFn = mockCompressibleFn(exfil, true);
+      const transport = createTransport(requestFn);
+
+      const result = await transport.request(createRequest(addrs, { batch: { batchSize: 8192, exfil, compress: true } }));
+
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+
+    it("does not use viem's stock RETURN bytecode as prefix", async () => {
+      const requestFn = mockCompressibleFn("return", true);
+      const transport = createTransport(requestFn);
+
+      await transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return", compress: true } }));
+
+      const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
+      expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(false);
     });
   });
 

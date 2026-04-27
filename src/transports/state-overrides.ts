@@ -10,7 +10,7 @@ const ETH_CALL_POLICY_ADDRESS_LOWER = ETH_CALL_POLICY_ADDRESS.toLowerCase() as A
 
 export type EthCallPolicy = {
   abi: AbiFunction;
-  batch?: { batchSize: number; exfil?: DeploylessExfilMode };
+  batch?: { batchSize: number; exfil?: DeploylessExfilMode; compress?: boolean };
   cache?: {
     blobKey: string;
     ttl: number;

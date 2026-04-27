@@ -25,6 +25,7 @@ import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overri
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
 import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../../../src/utils/deployless/codec.envelope.js";
+import { flzCompress, flzDecompress } from "../../../../src/utils/deployless/flz.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
 
 type EthCallRequest = EIP1193Parameters<CacheSchema, "eth_call">;
@@ -64,7 +65,7 @@ function buildDeploylessCall(targetData: Hex): Hex {
 }
 
 type PolicyOpts = {
-  batch?: { batchSize: number; exfil?: "return" | "revert" };
+  batch?: { batchSize: number; exfil?: "return" | "revert"; compress?: boolean };
 };
 
 function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
@@ -128,6 +129,22 @@ function mockBalancesOfFn() {
     }
     const err = new Error("execution reverted") as Error & { data: Hex };
     err.data = `${OK_SENTINEL}${encoded.slice(2)}` as Hex;
+    throw err;
+  });
+}
+
+function mockCompressibleFn(exfil: "return" | "revert", compress: boolean) {
+  return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
+    const data = (args.params[0] as { data: Hex }).data;
+    const { targetData: raw } = unwrapDeploylessFactoryCall(data);
+    const targetData = compress ? flzDecompress(raw) : raw;
+    const [addrs] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
+    const outputs = (addrs as readonly Address[]).map((a) => BigInt(a));
+    const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+    const payload = compress ? flzCompress(encoded) : encoded;
+    if (exfil === "return") return payload;
+    const err = new Error("execution reverted") as Error & { data: Hex };
+    err.data = `${OK_SENTINEL}${payload.slice(2)}` as Hex;
     throw err;
   });
 }
@@ -337,6 +354,19 @@ describe("handleEthCall", () => {
         const data = (arg.params[0] as { data: Hex }).data;
         expect((data.length - 2) / 2).toBeLessThanOrEqual(overshootCap);
       }
+
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+  });
+
+  describe("compress=true", () => {
+    it.each(["return", "revert"] as const)("round-trips addresses correctly for exfil=%s", async (exfil) => {
+      const addrs = [addr(1), addr(2), addr(3)];
+      const requestFn = mockCompressibleFn(exfil, true);
+      const req = createRequest(addrs, { batch: { batchSize: 8192, exfil, compress: true } });
+
+      const result = await handleEthCall(ctx(requestFn), req);
 
       const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
       expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
