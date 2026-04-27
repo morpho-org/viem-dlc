@@ -15,7 +15,7 @@
  *
  * On lens success:  revert(OK_SENTINEL || returndata)
  * On lens revert:   revert(returndata verbatim)
- * On deploy fail:   revert(DeploymentFailed(target))
+ * On deploy fail:   revert(CounterfactualDeployFailed(bytes("")))
  *
  * Memory layout (monotonically increasing, no aliasing):
  *   [0, argsLen)                  constructor args (codecopy)
@@ -44,10 +44,11 @@ object "RevertEnvelopeCompressed" {
         let fdLen := mload(fdOff)
         let deployed := call(gas(), factory, 0, add(fdOff, 0x20), fdLen, 0, 0)
         if or(iszero(deployed), iszero(extcodesize(target))) {
-            // bytes4(keccak256("DeploymentFailed(address)")) = 0x9deffc1b
-            mstore(0x00, 0x9deffc1b00000000000000000000000000000000000000000000000000000000)
-            mstore(0x04, target)
-            revert(0x00, 0x24)
+            // bytes4(keccak256("CounterfactualDeployFailed(bytes)")) = 0x101bb98d
+            mstore(0x00, 0x101bb98d00000000000000000000000000000000000000000000000000000000)
+            mstore(0x04, 0x20)
+            mstore(0x24, 0)
+            revert(0x00, 0x44)
         }
 
         // Decompress targetData into a fresh memory region at msize().

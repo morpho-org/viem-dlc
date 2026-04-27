@@ -10,7 +10,6 @@ import {
   encodeDeployData,
   pad,
   parseAbiItem,
-  parseAbiParameters,
   toFunctionSelector,
   toHex,
 } from "viem";
@@ -19,7 +18,11 @@ import { describe, expect, it, vi } from "vitest";
 import { deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
-import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../src/utils/deployless/codec.envelope.js";
+import {
+  OK_SENTINEL,
+  unwrapDeploylessFactoryCall,
+  wrapDeploylessFactoryCall,
+} from "../../src/utils/deployless/codec.envelope.js";
 import { flzDecompress } from "../../src/utils/deployless/flz.js";
 
 type EthCallRequest = EIP1193Parameters<import("viem").PublicRpcSchema, "eth_call">;
@@ -357,6 +360,20 @@ describe("deployless", () => {
       expect(decoded).toEqual([]);
     });
 
+    it("decodes sentinel data from an intermediate BaseError", async () => {
+      const encoded = encodeAbiParameters([{ type: "uint256[]" }], [[1n]]);
+      const dataError = Object.assign(new BaseError("rpc", { cause: new Error("inner") }), {
+        data: `${OK_SENTINEL}${encoded.slice(2)}` as Hex,
+      });
+      const requestFn = vi.fn().mockRejectedValue(new BaseError("outer", { cause: dataError }));
+      const transport = createTransport(requestFn);
+
+      const result = await transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "revert" } }));
+
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual([1n]);
+    });
+
     it("uses RETURN-mode wrapper bytecode upstream when exfil='return'", async () => {
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn);
@@ -400,6 +417,32 @@ describe("deployless", () => {
 
       const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
       expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(false);
+    });
+
+    it("keeps compressed chunks within the actual wrapped byte budget", async () => {
+      const addrs = Array.from({ length: 200 }, () => addr(1));
+      const singleWrapped = wrapDeploylessFactoryCall(
+        {
+          target: { address: TARGET_TO, factory: FACTORY, factoryData: FACTORY_DATA },
+          targetData: buildTargetCalldata(balancesOfAbi, [addr(1)]),
+        },
+        { exfil: "return", compress: true },
+      );
+      const batchSize = (singleWrapped.length - 2) / 2 + 8;
+      const requestFn = mockCompressibleFn("return", true);
+      const transport = createTransport(requestFn);
+
+      const result = await transport.request(
+        createRequest(addrs, { batch: { batchSize, exfil: "return", compress: true } }),
+      );
+
+      expect(requestFn.mock.calls.length).toBeGreaterThan(1);
+      for (const [arg] of requestFn.mock.calls) {
+        const data = (arg.params[0] as { data: Hex }).data;
+        expect((data.length - 2) / 2).toBeLessThanOrEqual(batchSize);
+      }
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toHaveLength(addrs.length);
     });
   });
 

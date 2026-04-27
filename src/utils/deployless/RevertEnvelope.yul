@@ -10,13 +10,13 @@
  *
  * On lens success:        revert(OK_SENTINEL || returndata)
  * On lens revert:         revert(returndata)
- * On factory deploy fail: revert(DeploymentFailed(target))   (matches viem)
+ * On factory deploy fail: revert(CounterfactualDeployFailed(bytes("")))   (matches viem)
  *
  * `BYTECODE_LEN` is the placeholder we patch post-compile with the actual length
  * of the emitted init code. We use `verbatim_0i_1o(...)` to inline a fixed-width
  * 3-byte PUSH so the patch is a stable byte-for-byte substitution.
  *
- * Build: `pnpm build:wrapper` — runs solc, measures the binary, substitutes the
+ * Build: `pnpm build:RevertEnvelope` — runs solc, measures the binary, substitutes the
  * placeholder, and prints the patched hex constant ready to paste into
  * `src/utils/deployless/codec.envelope.ts`.
  */
@@ -43,10 +43,11 @@ object "RevertEnvelope" {
         let fdLen := mload(fdOff)
         let deployed := call(gas(), factory, 0, add(fdOff, 0x20), fdLen, 0, 0)
         if or(iszero(deployed), iszero(extcodesize(target))) {
-            // bytes4(keccak256("DeploymentFailed(address)")) = 0x9deffc1b
-            mstore(0x00, 0x9deffc1b00000000000000000000000000000000000000000000000000000000)
-            mstore(0x04, target)
-            revert(0x00, 0x24)
+            // bytes4(keccak256("CounterfactualDeployFailed(bytes)")) = 0x101bb98d
+            mstore(0x00, 0x101bb98d00000000000000000000000000000000000000000000000000000000)
+            mstore(0x04, 0x20)
+            mstore(0x24, 0)
+            revert(0x00, 0x44)
         }
 
         // target.call(targetData)
