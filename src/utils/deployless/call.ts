@@ -1,4 +1,4 @@
-import type { EIP1193RequestFn, Hex, PublicRpcSchema } from "viem";
+import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
 import type { Tail } from "../tuples.js";
@@ -54,19 +54,32 @@ export async function factorisedFactoryCall(
 
   const fetchChunk = exfil === "return" ? fetchChunkReturn : fetchChunkRevert;
 
-  await Promise.all(
-    ranges.map(async ([start, end]) => {
-      const chunkWrapped = ranges.length === 1 ? referenceWrapped : wrap(elements.slice(start, end));
-      const returndata = await fetchChunk(requestFn, chunkWrapped, restOfEthCallParams);
-
+  async function fetchRecursive(els: readonly Hex[], startIdx: number, precomputed?: Hex): Promise<void> {
+    const wrapped = precomputed ?? wrap(els);
+    try {
+      const returndata = await fetchChunk(requestFn, wrapped, restOfEthCallParams);
       const chunkOutputs = hexToArray(solidity.outputLayout, returndata);
-      if (chunkOutputs.length !== end - start) {
-        throw new Error(`eth_call returned ${chunkOutputs.length} output elements, expected ${end - start}`);
+      if (chunkOutputs.length !== els.length) {
+        throw new Error(`eth_call returned ${chunkOutputs.length} output elements, expected ${els.length}`);
       }
-      for (let j = 0; j < chunkOutputs.length; j++) {
-        outputs[start + j] = chunkOutputs[j]!;
+      for (let j = 0; j < chunkOutputs.length; j++) outputs[startIdx + j] = chunkOutputs[j]!;
+    } catch (e) {
+      if (els.length > 1 && isErrorCausedByBatchSize(e)) {
+        const mid = Math.floor(els.length / 2);
+        await Promise.all([
+          fetchRecursive(els.slice(0, mid), startIdx),
+          fetchRecursive(els.slice(mid), startIdx + mid),
+        ]);
+        return;
       }
-    }),
+      throw e;
+    }
+  }
+
+  await Promise.all(
+    ranges.map(([start, end]) =>
+      fetchRecursive(elements.slice(start, end), start, ranges.length === 1 ? referenceWrapped : undefined),
+    ),
   );
 
   return outputs;
@@ -132,4 +145,26 @@ function packByCalldataBytes(
     i = j;
   }
   return ranges;
+}
+
+/**
+ * Returns `true` when the error is likely caused by the batch being too large for the RPC,
+ * making it safe to retry with a smaller element slice.
+ *
+ * Covers three failure modes:
+ *   - Calldata size:   HTTP 413; messages containing "too large" or "request size"
+ *   - Gas limit:       "out of gas" during execution
+ *   - Return data size (RETURN mode): EIP-170 "code size" exceeded
+ *   - Initcode size (EIP-3860): "max initcode size exceeded" — also matched by /code.*size/
+ */
+function isErrorCausedByBatchSize(error: unknown): boolean {
+  const e = error instanceof BaseError ? error.walk() : error;
+  if ((e as { status?: number }).status === 413) return true;
+  const msg = (e as { message?: string }).message ?? "";
+  return (
+    /too large/i.test(msg) ||
+    /request.{0,10}size/i.test(msg) ||
+    /out of gas/i.test(msg) ||
+    /code.{0,10}size/i.test(msg)
+  );
 }

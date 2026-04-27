@@ -13,7 +13,7 @@ import type { LogsDividerConfig } from "./types.js";
 export type * from "./schema.js";
 export type * from "./types.js";
 
-export const key = "viem-dlc-logs-divider" as const;
+export const logsDividerTransportKey = "viem-dlc-logs-divider" as const;
 
 /**
  * Creates a transport wrapper that divides large eth_getLogs requests into smaller chunks.
@@ -64,7 +64,7 @@ export function logsDivider(
     LogsSieveConfig,
     RateLimiterConfig,
   ],
-): Transport<typeof key, unknown, EIP1193RequestFn<LogsDividerSchema>> {
+): Transport<typeof logsDividerTransportKey, unknown, EIP1193RequestFn<LogsDividerSchema>> {
   if (Number.isNaN(logsDividerConfig.maxBlockRange) || logsDividerConfig.maxBlockRange < 1) {
     throw new Error(`[logsDivider] maxBlockRange must be >= 1 (got ${logsDividerConfig.maxBlockRange})`);
   }
@@ -83,12 +83,12 @@ export function logsDivider(
     };
 
     return createTransport({
-      key,
+      key: logsDividerTransportKey,
       name: "[viem-dlc] logs-divider",
       request: request as EIP1193RequestFn,
       retryCount: params.retryCount,
       timeout: params.timeout,
-      type: key,
+      type: logsDividerTransportKey,
     });
   };
 }

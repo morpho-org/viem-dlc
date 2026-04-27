@@ -8,7 +8,7 @@ import { extractEthCallPolicy } from "../state-overrides.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
-export const key = "viem-dlc-deployless" as const;
+export const deploylessTransportKey = "viem-dlc-deployless" as const;
 
 /**
  * Creates a thin transport wrapper that splits marked deployless `eth_call`s by `batchSize`.
@@ -18,7 +18,7 @@ export const key = "viem-dlc-deployless" as const;
  */
 export function deployless<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
-): Transport<typeof key, unknown, EIP1193RequestFn<T>> {
+): Transport<typeof deploylessTransportKey, unknown, EIP1193RequestFn<T>> {
   return (params) => {
     const requestFn = baseTransportFn(params).request;
 
@@ -31,12 +31,12 @@ export function deployless<T extends Base>(
     };
 
     return createTransport({
-      key,
+      key: deploylessTransportKey,
       name: "[viem-dlc] deployless",
       request: request as EIP1193RequestFn,
       retryCount: params.retryCount,
       timeout: params.timeout,
-      type: key,
+      type: deploylessTransportKey,
     });
   };
 }

@@ -1,6 +1,7 @@
 import type { Address, Hex } from "viem";
 import {
   type AbiFunction,
+  BaseError,
   concat,
   custom,
   decodeAbiParameters,
@@ -313,10 +314,12 @@ describe("deployless", () => {
         await transport.request(createRequest([addr(1)]));
         throw new Error("expected throw");
       } catch (e) {
-        // viem may wrap the underlying error in BaseError chain — walk it.
-        // Use the same extraction the transport itself uses.
-        const { extractRevertData } = await import("../../src/utils/deployless/codec.envelope.js");
-        expect(extractRevertData(e)).toBe(lensRevertData);
+        // The transport rethrows real lens reverts verbatim. Walk the BaseError chain
+        // (viem may wrap) and check the raw revert hex is preserved.
+        const walked = e instanceof BaseError ? e.walk() : e;
+        const data = (walked as { data?: unknown }).data;
+        const raw = typeof data === "string" ? data : (data as { data?: string } | null)?.data;
+        expect(raw).toBe(lensRevertData);
       }
     });
 
@@ -343,13 +346,62 @@ describe("deployless", () => {
       expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(true);
     });
 
-    it("uses REVERT-mode wrapper bytecode upstream by default", async () => {
+    it("uses RETURN-mode wrapper bytecode upstream by default (no batch opts)", async () => {
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn);
       await transport.request(createRequest([addr(1)]));
 
       const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
-      expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(false);
+      expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(true);
+    });
+  });
+
+  describe("halve-on-error retries", () => {
+    it("halves and retries when upstream rejects with a batch-size error", async () => {
+      const addrs = [addr(1), addr(2), addr(3), addr(4)];
+      let firstCall = true;
+      const requestFn = vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
+        // First call (full batch) → batch-size error; subsequent calls (halves) → succeed.
+        if (firstCall) {
+          firstCall = false;
+          const err = new Error("request body too large") as Error & { data: Hex };
+          err.data = "0x" as Hex;
+          throw err;
+        }
+        const data = (args.params[0] as { data: Hex }).data;
+        const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
+        return encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+      });
+      const transport = createTransport(requestFn);
+      const req = createRequest(addrs, { batch: { batchSize: 8192, exfil: "return" } });
+
+      const result = await transport.request(req);
+
+      expect(requestFn).toHaveBeenCalledTimes(3); // 1 failed + 2 halves
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+
+    it("rethrows when a single-element batch fails with a batch-size error", async () => {
+      const batchSizeError = Object.assign(new Error("request body too large"), { data: "0x" as Hex });
+      const requestFn = vi.fn().mockRejectedValue(batchSizeError);
+      const transport = createTransport(requestFn);
+
+      await expect(transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return" } }))).rejects.toThrow(
+        "request body too large",
+      );
+      expect(requestFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry on unrecognized errors", async () => {
+      const unrelated = new Error("nonce too low");
+      const requestFn = vi.fn().mockRejectedValue(unrelated);
+      const transport = createTransport(requestFn);
+
+      await expect(
+        transport.request(createRequest([addr(1), addr(2)], { batch: { batchSize: 8192, exfil: "return" } })),
+      ).rejects.toThrow("nonce too low");
+      expect(requestFn).toHaveBeenCalledTimes(1);
     });
   });
 });

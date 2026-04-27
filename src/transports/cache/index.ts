@@ -74,7 +74,7 @@ export function createSimpleInvalidation(
   };
 }
 
-export const key = "viem-dlc-cache" as const;
+export const cacheTransportKey = "viem-dlc-cache" as const;
 
 /**
  * Creates an all-in-one caching transport for eth_getLogs calls.
@@ -117,7 +117,7 @@ export function cache(
     LogsSieveConfig,
     RateLimiterConfig,
   ],
-): Transport<typeof key, { store: Store }, EIP1193RequestFn<CacheSchema>> {
+): Transport<typeof cacheTransportKey, { store: Store }, EIP1193RequestFn<CacheSchema>> {
   return (params) => {
     if (params.chain === undefined) {
       throw new Error("You must pass a chain to the cache transport.");
@@ -159,12 +159,12 @@ export function cache(
 
     return createTransport(
       {
-        key,
+        key: cacheTransportKey,
         name: "[viem-dlc] cache",
         request: request as EIP1193RequestFn,
         retryCount: params.retryCount,
         timeout: params.timeout,
-        type: key,
+        type: cacheTransportKey,
       },
       { store },
     );

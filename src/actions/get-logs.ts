@@ -15,7 +15,6 @@ import type {
 } from "viem";
 import { type EncodeEventTopicsParameters, encodeEventTopics, formatLog, numberToHex, parseEventLogs } from "viem";
 
-import type { key as cacheTransportKey } from "../transports/cache/index.js";
 import type { CacheSchema, EthGetLogsReduce } from "../transports/cache/schema.js";
 
 export type GetLogs2Parameters<
@@ -124,7 +123,7 @@ export async function getLogs2<
   fromBlock extends BlockNumber | BlockTag | undefined = undefined,
   toBlock extends BlockNumber | BlockTag | undefined = undefined,
 >(
-  client: Client<Transport<typeof cacheTransportKey>, chain, Account | undefined, CacheSchema>,
+  client: Client<Transport, chain, Account | undefined, CacheSchema>,
   {
     address,
     fromBlock,

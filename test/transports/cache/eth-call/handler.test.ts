@@ -407,6 +407,47 @@ describe("handleEthCall", () => {
     expect(call.params[2]).toEqual(extraOverride);
   });
 
+  describe("halve-on-error retries", () => {
+    it("halves and retries when upstream rejects with a batch-size error", async () => {
+      const addrs = [addr(1), addr(2), addr(3), addr(4)];
+      let firstCall = true;
+      const requestFn = vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
+        if (firstCall) {
+          firstCall = false;
+          throw Object.assign(new Error("request body too large"), { data: "0x" as Hex });
+        }
+        const data = (args.params[0] as { data: Hex }).data;
+        const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
+        return encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+      });
+      const req = createRequest(addrs, { batch: { batchSize: 8192, exfil: "return" } });
+
+      const result = await handleEthCall(ctx(requestFn), req);
+
+      expect(requestFn).toHaveBeenCalledTimes(3);
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+
+    it("rethrows when a single-element batch fails with a batch-size error", async () => {
+      const requestFn = vi.fn().mockRejectedValue(
+        Object.assign(new Error("request body too large"), { data: "0x" as Hex }),
+      );
+      const req = createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return" } });
+
+      await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow("request body too large");
+      expect(requestFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry on unrecognized errors", async () => {
+      const requestFn = vi.fn().mockRejectedValue(new Error("nonce too low"));
+      const req = createRequest([addr(1), addr(2)], { batch: { batchSize: 8192, exfil: "return" } });
+
+      await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow("nonce too low");
+      expect(requestFn).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("throws when caller supplies non-cache-keyed tx fields (from/gas/value)", async () => {
     const addrs = [addr(1)];
     const req: EthCallRequest = {
