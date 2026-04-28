@@ -480,4 +480,44 @@ describe("LazyNdjsonMap", () => {
     expect((spy.mock.calls[0]?.[2] as AbortSignal | undefined)?.aborted).toBe(true);
     expect(await collectRecords(ndjson)).toEqual([{ key: "a", value: "alpha" }]);
   });
+
+  it("flush retries pending entries after clearing an unreadable blob", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const slot = createSlot(Buffer.from("not-zstd"));
+    const ndjson = new LazyNdjsonMap<string, string>(codec, slot, noAutoFlush);
+
+    ndjson.upsert([{ key: "a", value: "alpha" }]);
+    await ndjson.flush();
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(await collectRecords(new LazyNdjsonMap<string, string>(codec, slot, noAutoFlush))).toEqual([
+      { key: "a", value: "alpha" },
+    ]);
+  });
+
+  it("flushAndFold rejects on an unreadable blob and leaves pending entries for retry", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const slot = createSlot(Buffer.from("not-zstd"));
+    const ndjson = new LazyNdjsonMap<string, string>(codec, slot, noAutoFlush);
+    const visited: string[] = [];
+
+    ndjson.upsert([{ key: "a", value: "alpha" }]);
+
+    await expect(
+      ndjson.flushAndFold<string[]>((acc, record) => {
+        visited.push(record.key);
+        acc.push(`${record.key}:${record.value}`);
+        return acc;
+      }, []),
+    ).rejects.toThrow("flushAndFold could not complete");
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(visited).toEqual([]);
+    expect(await collectRecords(ndjson)).toEqual([{ key: "a", value: "alpha" }]);
+
+    await ndjson.flush();
+    expect(await collectRecords(new LazyNdjsonMap<string, string>(codec, slot, noAutoFlush))).toEqual([
+      { key: "a", value: "alpha" },
+    ]);
+  });
 });

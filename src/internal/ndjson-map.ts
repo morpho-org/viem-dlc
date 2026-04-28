@@ -2,6 +2,8 @@ import { CompressedLinesBlob, type Slot } from "./compressed-lines-blob.js";
 
 export type Entry<T, K extends string = string> = { key: K; value: T };
 
+export type UpsertAndFoldResult<Acc> = { committed: true; value: Acc } | { committed: false };
+
 /**
  * Entry with deferred value parsing. The raw JSON value string is available
  * immediately for cheap pre-filtering (e.g. `.includes()` / regex); the
@@ -219,29 +221,40 @@ export class NdjsonMap<T, K extends string = string> {
    * If that invariant is violated, the offending line and the remaining suffix
    * are treated as garbage: a warning is logged and rewrite continues with only
    * the already-emitted prefix plus any remaining pending entries.
+   *
+   * Returns true when the rewrite committed. Returns false when an unreadable
+   * compressed blob was cleared before the new entries could be committed.
    */
-  async upsert(entries: Entry<T, K>[], signal?: AbortSignal): Promise<void> {
-    if (entries.length === 0) return;
-    return this.mergeAndRewrite(entries, signal);
+  async upsert(entries: Entry<T, K>[], signal?: AbortSignal): Promise<boolean> {
+    if (entries.length === 0) return true;
+    return this.mergeAndRewrite(entries, undefined, signal);
   }
 
   /**
    * Like {@link upsert}, but also folds through every entry (existing + new)
    * in sorted key order during the same rewrite pass. When `entries` is empty,
    * degenerates to a pure {@link reduce} (no rewrite).
+   *
+   * When `committed` is false, the accumulator is intentionally omitted because
+   * the fold may have observed only part of the stream before the blob was cleared.
    */
   async upsertAndFold<Acc>(
     entries: Entry<T, K>[],
     fn: (acc: Acc, entry: LazyEntry<T, K>) => Acc,
     init: Acc,
     signal?: AbortSignal,
-  ): Promise<Acc> {
-    if (entries.length === 0) return this.reduce(fn, init);
+  ): Promise<UpsertAndFoldResult<Acc>> {
+    if (entries.length === 0) return { committed: true, value: await this.reduce(fn, init) };
     let acc = init;
-    await this.mergeAndRewrite(entries, signal, (entry) => {
-      acc = fn(acc, entry);
-    });
-    return acc;
+    const committed = await this.mergeAndRewrite(
+      entries,
+      (entry) => {
+        acc = fn(acc, entry);
+      },
+      signal,
+    );
+    if (!committed) return { committed: false };
+    return { committed: true, value: acc };
   }
 
   /*//////////////////////////////////////////////////////////////
@@ -256,9 +269,9 @@ export class NdjsonMap<T, K extends string = string> {
    */
   private async mergeAndRewrite(
     entries: Entry<T, K>[],
-    signal?: AbortSignal,
     onEntry?: (entry: LazyEntry<T, K>) => void,
-  ): Promise<void> {
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     const { codec } = this;
     const emitNew = (emit: (line: string) => void, rawKey: string, key: K, value: T) => {
       const rawValue = codec.toJson(value);
@@ -276,7 +289,7 @@ export class NdjsonMap<T, K extends string = string> {
     let prevRawKey: string | undefined;
     let corrupted = false;
 
-    await this.blob.rewrite(
+    return this.blob.rewrite(
       (line, emit) => {
         if (corrupted || line.length === 0) return;
 
