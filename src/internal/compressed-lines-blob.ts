@@ -37,6 +37,11 @@ const zstdOptions: ZstdOptions = {
   },
 };
 
+function isZstdFailure(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ERR_ZLIB_ZSTD_FAILED" || (typeof code === "string" && code.startsWith("ZSTD_error_"));
+}
+
 /**
  * Transform that splits a byte stream into individual lines (object-mode output).
  * Handles both `\n` and `\r\n` line endings.
@@ -116,7 +121,7 @@ export class CompressedLinesBlob {
         yield line as string;
       }
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ERR_ZLIB_ZSTD_FAILED") throw e;
+      if (!isZstdFailure(e)) throw e;
       // Unreadable data (e.g. corrupt or wrong-format blob) — treat as empty.
       console.warn("[CompressedLinesBlob] Failed to decompress slot; treating as empty.");
     } finally {
@@ -133,14 +138,15 @@ export class CompressedLinesBlob {
    * `emit` must be called synchronously before `onLine`/`onFlush` returns.
    *
    * Backpressure flows end-to-end through the pipeline automatically.
-   * On success, swaps the slot. On abort (or error), the slot is unchanged.
-   * On decompression failure, the slot is cleared and the write is dropped.
+   * On success, swaps the slot and returns true. On abort (or error), the slot is unchanged.
+   * On decompression failure, the slot is cleared and false is returned, allowing callers to
+   * leave pending data in place for the next retry cycle.
    */
   async rewrite(
     onLine: (line: string, emit: EmitLine) => void,
     onFlush?: (emit: EmitLine) => void,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const outputChunks: Buffer[] = [];
     let emittedLineCount = 0;
     const rewriteStream = new Transform({
@@ -192,16 +198,14 @@ export class CompressedLinesBlob {
           { signal },
         );
       } catch (e) {
-        // ERR_ZLIB_ZSTD_FAILED is the Node.js code for genuine zstd-layer failures
-        // (message = ZSTD_getErrorName(), e.g. "ZSTD_error_prefix_unknown").
-        // Any other error (AbortError, callback throw, etc.) must propagate normally.
-        if ((e as NodeJS.ErrnoException).code !== "ERR_ZLIB_ZSTD_FAILED") throw e;
+        if (!isZstdFailure(e)) throw e;
         console.warn("[CompressedLinesBlob] Failed to decompress slot during rewrite; clearing.", e);
         this.slot.set([]);
-        return;
+        return false;
       }
     }
 
     this.slot.set(emittedLineCount === 0 ? [] : outputChunks);
+    return true;
   }
 }

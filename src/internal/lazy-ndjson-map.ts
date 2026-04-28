@@ -92,6 +92,10 @@ export class LazyNdjsonMap<T, K extends string = string> {
    * that arrive while the flush/fold is in flight are left pending for a
    * later flush; they are not included in the current fold result.
    *
+   * If the stored blob is unreadable during rewrite, the corrupt blob is cleared
+   * and this method rejects with the pending snapshot still in place. The fold
+   * result is not returned because `fn` may have observed only a partial stream.
+   *
    * The fold callback only **observes** entries — it does not control what
    * gets written to the blob. Both reduce and filter are special cases of fold.
    */
@@ -105,8 +109,14 @@ export class LazyNdjsonMap<T, K extends string = string> {
 
     await this.enqueue(async () => {
       const [entries, cleanup] = this.takePendingSnapshot();
-      result = await this.inner.upsertAndFold(entries, fn, init);
+      const write = await this.inner.upsertAndFold(entries, fn, init);
+      if (!write.committed) {
+        throw new Error(
+          "[LazyNdjsonMap] flushAndFold could not complete because the stored blob was unreadable; pending entries were left for retry.",
+        );
+      }
       cleanup();
+      result = write.value;
     });
 
     return result;
@@ -208,7 +218,6 @@ export class LazyNdjsonMap<T, K extends string = string> {
   private async drainOnce(signal?: AbortSignal): Promise<void> {
     if (this.pending.size === 0) return;
     const [entries, cleanup] = this.takePendingSnapshot();
-    await this.inner.upsert(entries, signal);
-    cleanup();
+    if (await this.inner.upsert(entries, signal)) cleanup();
   }
 }

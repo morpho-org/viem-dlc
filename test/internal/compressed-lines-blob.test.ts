@@ -1,7 +1,7 @@
 import { Buffer } from "buffer";
 import { zstdCompressSync } from "zlib";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CompressedLinesBlob, createSlot } from "../../src/internal/compressed-lines-blob.js";
 
@@ -12,6 +12,10 @@ async function collectLines(blob: CompressedLinesBlob) {
   }
   return lines;
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("CompressedLinesBlob", () => {
   it("reads input and trims a trailing carriage return on the final unterminated line", async () => {
@@ -27,6 +31,14 @@ describe("CompressedLinesBlob", () => {
 
     expect(slot.get()).toEqual([]);
     expect(await collectLines(blob)).toEqual([]);
+  });
+
+  it("treats an unreadable compressed buffer as empty while reading", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const blob = new CompressedLinesBlob(createSlot(Buffer.from("not-zstd")));
+
+    expect(await collectLines(blob)).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 
   describe("rewrite", () => {
@@ -69,6 +81,25 @@ describe("CompressedLinesBlob", () => {
       await blob.rewrite(() => {});
       expect(await collectLines(blob)).toEqual([]);
       expect(slot.get()).toEqual([]);
+    });
+
+    it("clears an unreadable slot and reports that no rewrite committed", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const slot = createSlot(Buffer.from("not-zstd"));
+      const blob = new CompressedLinesBlob(slot);
+
+      await expect(
+        blob.rewrite(
+          () => {},
+          (emit) => {
+            emit("pending");
+          },
+        ),
+      ).resolves.toBe(false);
+
+      expect(slot.get()).toEqual([]);
+      expect(await collectLines(blob)).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
     });
 
     it("keeps the blob unchanged when aborted", async () => {

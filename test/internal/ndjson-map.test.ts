@@ -241,7 +241,7 @@ describe("NdjsonMap", () => {
     const source = [serializeLine("x", "old-x"), serializeLine("y", "keep-y"), ""].join("\n");
     const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
 
-    const reduced = await map.upsertAndFold<string[]>(
+    const write = await map.upsertAndFold<string[]>(
       [
         { key: "x", value: "new-x" },
         { key: "z", value: "tail-z" },
@@ -253,7 +253,7 @@ describe("NdjsonMap", () => {
       [],
     );
 
-    expect(reduced).toEqual(["x:new-x", "y:keep-y", "z:tail-z"]);
+    expect(write).toEqual({ committed: true, value: ["x:new-x", "y:keep-y", "z:tail-z"] });
     expect(await collectRecords(map)).toEqual([
       { key: "x", value: "new-x" },
       { key: "y", value: "keep-y" },
@@ -266,7 +266,7 @@ describe("NdjsonMap", () => {
     const map = new NdjsonMap<string, string>(codec, createSlot(zstdCompressSync(Buffer.from(source))));
     const rewriteSpy = vi.spyOn(CompressedLinesBlob.prototype, "rewrite");
 
-    const reduced = await map.upsertAndFold<string[]>(
+    const write = await map.upsertAndFold<string[]>(
       [],
       (acc, record) => {
         acc.push(`${record.key}:${record.value}`);
@@ -275,7 +275,29 @@ describe("NdjsonMap", () => {
       [],
     );
 
-    expect(reduced).toEqual(["a:alpha", "b:beta"]);
+    expect(write).toEqual({ committed: true, value: ["a:alpha", "b:beta"] });
     expect(rewriteSpy).not.toHaveBeenCalled();
+  });
+
+  it("omits the fold value when upsertAndFold cannot commit", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const slot = createSlot(Buffer.from("not-zstd"));
+    const map = new NdjsonMap<string, string>(codec, slot);
+    const visited: string[] = [];
+
+    const write = await map.upsertAndFold<string[]>(
+      [{ key: "a", value: "alpha" }],
+      (acc, record) => {
+        visited.push(record.key);
+        acc.push(`${record.key}:${record.value}`);
+        return acc;
+      },
+      [],
+    );
+
+    expect(write).toEqual({ committed: false });
+    expect(visited).toEqual([]);
+    expect(slot.get()).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 });
