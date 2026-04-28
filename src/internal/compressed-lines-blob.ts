@@ -115,7 +115,8 @@ export class CompressedLinesBlob {
       for await (const line of splitter) {
         yield line as string;
       }
-    } catch {
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ERR_ZLIB_ZSTD_FAILED") throw e;
       // Unreadable data (e.g. corrupt or wrong-format blob) — treat as empty.
       console.warn("[CompressedLinesBlob] Failed to decompress slot; treating as empty.");
     } finally {
@@ -191,8 +192,10 @@ export class CompressedLinesBlob {
           { signal },
         );
       } catch (e) {
-        if (e instanceof Error && e.name === "AbortError") throw e;
-        // Unreadable data (e.g. corrupt or wrong-format blob) — clear and drop this write.
+        // ERR_ZLIB_ZSTD_FAILED is the Node.js code for genuine zstd-layer failures
+        // (message = ZSTD_getErrorName(), e.g. "ZSTD_error_prefix_unknown").
+        // Any other error (AbortError, callback throw, etc.) must propagate normally.
+        if ((e as NodeJS.ErrnoException).code !== "ERR_ZLIB_ZSTD_FAILED") throw e;
         console.warn("[CompressedLinesBlob] Failed to decompress slot during rewrite; clearing.", e);
         this.slot.set([]);
         return;
