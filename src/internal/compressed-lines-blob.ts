@@ -115,6 +115,9 @@ export class CompressedLinesBlob {
       for await (const line of splitter) {
         yield line as string;
       }
+    } catch {
+      // Unreadable data (e.g. corrupt or wrong-format blob) — treat as empty.
+      console.warn("[CompressedLinesBlob] Failed to decompress slot; treating as empty.");
     } finally {
       // Wait for pipeline cleanup (may reject on early generator return).
       await done.catch(() => {});
@@ -130,6 +133,7 @@ export class CompressedLinesBlob {
    *
    * Backpressure flows end-to-end through the pipeline automatically.
    * On success, swaps the slot. On abort (or error), the slot is unchanged.
+   * On decompression failure, the slot is cleared and the write is dropped.
    */
   async rewrite(
     onLine: (line: string, emit: EmitLine) => void,
@@ -176,15 +180,23 @@ export class CompressedLinesBlob {
         signal,
       });
     } else {
-      await pipeline(
-        Readable.from(this.slot.get()),
-        createZstdDecompress(),
-        new SplitLines(),
-        rewriteStream,
-        createZstdCompress(zstdOptions),
-        output,
-        { signal },
-      );
+      try {
+        await pipeline(
+          Readable.from(this.slot.get()),
+          createZstdDecompress(),
+          new SplitLines(),
+          rewriteStream,
+          createZstdCompress(zstdOptions),
+          output,
+          { signal },
+        );
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") throw e;
+        // Unreadable data (e.g. corrupt or wrong-format blob) — clear and drop this write.
+        console.warn("[CompressedLinesBlob] Failed to decompress slot during rewrite; clearing.", e);
+        this.slot.set([]);
+        return;
+      }
     }
 
     this.slot.set(emittedLineCount === 0 ? [] : outputChunks);
