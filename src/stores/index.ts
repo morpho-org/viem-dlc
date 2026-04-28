@@ -3,6 +3,7 @@ export { CompressedStore } from "./compressed.js";
 export { HierarchicalStore } from "./hierarchical.js";
 export { LruStore } from "./lru.js";
 export { MemoryStore } from "./memory.js";
+export { NodeFsStore } from "./node-fs.js";
 export { ThrottledStore } from "./throttled.js";
 
 // TODO: (@haydenshively future-work) Add TtlStore
