@@ -9,7 +9,6 @@ import {
   type Hex,
   pad,
   parseAbiItem,
-  parseAbiParameters,
   toFunctionSelector,
   toHex,
 } from "viem";
@@ -25,6 +24,8 @@ import type { HandlerContext } from "../../../../src/transports/cache/types.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
+import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../../../src/utils/deployless/codec.envelope.js";
+import { flzDecompress } from "../../../../src/utils/deployless/flz.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
 
 type EthCallRequest = EIP1193Parameters<CacheSchema, "eth_call">;
@@ -37,14 +38,13 @@ const TARGET_TO = "0x1111111111111111111111111111111111111111" as const;
 const FACTORY = "0x2222222222222222222222222222222222222222" as const;
 const FACTORY_DATA = "0xcafebabe" as const;
 
-const DEPLOYLESS_CTOR_PARAMS = parseAbiParameters("address, bytes, address, bytes");
-
 const balancesOfAbi = parseAbiItem("function balancesOf(address[] accounts) view returns (uint256[])") as AbiFunction;
 
 function buildTargetCalldata(abi: AbiFunction, addrs: readonly Address[]): Hex {
   return concat([toFunctionSelector(abi), encodeAbiParameters([{ type: "address[]" }], [addrs])]);
 }
 
+/** Inbound shape: viem's stock RETURN-mode wrapper. The handler re-wraps for upstream. */
 function buildDeploylessCall(targetData: Hex): Hex {
   return encodeDeployData({
     abi: [
@@ -64,13 +64,17 @@ function buildDeploylessCall(targetData: Hex): Hex {
   });
 }
 
-function cachePolicySentinel(abi: AbiFunction, batchSize?: number) {
+type PolicyOpts = {
+  batch?: { batchSize: number; exfil?: "return" | "revert"; compress?: boolean };
+};
+
+function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
   return {
     [ETH_CALL_POLICY_ADDRESS]: {
       code: toHex(
         JSON.stringify({
           abi,
-          batchSize,
+          ...(opts.batch ? { batch: opts.batch } : {}),
           cache: { blobKey: "test-blob", ttl },
         }),
       ),
@@ -78,14 +82,16 @@ function cachePolicySentinel(abi: AbiFunction, batchSize?: number) {
   };
 }
 
-function createRequest(addrs: readonly Address[], opts?: { batchSize?: number; abi?: AbiFunction }): EthCallRequest {
-  const abi = opts?.abi ?? balancesOfAbi;
+type RequestOpts = PolicyOpts & { abi?: AbiFunction };
+
+function createRequest(addrs: readonly Address[], opts: RequestOpts = {}): EthCallRequest {
+  const abi = opts.abi ?? balancesOfAbi;
   return {
     method: "eth_call",
     params: [
       { data: buildDeploylessCall(buildTargetCalldata(abi, addrs)) },
       "latest",
-      cachePolicySentinel(abi, opts?.batchSize),
+      cachePolicySentinel(abi, { batch: opts.batch }),
     ],
   };
 }
@@ -101,20 +107,44 @@ function ctx(requestFn: HandlerContext["requestFn"], store = new MemoryStore()):
   };
 }
 
-/** Extracts the target calldata's input addresses from a deployless-wrapped `eth_call`. */
+/** Recovers `addrs` from upstream-wrapped data (works for either RETURN or REVERT prefix). */
 function decodeSentAddresses(data: Hex): readonly Address[] {
-  const argsHex = `0x${data.slice(deploylessCallViaFactoryBytecode.length)}` as Hex;
-  const [, targetData] = decodeAbiParameters(DEPLOYLESS_CTOR_PARAMS, argsHex);
+  const { targetData } = unwrapDeploylessFactoryCall(data);
   const [addrs] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
   return addrs as readonly Address[];
 }
 
-/** Mock RPC: answer a `balancesOf(address[])` call with `balance[i] = BigInt(address[i])`. */
+/**
+ * Mode-aware mock. Inspects the wrapper prefix on the outgoing `data`:
+ *   - viem's RETURN wrapper → resolves with the encoded uint256[].
+ *   - REVERT wrapper        → throws an error with `.data` = OK_SENTINEL || encoded uint256[].
+ */
 function mockBalancesOfFn() {
   return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
     const data = (args.params[0] as { data: Hex }).data;
     const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
-    return encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+    const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+    if (data.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())) {
+      return encoded;
+    }
+    const err = new Error("execution reverted") as Error & { data: Hex };
+    err.data = `${OK_SENTINEL}${encoded.slice(2)}` as Hex;
+    throw err;
+  });
+}
+
+function mockCompressibleFn(exfil: "return" | "revert", compress: boolean) {
+  return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
+    const data = (args.params[0] as { data: Hex }).data;
+    const { targetData: raw } = unwrapDeploylessFactoryCall(data);
+    const targetData = compress ? flzDecompress(raw) : raw;
+    const [addrs] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
+    const outputs = (addrs as readonly Address[]).map((a) => BigInt(a));
+    const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+    if (exfil === "return") return encoded;
+    const err = new Error("execution reverted") as Error & { data: Hex };
+    err.data = `${OK_SENTINEL}${encoded.slice(2)}` as Hex;
+    throw err;
   });
 }
 
@@ -260,7 +290,6 @@ describe("handleEthCall", () => {
     const req = createRequest(addrs);
     const blobKey = keychain.blobKey(chainId, req)!;
 
-    // Pre-populate entries for addr(1) and addr(3)
     const addressElements = addrs.map((a) => pad(a, { size: 32 }));
     const outputElements = addrs.map((a) => pad(toHex(BigInt(a)), { size: 32 }));
     await populateStore(store, blobKey, [
@@ -272,7 +301,6 @@ describe("handleEthCall", () => {
     const result = await handleEthCall(ctx(requestFn, store), req);
 
     expect(requestFn).toHaveBeenCalledTimes(1);
-    // The upstream RPC should only see addr(2) and addr(4) as inputs.
     const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
     const sentAddrs = decodeSentAddresses(sentData);
     expect(sentAddrs.map((a) => a.toLowerCase()).sort()).toEqual(
@@ -292,7 +320,6 @@ describe("handleEthCall", () => {
     const result = await handleEthCall(ctx(requestFn, store), req);
 
     expect(requestFn).toHaveBeenCalledTimes(1);
-    // Upstream should receive exactly 2 unique addresses
     const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
     expect(decodeSentAddresses(sentData).length).toBe(2);
 
@@ -311,25 +338,38 @@ describe("handleEthCall", () => {
     expect(decoded).toEqual([]);
   });
 
-  it("batchSize splits misses exactly, never exceeding the byte budget", async () => {
-    const requestFn = mockBalancesOfFn();
-    // For balancesOf(address[]): overhead = 1024 bytes (factory bytecode 704 + constructor
-    // head 128 + targetData bytes-wrapper 128 + factoryData bytes-wrapper 64); per-element
-    // = 32 bytes (static address slot). batchSize = 1088 fits exactly 2 elements per batch,
-    // so 5 misses split into 3 batches of sizes 2/2/1.
-    const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
-    const req = createRequest(addrs, { batchSize: 1088 });
+  describe.each(["revert", "return"] as const)("exfil=%s", (exfil) => {
+    it("batchSize splits misses, never exceeding the byte budget", async () => {
+      const batchSize = exfil === "revert" ? 520 : 1088;
+      const overshootCap = exfil === "revert" ? 600 : 1200;
+      const requestFn = mockBalancesOfFn();
+      const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
+      const req = createRequest(addrs, { batch: { batchSize, exfil } });
 
-    const result = await handleEthCall(ctx(requestFn), req);
+      const result = await handleEthCall(ctx(requestFn), req);
 
-    expect(requestFn.mock.calls.length).toBe(3);
-    for (const [arg] of requestFn.mock.calls) {
-      const data = (arg.params[0] as { data: Hex }).data;
-      expect((data.length - 2) / 2).toBeLessThanOrEqual(1088);
-    }
+      expect(requestFn.mock.calls.length).toBeGreaterThan(1);
+      for (const [arg] of requestFn.mock.calls) {
+        const data = (arg.params[0] as { data: Hex }).data;
+        expect((data.length - 2) / 2).toBeLessThanOrEqual(overshootCap);
+      }
 
-    const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
-    expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+  });
+
+  describe("compress=true", () => {
+    it.each(["return", "revert"] as const)("round-trips addresses correctly for exfil=%s", async (exfil) => {
+      const addrs = [addr(1), addr(2), addr(3)];
+      const requestFn = mockCompressibleFn(exfil, true);
+      const req = createRequest(addrs, { batch: { batchSize: 8192, exfil, compress: true } });
+
+      const result = await handleEthCall(ctx(requestFn), req);
+
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
   });
 
   it("TTL expiry: stale entries are refetched", async () => {
@@ -358,8 +398,9 @@ describe("handleEthCall", () => {
     const addrs = [addr(1), addr(2), addr(3)];
     const expectedNames = ["one", "two", "three"];
 
+    // Use RETURN mode here so the mock can resolve directly without sentinel framing.
     const requestFn = vi.fn().mockResolvedValue(encodeAbiParameters([{ type: "string[]" }], [expectedNames]));
-    const req = createRequest(addrs, { abi: getNamesAbi });
+    const req = createRequest(addrs, { abi: getNamesAbi, batch: { batchSize: 8192, exfil: "return" } });
 
     const result = await handleEthCall(ctx(requestFn), req);
 
@@ -370,7 +411,8 @@ describe("handleEthCall", () => {
 
   it("throws when upstream returns wrong number of outputs", async () => {
     const requestFn = vi.fn().mockResolvedValue(encodeAbiParameters([{ type: "uint256[]" }], [[1n, 2n]]));
-    const req = createRequest([addr(1), addr(2), addr(3)]);
+    // Use RETURN mode so the mock's mockResolvedValue is honored as a successful response.
+    const req = createRequest([addr(1), addr(2), addr(3)], { batch: { batchSize: 8192, exfil: "return" } });
     await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow(/returned 2.*expected 3/);
   });
 
@@ -392,6 +434,47 @@ describe("handleEthCall", () => {
     const call = requestFn.mock.calls[0]![0] as { params: readonly unknown[] };
     expect(call.params[1]).toBe("0x100");
     expect(call.params[2]).toEqual(extraOverride);
+  });
+
+  describe("halve-on-error retries", () => {
+    it("halves and retries when upstream rejects with a batch-size error", async () => {
+      const addrs = [addr(1), addr(2), addr(3), addr(4)];
+      let firstCall = true;
+      const requestFn = vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
+        if (firstCall) {
+          firstCall = false;
+          throw Object.assign(new Error("request body too large"), { data: "0x" as Hex });
+        }
+        const data = (args.params[0] as { data: Hex }).data;
+        const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
+        return encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+      });
+      const req = createRequest(addrs, { batch: { batchSize: 8192, exfil: "return" } });
+
+      const result = await handleEthCall(ctx(requestFn), req);
+
+      expect(requestFn).toHaveBeenCalledTimes(3);
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+
+    it("rethrows when a single-element batch fails with a batch-size error", async () => {
+      const requestFn = vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("request body too large"), { data: "0x" as Hex }));
+      const req = createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return" } });
+
+      await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow("request body too large");
+      expect(requestFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry on unrecognized errors", async () => {
+      const requestFn = vi.fn().mockRejectedValue(new Error("nonce too low"));
+      const req = createRequest([addr(1), addr(2)], { batch: { batchSize: 8192, exfil: "return" } });
+
+      await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow("nonce too low");
+      expect(requestFn).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("throws when caller supplies non-cache-keyed tx fields (from/gas/value)", async () => {

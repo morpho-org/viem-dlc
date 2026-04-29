@@ -8,13 +8,13 @@ export type * from "./types.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
-const key = "viem-dlc-logs-enricher" as const;
+export const logsEnricherTransportKey = "viem-dlc-logs-enricher" as const;
 
 /** Creates a transport wrapper that enriches `eth_getLogs` responses. */
 export function logsEnricher<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
   [{ retryCount, retryDelay, blockTimestamp }]: [LogsEnricherConfig],
-): Transport<typeof key, unknown, EIP1193RequestFn<T>> {
+): Transport<typeof logsEnricherTransportKey, unknown, EIP1193RequestFn<T>> {
   return (params) => {
     const requestFn = baseTransportFn(params).request as EIP1193RequestFn<Base>;
 
@@ -65,12 +65,12 @@ export function logsEnricher<T extends Base>(
     };
 
     return createTransport({
-      key,
+      key: logsEnricherTransportKey,
       name: "[viem-dlc] logs-enricher",
       request: request as EIP1193RequestFn,
       retryCount: params.retryCount,
       timeout: params.timeout,
-      type: key,
+      type: logsEnricherTransportKey,
     });
   };
 }

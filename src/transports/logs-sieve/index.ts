@@ -9,7 +9,7 @@ export type * from "./types.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
-const key = "viem-dlc-logs-sieve" as const;
+export const logsSieveTransportKey = "viem-dlc-logs-sieve" as const;
 
 /**
  * Creates a transport wrapper that filters oversized `eth_getLogs` entries.
@@ -20,7 +20,7 @@ const key = "viem-dlc-logs-sieve" as const;
 export function logsSieve<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
   [{ maxBytes }]: [LogsSieveConfig],
-): Transport<typeof key, unknown, EIP1193RequestFn<T>> {
+): Transport<typeof logsSieveTransportKey, unknown, EIP1193RequestFn<T>> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new Error(`[logsSieve] maxBytes must be a safe integer >= 1 (got ${maxBytes})`);
   }
@@ -38,12 +38,12 @@ export function logsSieve<T extends Base>(
     };
 
     return createTransport({
-      key,
+      key: logsSieveTransportKey,
       name: "[viem-dlc] logs-sieve",
       request: request as EIP1193RequestFn,
       retryCount: params.retryCount,
       timeout: params.timeout,
-      type: key,
+      type: logsSieveTransportKey,
     });
   };
 }
