@@ -63,14 +63,14 @@ jobs:
           pnpm publish ${{ steps.pack.outputs.tarball }} --access public --provenance --no-git-checks
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         if: ${{ steps.check-tag.outputs.exists == 'false' }}
-        with:
-          target_commitish: ${{ github.sha }}
-          tag_name: v${{ steps.read-local-version.outputs.version }}
-          make_latest: true
-          generate_release_notes: true
-          files: |
-            ${{ steps.pack.outputs.tarball }}
-          fail_on_unmatched_files: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ steps.read-local-version.outputs.version }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          test -f "$TARBALL"
+          gh release create "$TAG" "$TARBALL" \
+            --target "$GITHUB_SHA" \
+            --latest \
+            --generate-notes
