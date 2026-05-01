@@ -1,6 +1,7 @@
 import { createTransport, type EIP1193RequestFn, type Hex, type PublicRpcSchema, type Transport } from "viem";
 
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
+import { isRevertExpected } from "../../utils/deployless/codec.envelope.js";
 
 import type { LogsEnricherConfig } from "./types.js";
 
@@ -20,7 +21,7 @@ export function logsEnricher<T extends Base>(
 
     const request = async (args: EIP1193Parameters<T>) => {
       if (args.method !== "eth_getLogs") {
-        return requestFn(args);
+        return requestFn(args, isRevertExpected(args) ? { retryCount: 0 } : undefined);
       }
 
       const logs = await requestFn(args as EIP1193Parameters<Base, "eth_getLogs">);
@@ -68,7 +69,7 @@ export function logsEnricher<T extends Base>(
       key: logsEnricherTransportKey,
       name: "[viem-dlc] logs-enricher",
       request: request as EIP1193RequestFn,
-      retryCount: params.retryCount,
+      retryCount: 0,
       timeout: params.timeout,
       type: logsEnricherTransportKey,
     });

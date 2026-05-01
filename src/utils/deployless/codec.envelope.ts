@@ -1,11 +1,5 @@
 import type { Address, Hex } from "viem";
-import {
-  BaseError,
-  decodeAbiParameters,
-  deploylessCallViaFactoryBytecode,
-  encodeAbiParameters,
-  parseAbiParameters,
-} from "viem";
+import { decodeAbiParameters, deploylessCallViaFactoryBytecode, encodeAbiParameters, parseAbiParameters } from "viem";
 
 import { flzCompress } from "./flz.js";
 
@@ -151,32 +145,54 @@ export function wrapDeploylessFactoryCall(
 }
 
 /**
+ * True when `req` is a REVERT-mode deployless `eth_call` — the lens intentionally reverts to exfiltrate
+ * its returndata. False for any other request.
+ *
+ * Use this to defeat per-call retries at the next transport boundary
+ * (e.g. `requestFn(args, isRevertExpected(args) ? { retryCount: 0 } : undefined)`).
+ */
+export function isRevertExpected(req: { method: string; params?: readonly unknown[] }) {
+  if (req.method !== "eth_call") return false;
+
+  const [transaction] = req.params ?? [];
+  if (!transaction || typeof transaction !== "object") return false;
+
+  const data = (transaction as { data?: unknown }).data;
+  if (typeof data !== "string") return false;
+
+  const lower = data.toLowerCase();
+  return lower.startsWith(FACTORY_BYTECODE_REVERT) || lower.startsWith(FACTORY_BYTECODE_REVERT_COMPRESSED);
+}
+
+/**
  * Pulls the revert-data hex out of an error thrown by a viem `requestFn` and checks for
- * {@link OK_SENTINEL}. Tolerates both `error.data: Hex` (most providers) and
- * `error.data: { data: Hex }` (some providers nest). Walks `BaseError` chains so
- * wrapped-transport setups still surface the data field.
+ * {@link OK_SENTINEL}. Walks the `cause` chain so wrapped errors still surface their inner
+ * `data` (e.g. Monad nests an `RpcRequestError` with `data: "0x..."` inside an
+ * `InternalRpcError` whose own `data` is `undefined`). Tolerates both `data: Hex` and
+ * `data: { data: Hex }` shapes.
  *
  * - `{ ok: true, returnData }` — sentinel present; `returnData` is the lens's payload.
  * - `{ ok: false }` — no revert data, or data does not begin with {@link OK_SENTINEL}.
  *   The caller should rethrow the original error.
  */
 export function extractRevertData(e: unknown): { ok: true; returnData: Hex } | { ok: false } {
-  // biome-ignore lint/complexity/noBannedTypes: `data` is legitimately any truthy type
-  const hasData = (x: unknown): x is { data: {} } => {
-    return !!x && typeof x === "object" && "data" in x && !!x.data;
-  };
-
-  const err = e instanceof BaseError ? (e.walk(hasData) ?? e.walk()) : e;
-  if (!hasData(err)) return { ok: false };
-
-  const raw =
-    typeof err.data === "string"
-      ? err.data
-      : hasData(err.data) && typeof err.data.data === "string"
-        ? err.data.data
-        : undefined;
-  if (!raw) return { ok: false };
-
-  if (raw.slice(0, 10).toLowerCase() !== OK_SENTINEL) return { ok: false };
-  return { ok: true, returnData: `0x${raw.slice(10)}` as Hex };
+  const seen = new Set<unknown>();
+  for (
+    let cur: unknown = e;
+    cur && typeof cur === "object" && !seen.has(cur);
+    cur = (cur as { cause?: unknown }).cause
+  ) {
+    seen.add(cur);
+    const data = (cur as { data?: unknown }).data;
+    const raw =
+      typeof data === "string"
+        ? data
+        : data && typeof (data as { data?: unknown }).data === "string"
+          ? (data as { data: string }).data
+          : undefined;
+    if (raw && raw.slice(0, 10).toLowerCase() === OK_SENTINEL) {
+      return { ok: true, returnData: `0x${raw.slice(10)}` as Hex };
+    }
+  }
+  return { ok: false };
 }

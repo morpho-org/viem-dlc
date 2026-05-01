@@ -1,6 +1,7 @@
 import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
+import { isRevertExpected } from "../../utils/deployless/codec.envelope.js";
 import { hash } from "../../utils/hash.js";
 import { createDedupe } from "../../utils/with-dedupe.js";
 import { createRateLimit } from "../../utils/with-rate-limit.js";
@@ -48,7 +49,10 @@ export function rateLimiter(
 
     const request = (req: EIP1193Parameters<RateLimiterSchema>) => {
       const [baseReq, additional] = stripAdditionalParameters(req);
-      const inner = () => withRateLimit(() => transport.request(baseReq), { priority: additional?.[0].priority });
+      const inner = () =>
+        withRateLimit(() => transport.request(baseReq, isRevertExpected(baseReq) ? { retryCount: 0 } : undefined), {
+          priority: additional?.[0].priority,
+        });
 
       return dedupe ? withDedupe(inner, { key: hash(baseReq) }) : inner();
     };
@@ -57,7 +61,7 @@ export function rateLimiter(
       key: rateLimiterTransportKey,
       name: "[viem-dlc] rate-limiter",
       request: request as EIP1193RequestFn,
-      retryCount: params.retryCount,
+      retryCount: 0,
       timeout: params.timeout,
       type: rateLimiterTransportKey,
     });

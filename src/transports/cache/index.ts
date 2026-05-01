@@ -162,7 +162,7 @@ export function cache(
         key: cacheTransportKey,
         name: "[viem-dlc] cache",
         request: request as EIP1193RequestFn,
-        retryCount: params.retryCount,
+        retryCount: 0,
         timeout: params.timeout,
         type: cacheTransportKey,
       },
