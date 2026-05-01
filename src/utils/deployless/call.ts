@@ -115,7 +115,7 @@ async function fetchChunkReturn(requestFn: EIP1193RequestFn<PublicRpcSchema>, da
 
 async function fetchChunkRevert(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: Hex, rest: RestOfEthCallParams) {
   try {
-    await requestFn({ method: "eth_call", params: [{ data }, ...rest] });
+    await requestFn({ method: "eth_call", params: [{ data }, ...rest] }, { retryCount: 0 });
   } catch (e) {
     const decoded = extractRevertData(e);
     if (!decoded.ok) throw e;

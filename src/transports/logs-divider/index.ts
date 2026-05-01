@@ -1,6 +1,7 @@
 import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
+import { isRevertExpected } from "../../utils/deployless/codec.envelope.js";
 import { logsEnricher } from "../logs-enricher/index.js";
 import type { LogsEnricherConfig } from "../logs-enricher/types.js";
 import { type LogsSieveConfig, logsSieve } from "../logs-sieve/index.js";
@@ -76,7 +77,7 @@ export function logsDivider(
 
     const request = (args: EIP1193Parameters<LogsDividerSchema>) => {
       if (args.method !== "eth_getLogs") {
-        return transport.request(args);
+        return transport.request(args, isRevertExpected(args) ? { retryCount: 0 } : undefined);
       }
 
       return handleEthGetLogs(transport.request, args.params, logsDividerConfig);
@@ -86,7 +87,7 @@ export function logsDivider(
       key: logsDividerTransportKey,
       name: "[viem-dlc] logs-divider",
       request: request as EIP1193RequestFn,
-      retryCount: params.retryCount,
+      retryCount: 0,
       timeout: params.timeout,
       type: logsDividerTransportKey,
     });
