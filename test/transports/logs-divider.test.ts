@@ -366,6 +366,53 @@ describe("handleEthGetLogs", () => {
         "block range error",
       );
     });
+
+    it("halves once on timeout and succeeds when smaller chunks come back", async () => {
+      let attempts = 0;
+      const requestFn = vi.fn().mockImplementation(async (args) => {
+        if (args.method === "eth_blockNumber") {
+          return toHex(100n);
+        }
+        attempts++;
+        const filter = args.params?.[0];
+        const rangeSize = BigInt(filter.toBlock) - BigInt(filter.fromBlock) + 1n;
+        // Time out only on the full 100-block chunk; halves go through.
+        if (rangeSize > 50n) {
+          throw Object.assign(new Error("request timed out"), { name: "TimeoutError" });
+        }
+        return [createMockLog(BigInt(filter.fromBlock))];
+      });
+
+      const logs = await handleEthGetLogs(
+        requestFn,
+        [{ fromBlock: "0x0", toBlock: "0x63" }], // 100 blocks, 1 chunk -> halved to 2
+        { ...defaultConfig, maxBlockRange: 100 },
+      );
+
+      expect(attempts).toBe(3); // 1 timed-out + 2 halves
+      expect(logs).toHaveLength(2);
+    });
+
+    it("does not bisect repeatedly on persistent timeouts (stops after one split per chunk)", async () => {
+      let attempts = 0;
+      const requestFn = vi.fn().mockImplementation(async (args) => {
+        if (args.method === "eth_blockNumber") {
+          return toHex(100n);
+        }
+        attempts++;
+        throw Object.assign(new Error("request timed out"), { name: "TimeoutError" });
+      });
+
+      await expect(
+        handleEthGetLogs(
+          requestFn,
+          [{ fromBlock: "0x0", toBlock: "0x63" }], // 100 blocks
+          { ...defaultConfig, maxBlockRange: 100 },
+        ),
+      ).rejects.toThrow(/timed out/);
+      // Without a budget this would recurse all the way down. With a budget of 1: full + 2 halves only.
+      expect(attempts).toBe(3);
+    });
   });
 
   describe("logs response callback", () => {

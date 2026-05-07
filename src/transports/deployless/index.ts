@@ -35,7 +35,6 @@ export function deployless<T extends Base>(
       name: "[viem-dlc] deployless",
       request: request as EIP1193RequestFn,
       retryCount: 0,
-      timeout: params.timeout,
       type: deploylessTransportKey,
     });
   };

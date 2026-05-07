@@ -493,5 +493,44 @@ describe("deployless", () => {
       ).rejects.toThrow("nonce too low");
       expect(requestFn).toHaveBeenCalledTimes(1);
     });
+
+    it.each([
+      ["TimeoutError name", () => Object.assign(new Error("aborted"), { name: "TimeoutError" })],
+      ["timeout message", () => new Error("request timed out after 10000ms")],
+      ["HTTP 504", () => Object.assign(new Error("gateway timeout"), { status: 504 })],
+    ])("halves once on timeout (%s) and rethrows if the halves also time out", async (_label, makeError) => {
+      const addrs = [addr(1), addr(2), addr(3), addr(4)];
+      const requestFn = vi.fn().mockImplementation(async () => {
+        throw makeError();
+      });
+      const transport = createTransport(requestFn);
+
+      await expect(
+        transport.request(createRequest(addrs, { batch: { batchSize: 8192, exfil: "return" } })),
+      ).rejects.toThrow();
+      // 1 full-batch attempt + 2 half-batch attempts; halves exhaust the timeout budget so no further bisect.
+      expect(requestFn).toHaveBeenCalledTimes(3);
+    });
+
+    it("halves on timeout and succeeds when smaller chunks come back", async () => {
+      const addrs = [addr(1), addr(2), addr(3), addr(4)];
+      let firstCall = true;
+      const requestFn = vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
+        if (firstCall) {
+          firstCall = false;
+          throw Object.assign(new Error("request timed out"), { name: "TimeoutError" });
+        }
+        const data = (args.params[0] as { data: Hex }).data;
+        const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
+        return encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+      });
+      const transport = createTransport(requestFn);
+
+      const result = await transport.request(createRequest(addrs, { batch: { batchSize: 8192, exfil: "return" } }));
+
+      expect(requestFn).toHaveBeenCalledTimes(3); // 1 timed-out + 2 halves
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
   });
 });

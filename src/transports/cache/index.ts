@@ -163,7 +163,6 @@ export function cache(
         name: "[viem-dlc] cache",
         request: request as EIP1193RequestFn,
         retryCount: 0,
-        timeout: params.timeout,
         type: cacheTransportKey,
       },
       { store },
