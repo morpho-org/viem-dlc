@@ -76,9 +76,7 @@ async function fetchRangeWithRetry(
 
       if (halves) {
         const nextBudget = cause === "timeout" ? timeoutSplitsRemaining - 1 : timeoutSplitsRemaining;
-        const logs = await Promise.all(
-          halves.map((half) => fetchRangeWithRetry(ctx, half, priority, nextBudget)),
-        );
+        const logs = await Promise.all(halves.map((half) => fetchRangeWithRetry(ctx, half, priority, nextBudget)));
         return ctx.onLogsResponseOnly ? [] : logs.flat();
       }
     }
