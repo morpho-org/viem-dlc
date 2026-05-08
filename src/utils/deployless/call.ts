@@ -18,21 +18,27 @@ type FactorisedFactoryCallParams = {
   target: DeploylessTarget;
   elements: readonly Hex[];
   solidity: ResolvedArrayFunction;
-  batch?: { batchSize: number; exfil?: DeploylessExfilMode; compress?: boolean };
+  batch?: {
+    batchSize?: number;
+    exfil?: DeploylessExfilMode;
+    compress?: boolean;
+    estimatedGasPerItem?: number;
+  };
+  gasLimit?: number;
   restOfEthCallParams: RestOfEthCallParams;
 };
 
 type MeasureBytes = (start: number, end: number) => number;
 
 /**
- * Packs `elements` into one or more deployless-factory `eth_call` chunks (respecting
- * `batch.batchSize` bytes on the outgoing `data` field), fetches them in parallel, and
- * returns the per-element output slices aligned to `elements`. When `batch` is undefined,
- * sends all elements in a single upstream call.
+ * Packs `elements` into one or more deployless-factory `eth_call` chunks under the byte
+ * budget (`batch.batchSize`) and the gas budget (`floor(gasLimit / batch.estimatedGasPerItem)`,
+ * when both are set), fetches them in parallel, and returns the per-element output slices
+ * aligned to `elements`. With no constraints set, sends all elements in a single upstream call.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  { target, elements, solidity, batch, restOfEthCallParams }: FactorisedFactoryCallParams,
+  { target, elements, solidity, batch, gasLimit, restOfEthCallParams }: FactorisedFactoryCallParams,
 ): Promise<Hex[]> {
   const exfil: DeploylessExfilMode = batch?.exfil ?? "return";
   const compress = batch?.compress ?? false;
@@ -74,7 +80,23 @@ export async function factorisedFactoryCall(
   };
 
   const measureBytes = compress ? measureWrappedBytes : measureUncompressedBytes;
-  const ranges = packByByteBudget(elements.length, batch?.batchSize, measureBytes);
+
+  let maxItemsByGas: number | undefined;
+  if (gasLimit && batch?.estimatedGasPerItem) {
+    maxItemsByGas = Math.floor(gasLimit / batch.estimatedGasPerItem);
+    if (maxItemsByGas < 1) {
+      throw new Error(
+        `[deployless] gasLimit=${gasLimit} cannot fit a single item at estimatedGasPerItem=${batch.estimatedGasPerItem}`,
+      );
+    }
+  }
+
+  const ranges = packBatches({
+    count: elements.length,
+    maxBytes: batch?.batchSize,
+    maxItems: maxItemsByGas,
+    measureBytes,
+  });
   const outputs = new Array<Hex>(elements.length);
 
   const fetchChunk = exfil === "return" ? fetchChunkReturn : fetchChunkRevert;
@@ -136,39 +158,51 @@ async function fetchChunkRevert(requestFn: EIP1193RequestFn<PublicRpcSchema>, da
 
 type BatchRange = readonly [start: number, end: number];
 
+type PackBatchesArgs = {
+  count: number;
+  maxBytes: number | undefined;
+  maxItems: number | undefined;
+  measureBytes: MeasureBytes;
+};
+
 /**
- * Greedy batch packer. First checks whether all remaining elements fit, then binary
- * searches for a fitting end and shrinks defensively if measurement is not perfectly
- * monotonic. Always includes at least one miss per batch, so a single oversized element
- * still makes progress.
+ * Greedy batch packer enforcing both a byte budget and an item-count budget. For each batch,
+ * the search upper bound is `min(count, start + maxItems)`. Within that window: first checks
+ * whether all remaining elements fit the byte budget, then binary searches for a fitting end
+ * and shrinks defensively if measurement is not perfectly monotonic.
  *
- * Returns `[[0, n]]` (a single batch) when splitting is disabled (`maxBytes` unset
- * or non-positive).
+ * Always includes at least one element per batch on the byte path, so a single oversized
+ * element still makes progress. Either budget can be omitted (`undefined` or non-positive).
  */
-function packByByteBudget(count: number, maxBytes: number | undefined, measureBytes: MeasureBytes): BatchRange[] {
+function packBatches({ count, maxBytes, maxItems, measureBytes }: PackBatchesArgs): BatchRange[] {
   if (count === 0) return [];
-  if (!maxBytes || maxBytes <= 0) return [[0, count]];
+  const itemCap = maxItems && maxItems > 0 ? maxItems : Infinity;
+  const byteCap = maxBytes && maxBytes > 0 ? maxBytes : Infinity;
+  if (itemCap === Infinity && byteCap === Infinity) return [[0, count]];
 
   const ranges: BatchRange[] = [];
   let start = 0;
   while (start < count) {
-    if (measureBytes(start, count) <= maxBytes) {
-      ranges.push([start, count]);
-      break;
+    const itemCappedEnd = Math.min(count, start + itemCap);
+
+    if (byteCap === Infinity || measureBytes(start, itemCappedEnd) <= byteCap) {
+      ranges.push([start, itemCappedEnd]);
+      start = itemCappedEnd;
+      continue;
     }
 
     let end = start + 1;
-    let hi = count;
+    let hi = itemCappedEnd;
     while (end < hi) {
       const mid = Math.floor((end + hi + 1) / 2);
-      if (measureBytes(start, mid) <= maxBytes) {
+      if (measureBytes(start, mid) <= byteCap) {
         end = mid;
       } else {
         hi = mid - 1;
       }
     }
 
-    while (end > start + 1 && measureBytes(start, end) > maxBytes) {
+    while (end > start + 1 && measureBytes(start, end) > byteCap) {
       end--;
     }
 

@@ -133,6 +133,7 @@ export function cache(
       store,
       binSize,
       invalidationStrategy,
+      gasLimit,
       chainId,
       requestFn: transport.request,
       coalesce,

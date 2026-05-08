@@ -31,9 +31,11 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  *   or dynamic (string, bytes, nested arrays, dynamic tuples).
  *
  * @param opts.batch Optional batching config. Omit to send all elements in a single
- *   upstream `eth_call`.
+ *   upstream `eth_call`. When set, chunks honor whichever of `batchSize` and
+ *   `estimatedGasPerItem` are provided (they intersect — both must hold per chunk).
  * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk.
- *   Input elements are greedy-packed under this limit and fetched in parallel.
+ *   Input elements are greedy-packed under this limit and fetched in parallel. Omit to
+ *   skip byte-budget enforcement (useful when the gas budget is the only relevant cap).
  * @param opts.batch.exfil Outer wrapper mode. Defaults to `'return'` (viem's stock RETURN-mode
  *   wrapper). Set to `'revert'` to exfiltrate via `REVERT` instead, which lifts the EIP-170
  *   24_576 bytes returndata cap at the cost of relying on the RPC preserving revert data.
@@ -41,6 +43,16 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  *   EIP-3860 limits initcode to 49_152 bytes. For deployless reads, that constrains calldata,
  *   so compression can help squeeze more entities into the request at the cost of extra
  *   pre-request encoding time.
+ * @param opts.batch.estimatedGasPerItem Estimated marginal gas cost (per input element) of the
+ *   lens. Combined with the transport's `gasLimit`, the chunker derives a per-chunk item cap
+ *   `floor(gasLimit / estimatedGasPerItem)` and enforces it alongside `batchSize`. Omit (or set
+ *   to `0`) to skip gas-budget enforcement. No internal safety factor is applied — pad your
+ *   estimate if you want headroom against estimation error or chain-to-chain opcode-pricing
+ *   variance. Calibrate as the **asymptotic marginal** at the chunk size that would hit the
+ *   gas cap (memory-expansion gas grows non-linearly, so small-N deltas underestimate cost at
+ *   scale). When deploying across chains with very different opcode pricing, the conservative
+ *   choice is the max measured cost across chains: high-cap chains will still be byte-bound
+ *   and unaffected, while low-cap chains get a safe estimate.
  * @param opts.cache Optional cache config. Honored by the `cache` transport only; if omitted,
  *   or when used with `deployless`, `batch` is still honored without caching.
  * @param opts.cache.blobKey Identifies the backing cache blob. Requests with the same

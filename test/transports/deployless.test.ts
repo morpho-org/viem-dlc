@@ -58,7 +58,12 @@ function buildDeploylessCall(targetData: Hex): Hex {
 }
 
 type PolicyOpts = {
-  batch?: { batchSize: number; exfil?: "return" | "revert"; compress?: boolean };
+  batch?: {
+    batchSize?: number;
+    exfil?: "return" | "revert";
+    compress?: boolean;
+    estimatedGasPerItem?: number;
+  };
   withCache?: boolean;
 };
 
@@ -144,8 +149,8 @@ function revertRaw(data: Hex): Error & { data: Hex } {
   return err;
 }
 
-function createTransport(requestFn: ReturnType<typeof vi.fn>) {
-  return deployless(custom({ request: requestFn as never }), { gasLimit: 30_000_000 })({ retryCount: 0 } as never);
+function createTransport(requestFn: ReturnType<typeof vi.fn>, gasLimit = 30_000_000) {
+  return deployless(custom({ request: requestFn as never }), { gasLimit })({ retryCount: 0 } as never);
 }
 
 const addr = (n: number) => pad(toHex(n), { size: 20 });
@@ -531,6 +536,90 @@ describe("deployless", () => {
       expect(requestFn).toHaveBeenCalledTimes(3); // 1 timed-out + 2 halves
       const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
       expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+  });
+
+  describe("gas budget", () => {
+    it("splits chunks by floor(gasLimit / estimatedGasPerItem) when gas is the binding constraint", async () => {
+      // 5 elements, gasLimit 30M, gasPerItem 12M → max 2 items per chunk → 3 chunks (2+2+1).
+      const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn, 30_000_000);
+      const req = createRequest(addrs, { batch: { estimatedGasPerItem: 12_000_000, exfil: "return" } });
+
+      const result = await transport.request(req);
+
+      expect(requestFn).toHaveBeenCalledTimes(3);
+      for (const [arg] of requestFn.mock.calls) {
+        const data = (arg.params[0] as { data: Hex }).data;
+        expect(decodeSentAddresses(data).length).toBeLessThanOrEqual(2);
+      }
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+
+    it("does not constrain by gas when estimatedGasPerItem is unset", async () => {
+      const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn, 1_000_000); // tight gasLimit, but no per-item estimate
+      const req = createRequest(addrs, { batch: { exfil: "return" } });
+
+      await transport.request(req);
+
+      expect(requestFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not constrain by gas when estimatedGasPerItem is 0", async () => {
+      const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn, 1_000_000);
+      const req = createRequest(addrs, { batch: { estimatedGasPerItem: 0, exfil: "return" } });
+
+      await transport.request(req);
+
+      expect(requestFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws synchronously when one item exceeds the gas budget (no upstream calls)", async () => {
+      const requestFn = vi.fn();
+      const transport = createTransport(requestFn, 10_000_000);
+      const req = createRequest([addr(1), addr(2)], { batch: { estimatedGasPerItem: 11_000_000, exfil: "return" } });
+
+      await expect(transport.request(req)).rejects.toThrow(/cannot fit a single item/);
+      expect(requestFn).not.toHaveBeenCalled();
+    });
+
+    it("intersects byte and gas budgets — whichever is tighter wins per chunk", async () => {
+      // 6 elements. Gas budget alone allows 3 per chunk; bytes alone allow ≥4 per chunk.
+      // Gas wins → 2 chunks of 3.
+      const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5), addr(6)];
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn, 30_000_000);
+      const req = createRequest(addrs, { batch: { batchSize: 8192, estimatedGasPerItem: 10_000_000, exfil: "return" } });
+
+      await transport.request(req);
+
+      expect(requestFn).toHaveBeenCalledTimes(2);
+      for (const [arg] of requestFn.mock.calls) {
+        const data = (arg.params[0] as { data: Hex }).data;
+        expect(decodeSentAddresses(data).length).toBeLessThanOrEqual(3);
+      }
+    });
+
+    it("supports gas-only chunking when batchSize is unset", async () => {
+      const addrs = [addr(1), addr(2), addr(3), addr(4)];
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn, 30_000_000);
+      const req = createRequest(addrs, { batch: { estimatedGasPerItem: 15_000_000, exfil: "return" } });
+
+      await transport.request(req);
+
+      // 30M / 15M = 2 items per chunk → 2 chunks.
+      expect(requestFn).toHaveBeenCalledTimes(2);
+      for (const [arg] of requestFn.mock.calls) {
+        const data = (arg.params[0] as { data: Hex }).data;
+        expect(decodeSentAddresses(data).length).toBe(2);
+      }
     });
   });
 });

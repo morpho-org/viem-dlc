@@ -19,7 +19,7 @@ import type { HandlerContext } from "../types.js";
 import type { CachedEthCallEntry } from "./types.js";
 
 export async function handleEthCall(
-  { store, coalesce, requestFn, chainId }: HandlerContext,
+  { store, coalesce, requestFn, chainId, gasLimit }: HandlerContext,
   req: EIP1193Parameters<CacheSchema, "eth_call">,
 ): Promise<Hex> {
   const extracted = extractEthCallPolicy(req.params[2]);
@@ -68,6 +68,7 @@ export async function handleEthCall(
       elements: inputElements,
       solidity,
       batch: extracted.policy.batch,
+      gasLimit,
       restOfEthCallParams,
     });
     return arrayToHex(solidity.outputLayout, outputs);
@@ -142,6 +143,7 @@ export async function handleEthCall(
         elements: misses.map((m) => m.element),
         solidity,
         batch: extracted.policy.batch,
+        gasLimit,
         restOfEthCallParams,
       });
 

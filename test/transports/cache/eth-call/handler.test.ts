@@ -65,7 +65,7 @@ function buildDeploylessCall(targetData: Hex): Hex {
 }
 
 type PolicyOpts = {
-  batch?: { batchSize: number; exfil?: "return" | "revert"; compress?: boolean };
+  batch?: { batchSize?: number; exfil?: "return" | "revert"; compress?: boolean; estimatedGasPerItem?: number };
 };
 
 function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
@@ -104,6 +104,7 @@ function ctx(requestFn: HandlerContext["requestFn"], store = new MemoryStore()):
     chainId,
     binSize: 10_000,
     invalidationStrategy: () => 0,
+    gasLimit: 30_000_000,
   };
 }
 
@@ -494,5 +495,20 @@ describe("handleEthCall", () => {
     };
 
     await expect(handleEthCall(ctx(vi.fn()), req)).rejects.toThrow(/found extras:.*from.*gas.*value/);
+  });
+
+  it("honors gas budget on the cache miss-fetch path", async () => {
+    // 5 elements, gasLimit 30M (default), gasPerItem 12M → max 2 per chunk → 3 chunks (2+2+1).
+    const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
+    const requestFn = mockBalancesOfFn();
+    const req = createRequest(addrs, { batch: { estimatedGasPerItem: 12_000_000, exfil: "return" } });
+
+    await handleEthCall(ctx(requestFn), req);
+
+    expect(requestFn).toHaveBeenCalledTimes(3);
+    for (const [arg] of requestFn.mock.calls) {
+      const data = (arg.params[0] as { data: Hex }).data;
+      expect(decodeSentAddresses(data).length).toBeLessThanOrEqual(2);
+    }
   });
 });
