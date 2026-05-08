@@ -145,7 +145,7 @@ function revertRaw(data: Hex): Error & { data: Hex } {
 }
 
 function createTransport(requestFn: ReturnType<typeof vi.fn>) {
-  return deployless(custom({ request: requestFn as never }))({ retryCount: 0 } as never);
+  return deployless(custom({ request: requestFn as never }), { gasLimit: 30_000_000 })({ retryCount: 0 } as never);
 }
 
 const addr = (n: number) => pad(toHex(n), { size: 20 });

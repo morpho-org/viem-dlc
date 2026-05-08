@@ -10,6 +10,11 @@ type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
 export const deploylessTransportKey = "viem-dlc-deployless" as const;
 
+export interface DeploylessConfig {
+  /** Gas limit advertised to consumers via the transport's `value`. */
+  gasLimit: number;
+}
+
 /**
  * Creates a thin transport wrapper that splits marked deployless `eth_call`s by `batchSize`.
  *
@@ -18,7 +23,8 @@ export const deploylessTransportKey = "viem-dlc-deployless" as const;
  */
 export function deployless<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
-): Transport<typeof deploylessTransportKey, unknown, EIP1193RequestFn<T>> {
+  { gasLimit }: DeploylessConfig,
+): Transport<typeof deploylessTransportKey, { gasLimit: number }, EIP1193RequestFn<T>> {
   return (params) => {
     const requestFn = baseTransportFn(params).request;
 
@@ -30,13 +36,16 @@ export function deployless<T extends Base>(
       return handleEthCall(requestFn, args as EIP1193Parameters<PublicRpcSchema, "eth_call">);
     };
 
-    return createTransport({
-      key: deploylessTransportKey,
-      name: "[viem-dlc] deployless",
-      request: request as EIP1193RequestFn,
-      retryCount: 0,
-      type: deploylessTransportKey,
-    });
+    return createTransport(
+      {
+        key: deploylessTransportKey,
+        name: "[viem-dlc] deployless",
+        request: request as EIP1193RequestFn,
+        retryCount: 0,
+        type: deploylessTransportKey,
+      },
+      { gasLimit },
+    );
   };
 }
 

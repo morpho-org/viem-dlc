@@ -25,9 +25,11 @@ export interface CacheConfig {
   binSize: number;
   /** Returns the probability [0,1] that a cached chunk should be refetched. */
   invalidationStrategy: InvalidationStrategy;
+  /** Gas limit advertised to consumers via the transport's `value`. */
+  gasLimit: number;
 }
 
-export type HandlerContext = CacheConfig & {
+export type HandlerContext = Omit<CacheConfig, "gasLimit"> & {
   chainId: number;
   requestFn: EIP1193RequestFn<LogsDividerSchema>;
   coalesce: ReturnType<typeof createCoalescingMutex>["coalesce"];
