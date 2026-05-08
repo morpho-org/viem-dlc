@@ -14,6 +14,8 @@ import { arrayToCalldata, hexToArray, type ResolvedArrayFunction } from "./codec
 
 type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
+type GasModel = { constant: number; linear: number; quadratic: number };
+
 type FactorisedFactoryCallParams = {
   target: DeploylessTarget;
   elements: readonly Hex[];
@@ -22,7 +24,7 @@ type FactorisedFactoryCallParams = {
     batchSize?: number;
     exfil?: DeploylessExfilMode;
     compress?: boolean;
-    estimatedGasPerItem?: number;
+    gas?: GasModel;
   };
   gasLimit?: number;
   restOfEthCallParams: RestOfEthCallParams;
@@ -31,10 +33,10 @@ type FactorisedFactoryCallParams = {
 type MeasureBytes = (start: number, end: number) => number;
 
 /**
- * Packs `elements` into one or more deployless-factory `eth_call` chunks under the byte
- * budget (`batch.batchSize`) and the gas budget (`floor(gasLimit / batch.estimatedGasPerItem)`,
- * when both are set), fetches them in parallel, and returns the per-element output slices
- * aligned to `elements`. With no constraints set, sends all elements in a single upstream call.
+ * Packs `elements` into deployless-factory `eth_call` chunks honoring the byte budget
+ * (`batch.batchSize`) and the gas budget (largest `N` with `batch.gas(N) ≤ gasLimit`),
+ * fetches them in parallel, and returns per-element outputs aligned to `elements`. Either
+ * budget can be unset; with neither, sends all elements in a single upstream call.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
@@ -82,11 +84,12 @@ export async function factorisedFactoryCall(
   const measureBytes = compress ? measureWrappedBytes : measureUncompressedBytes;
 
   let maxItemsByGas: number | undefined;
-  if (gasLimit && batch?.estimatedGasPerItem) {
-    maxItemsByGas = Math.floor(gasLimit / batch.estimatedGasPerItem);
+  if (gasLimit && batch?.gas) {
+    maxItemsByGas = solveMaxItemsByGas(batch.gas, gasLimit);
     if (maxItemsByGas < 1) {
+      const { constant, linear, quadratic } = batch.gas;
       throw new Error(
-        `[deployless] gasLimit=${gasLimit} cannot fit a single item at estimatedGasPerItem=${batch.estimatedGasPerItem}`,
+        `[deployless] gasLimit=${gasLimit} cannot fit a single item under G(N) = ${constant} + ${linear}·N + ${quadratic}·N²`,
       );
     }
   }
@@ -158,6 +161,22 @@ async function fetchChunkRevert(requestFn: EIP1193RequestFn<PublicRpcSchema>, da
 
 type BatchRange = readonly [start: number, end: number];
 
+/**
+ * Largest non-negative integer `N` such that `constant + linear·N + quadratic·N² ≤ gasLimit`.
+ * Returns 0 when even `N=0` (the constant term alone) overflows the budget. With `quadratic = 0`
+ * and `linear = 0`, the polynomial is constant and any `N` fits → returns `Infinity`.
+ */
+function solveMaxItemsByGas({ constant, linear, quadratic }: GasModel, gasLimit: number): number {
+  const budget = gasLimit - constant;
+  if (budget < 0) return 0;
+  if (quadratic === 0) {
+    if (linear === 0) return Infinity;
+    return Math.floor(budget / linear);
+  }
+  const discriminant = linear * linear + 4 * quadratic * budget;
+  return Math.floor((-linear + Math.sqrt(discriminant)) / (2 * quadratic));
+}
+
 type PackBatchesArgs = {
   count: number;
   maxBytes: number | undefined;
@@ -178,7 +197,6 @@ function packBatches({ count, maxBytes, maxItems, measureBytes }: PackBatchesArg
   if (count === 0) return [];
   const itemCap = maxItems && maxItems > 0 ? maxItems : Infinity;
   const byteCap = maxBytes && maxBytes > 0 ? maxBytes : Infinity;
-  if (itemCap === Infinity && byteCap === Infinity) return [[0, count]];
 
   const ranges: BatchRange[] = [];
   let start = 0;

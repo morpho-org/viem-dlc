@@ -12,15 +12,15 @@ export const deploylessTransportKey = "viem-dlc-deployless" as const;
 
 export interface DeploylessConfig {
   /**
-   * RPC `eth_call` gas cap. Combined with `policy().batch.estimatedGasPerItem` to chunk
-   * deployless calls under the cap; also exposed via the transport's `value`.
+   * RPC `eth_call` gas cap. Combined with `policy().batch.gas` to chunk deployless calls
+   * under the cap; also exposed via the transport's `value`.
    */
   gasLimit: number;
 }
 
 /**
  * Creates a thin transport wrapper that chunks marked deployless `eth_call`s under both the
- * `batchSize` byte budget and the `gasLimit` / `estimatedGasPerItem` gas budget.
+ * `batchSize` byte budget and the `gas`/`gasLimit` gas budget.
  *
  * Requests are only intercepted when they carry the `policy(...)` sentinel in `stateOverride`.
  * All other requests are forwarded unchanged.

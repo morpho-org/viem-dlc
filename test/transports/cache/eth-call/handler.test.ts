@@ -65,7 +65,12 @@ function buildDeploylessCall(targetData: Hex): Hex {
 }
 
 type PolicyOpts = {
-  batch?: { batchSize?: number; exfil?: "return" | "revert"; compress?: boolean; estimatedGasPerItem?: number };
+  batch?: {
+    batchSize?: number;
+    exfil?: "return" | "revert";
+    compress?: boolean;
+    gas?: { constant: number; linear: number; quadratic: number };
+  };
 };
 
 function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
@@ -498,10 +503,12 @@ describe("handleEthCall", () => {
   });
 
   it("honors gas budget on the cache miss-fetch path", async () => {
-    // 5 elements, gasLimit 30M (default), gasPerItem 12M → max 2 per chunk → 3 chunks (2+2+1).
+    // 5 elements, gasLimit 30M (default), G(N) = 12M·N → max 2 per chunk → 3 chunks (2+2+1).
     const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
     const requestFn = mockBalancesOfFn();
-    const req = createRequest(addrs, { batch: { estimatedGasPerItem: 12_000_000, exfil: "return" } });
+    const req = createRequest(addrs, {
+      batch: { gas: { constant: 0, linear: 12_000_000, quadratic: 0 }, exfil: "return" },
+    });
 
     await handleEthCall(ctx(requestFn), req);
 
