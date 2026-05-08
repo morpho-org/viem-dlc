@@ -58,7 +58,12 @@ function buildDeploylessCall(targetData: Hex): Hex {
 }
 
 type PolicyOpts = {
-  batch?: { batchSize: number; exfil?: "return" | "revert"; compress?: boolean };
+  batch?: {
+    batchSize?: number;
+    exfil?: "return" | "revert";
+    compress?: boolean;
+    gas?: { constant: number; linear: number; quadratic: number };
+  };
   withCache?: boolean;
 };
 
@@ -144,8 +149,8 @@ function revertRaw(data: Hex): Error & { data: Hex } {
   return err;
 }
 
-function createTransport(requestFn: ReturnType<typeof vi.fn>) {
-  return deployless(custom({ request: requestFn as never }))({ retryCount: 0 } as never);
+function createTransport(requestFn: ReturnType<typeof vi.fn>, gasLimit = 30_000_000) {
+  return deployless(custom({ request: requestFn as never }), { gasLimit })({ retryCount: 0 } as never);
 }
 
 const addr = (n: number) => pad(toHex(n), { size: 20 });
@@ -531,6 +536,122 @@ describe("deployless", () => {
       expect(requestFn).toHaveBeenCalledTimes(3); // 1 timed-out + 2 halves
       const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
       expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+  });
+
+  describe("gas budget", () => {
+    it("splits chunks by largest N with G(N) ≤ gasLimit when gas is the binding constraint", async () => {
+      // 5 elements, gasLimit 30M, G(N) = 12M·N → max 2 items per chunk → 3 chunks (2+2+1).
+      const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn, 30_000_000);
+      const req = createRequest(addrs, {
+        batch: { gas: { constant: 0, linear: 12_000_000, quadratic: 0 }, exfil: "return" },
+      });
+
+      const result = await transport.request(req);
+
+      expect(requestFn).toHaveBeenCalledTimes(3);
+      for (const [arg] of requestFn.mock.calls) {
+        const data = (arg.params[0] as { data: Hex }).data;
+        expect(decodeSentAddresses(data).length).toBeLessThanOrEqual(2);
+      }
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+
+    it("does not constrain by gas when `gas` is unset", async () => {
+      const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn, 1_000_000); // tight gasLimit, but no model
+      const req = createRequest(addrs, { batch: { exfil: "return" } });
+
+      await transport.request(req);
+
+      expect(requestFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("subtracts `constant` overhead from the gas budget before solving", async () => {
+      // gasLimit 1100, G(N) = 1000 + 100·N → at N=1, G=1100 (fits exactly). N=2 would overflow.
+      const addrs = [addr(1), addr(2)];
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn, 1100);
+      const req = createRequest(addrs, {
+        batch: { gas: { constant: 1000, linear: 100, quadratic: 0 }, exfil: "return" },
+      });
+
+      await transport.request(req);
+
+      expect(requestFn).toHaveBeenCalledTimes(2);
+      for (const [arg] of requestFn.mock.calls) {
+        const data = (arg.params[0] as { data: Hex }).data;
+        expect(decodeSentAddresses(data).length).toBe(1);
+      }
+    });
+
+    it("solves the quadratic when `quadratic` is set", async () => {
+      // gasLimit 100, G(N) = N² → max N = floor(sqrt(100)) = 10. 12 elements → 2 chunks (10+2).
+      const addrs = Array.from({ length: 12 }, (_, i) => addr(i + 1));
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn, 100);
+      const req = createRequest(addrs, {
+        batch: { gas: { constant: 0, linear: 0, quadratic: 1 }, exfil: "return" },
+      });
+
+      await transport.request(req);
+
+      expect(requestFn).toHaveBeenCalledTimes(2);
+      const sizes = requestFn.mock.calls
+        .map(([arg]) => decodeSentAddresses((arg.params[0] as { data: Hex }).data).length)
+        .sort((a, b) => a - b);
+      expect(sizes).toEqual([2, 10]);
+    });
+
+    it("throws synchronously when one item exceeds the gas budget (no upstream calls)", async () => {
+      const requestFn = vi.fn();
+      const transport = createTransport(requestFn, 10_000_000);
+      const req = createRequest([addr(1), addr(2)], {
+        batch: { gas: { constant: 0, linear: 11_000_000, quadratic: 0 }, exfil: "return" },
+      });
+
+      await expect(transport.request(req)).rejects.toThrow(/cannot fit a single item/);
+      expect(requestFn).not.toHaveBeenCalled();
+    });
+
+    it("intersects byte and gas budgets — whichever is tighter wins per chunk", async () => {
+      // 6 elements. Gas allows 3 per chunk; bytes allow ≥4. Gas wins → 2 chunks of 3.
+      const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5), addr(6)];
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn, 30_000_000);
+      const req = createRequest(addrs, {
+        batch: { batchSize: 8192, gas: { constant: 0, linear: 10_000_000, quadratic: 0 }, exfil: "return" },
+      });
+
+      await transport.request(req);
+
+      expect(requestFn).toHaveBeenCalledTimes(2);
+      for (const [arg] of requestFn.mock.calls) {
+        const data = (arg.params[0] as { data: Hex }).data;
+        expect(decodeSentAddresses(data).length).toBeLessThanOrEqual(3);
+      }
+    });
+
+    it("supports gas-only chunking when batchSize is unset", async () => {
+      // 4 elements, gasLimit 30M, G(N) = 15M·N → max 2 per chunk → 2 chunks.
+      const addrs = [addr(1), addr(2), addr(3), addr(4)];
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn, 30_000_000);
+      const req = createRequest(addrs, {
+        batch: { gas: { constant: 0, linear: 15_000_000, quadratic: 0 }, exfil: "return" },
+      });
+
+      await transport.request(req);
+
+      expect(requestFn).toHaveBeenCalledTimes(2);
+      for (const [arg] of requestFn.mock.calls) {
+        const data = (arg.params[0] as { data: Hex }).data;
+        expect(decodeSentAddresses(data).length).toBe(2);
+      }
     });
   });
 });

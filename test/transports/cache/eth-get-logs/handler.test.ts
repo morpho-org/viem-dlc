@@ -64,6 +64,7 @@ describe("handleEthGetLogs", () => {
         invalidationStrategy,
         store,
         chainId,
+        gasLimit: 30_000_000,
         requestFn: requestFn as unknown as HandlerContext["requestFn"],
         coalesce,
       },

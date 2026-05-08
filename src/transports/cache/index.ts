@@ -110,14 +110,14 @@ export const cacheTransportKey = "viem-dlc-cache" as const;
  */
 export function cache(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  [{ binSize, store, invalidationStrategy }, logsDividerConfig, ...otherConfigs]: [
+  [{ binSize, store, invalidationStrategy, gasLimit }, logsDividerConfig, ...otherConfigs]: [
     CacheConfig,
     Omit<LogsDividerConfig, "alignTo">,
     LogsEnricherConfig,
     LogsSieveConfig,
     RateLimiterConfig,
   ],
-): Transport<typeof cacheTransportKey, { store: Store }, EIP1193RequestFn<CacheSchema>> {
+): Transport<typeof cacheTransportKey, { store: Store; gasLimit: number }, EIP1193RequestFn<CacheSchema>> {
   return (params) => {
     if (params.chain === undefined) {
       throw new Error("You must pass a chain to the cache transport.");
@@ -133,6 +133,7 @@ export function cache(
       store,
       binSize,
       invalidationStrategy,
+      gasLimit,
       chainId,
       requestFn: transport.request,
       coalesce,
@@ -165,7 +166,7 @@ export function cache(
         retryCount: 0,
         type: cacheTransportKey,
       },
-      { store },
+      { store, gasLimit },
     );
   };
 }

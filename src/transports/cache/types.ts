@@ -25,6 +25,11 @@ export interface CacheConfig {
   binSize: number;
   /** Returns the probability [0,1] that a cached chunk should be refetched. */
   invalidationStrategy: InvalidationStrategy;
+  /**
+   * RPC `eth_call` gas cap. Combined with `policy().batch.gas` to chunk deployless calls
+   * under the cap; also exposed via the transport's `value`.
+   */
+  gasLimit: number;
 }
 
 export type HandlerContext = CacheConfig & {

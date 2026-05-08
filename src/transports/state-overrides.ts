@@ -10,7 +10,23 @@ const ETH_CALL_POLICY_ADDRESS_LOWER = ETH_CALL_POLICY_ADDRESS.toLowerCase() as A
 
 export type EthCallPolicy = {
   abi: AbiFunction;
-  batch?: { batchSize: number; exfil?: DeploylessExfilMode; compress?: boolean };
+  batch?: {
+    batchSize?: number;
+    exfil?: DeploylessExfilMode;
+    compress?: boolean;
+    /**
+     * Gas cost model `G(N) = constant + linear·N + quadratic·N²`. The chunker picks the
+     * largest `N` such that `G(N) ≤ gasLimit`.
+     * - `constant`: fixed per-call overhead (dispatcher/decoder/encoder). Pass 0 if unused.
+     * - `linear`: per-item rate at scale (the dominant term for typical lenses).
+     * - `quadratic`: per-item² cost — typically memory expansion. Pass 0 if unused.
+     */
+    gas?: {
+      constant: number;
+      linear: number;
+      quadratic: number;
+    };
+  };
   cache?: {
     blobKey: string;
     ttl: number;
