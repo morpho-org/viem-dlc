@@ -1,4 +1,4 @@
-import { createTransport, type EIP1193RequestFn, type RpcSchema, type Transport } from "viem";
+import type { EIP1193RequestFn, RpcSchema, Transport } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
 
@@ -54,13 +54,19 @@ export function failover<S extends RpcSchema>(
       throw lastErr;
     };
 
-    return createTransport({
-      key: failoverTransportKey,
-      name: "[viem-dlc] failover",
+    // Bypass `createTransport` so we don't add a redundant `buildRequest` layer.
+    // Failover doesn't classify errors, retry, or dedupe — wrapping here would only
+    // re-wrap errors already classified by each branch's own `buildRequest`.
+    return {
+      config: {
+        key: failoverTransportKey,
+        name: "[viem-dlc] failover",
+        type: failoverTransportKey,
+        request: request as EIP1193RequestFn,
+        retryCount: 0,
+      },
       request: request as EIP1193RequestFn,
-      retryCount: 0,
-      type: failoverTransportKey,
-    });
+    };
   };
 }
 

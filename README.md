@@ -100,6 +100,52 @@ Two invalidation strategies are provided:
 - `createSimpleInvalidation(minAgeMs?, maxAgeDays?, numHotBlocks?, avgInvalidationsPerRequest?)` — entries near the chain tip are always refetched; older entries are probabilistically invalidated based on age.
 - `createExponentialInvalidation(alphaAge?, maxAgeDays?, alphaBlocks?, scaleBlocks?)` — exponential model with separate time and block-age factors.
 
+### `failover`
+
+Request-level fallback dispatcher for fronting multiple RPC providers with provider-specific
+limits. Each branch is a fully-built per-provider stack carrying its own `maxBlockRange` /
+`gasLimit`. Branches are constructed once at composition time, so stateful inner transports
+(coalescing mutexes, rate-limiter token buckets) persist across requests instead of being
+rebuilt per call — unlike viem's stock `fallback`, which rebuilds the active branch on every
+request and effectively disables those features.
+
+```ts
+import { createPublicClient, http } from 'viem'
+import { mainnet } from 'viem/chains'
+import { failover } from '@morpho-org/viem-dlc/transports'
+import { cache, createSimpleInvalidation } from '@morpho-org/viem-dlc/transports/cache'
+import { LruStore } from '@morpho-org/viem-dlc/stores'
+
+const store = new LruStore(100_000_000)
+const sharedConfig = { binSize: 10_000, store, invalidationStrategy: createSimpleInvalidation() }
+
+const transport = failover([
+  cache(http(rpcUrlA), [{ ...sharedConfig, gasLimit: 30_000_000 }, { maxBlockRange: 100_000 }]),
+  cache(http(rpcUrlB), [{ ...sharedConfig, gasLimit: 50_000_000 }, { maxBlockRange: 10_000 }]),
+])
+
+const client = createPublicClient({ chain: mainnet, transport })
+```
+
+Each branch's `logsDivider` chunks requests at its own `maxBlockRange`, so neither provider
+is sized for the lowest common denominator. The shared `Store` means partial fetches from
+branch A persist in cache and are visible to branch B on fallover, making recovery cheap.
+
+`failover` only sees errors that escape per-branch halving (`logsDivider` range-halving and
+`deployless` size-bisection run inside each branch first). By default, contract reverts and
+user-rejection errors propagate immediately instead of triggering fallover — pass a custom
+`shouldThrow` to override:
+
+```ts
+import { defaultShouldThrow, failover } from '@morpho-org/viem-dlc/transports'
+
+failover([branchA, branchB], {
+  shouldThrow: (err) =>
+    defaultShouldThrow(err) ||
+    [401, 402, 403].includes((err as { status?: number })?.status ?? 0),
+})
+```
+
 ### `logsDivider`
 
 Splits large `eth_getLogs` requests into smaller chunks with automatic retry, optional alignment,
