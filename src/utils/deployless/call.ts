@@ -199,10 +199,9 @@ function hexByteLength(hex: Hex): number {
  *   - Initcode size (EIP-3860): "max initcode size exceeded" — also matched by /code.*size/
  */
 function classifyBatchSizeError(error: unknown): "size" | "timeout" | null {
+  if (isTimeoutLikeError(error)) return "timeout";
+
   const e = error instanceof BaseError ? error.walk() : error;
-
-  if (isTimeoutLikeError(e)) return "timeout";
-
   const status = (e as { status?: number }).status;
   const msg = (e as { message?: string }).message ?? "";
 
