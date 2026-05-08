@@ -595,7 +595,9 @@ describe("deployless", () => {
       const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5), addr(6)];
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn, 30_000_000);
-      const req = createRequest(addrs, { batch: { batchSize: 8192, estimatedGasPerItem: 10_000_000, exfil: "return" } });
+      const req = createRequest(addrs, {
+        batch: { batchSize: 8192, estimatedGasPerItem: 10_000_000, exfil: "return" },
+      });
 
       await transport.request(req);
 
