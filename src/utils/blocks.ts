@@ -3,6 +3,7 @@ import type { RequestErrorType } from "viem/utils";
 
 import type { BlockNumberish, BlockRange, EthGetLogsHashlessFilter } from "../types.js";
 
+import { isTimeoutLikeError } from "./errors.js";
 import { max, min } from "./math.js";
 import { pick } from "./pick.js";
 
@@ -146,20 +147,28 @@ export function halveBlockRange(range: BlockRange): [BlockRange, BlockRange] | u
   ];
 }
 
-/** Determines if an error indicates the block range was too large. */
-export function isErrorCausedByBlockRange(error: unknown): boolean {
-  const data = extractErrorData(error);
+/**
+ * Classifies an upstream error for the eth_getLogs splitter. Returns `null` for unrelated
+ * errors (which should propagate without retry).
+ *
+ * `"range"` covers errors that scale with the block span; bisecting always helps.
+ * `"timeout"` covers errors that *may* be range-induced but can also indicate a slow/flaky
+ * upstream. Callers should bisect cautiously (e.g. limited splits per chunk) so a downed
+ * node doesn't get hammered with `2^depth` retries.
+ */
+export function classifyBlockRangeError(error: unknown): "range" | "timeout" | null {
+  if (isTimeoutLikeError(error)) return "timeout";
 
-  if (!data) return false;
+  const data = extractErrorData(error);
+  if (!data) return null;
 
   for (const pattern of BLOCK_RANGE_ERROR_PATTERNS) {
     if (pattern.code !== undefined && pattern.code !== data.code) continue;
     if (pattern.message !== undefined && !pattern.message.test(data.message)) continue;
-
-    return true;
+    return "range";
   }
 
-  return false;
+  return null;
 }
 
 function extractErrorData(e: unknown): { code: number; message: string } | undefined {

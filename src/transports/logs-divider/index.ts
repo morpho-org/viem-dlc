@@ -88,7 +88,6 @@ export function logsDivider(
       name: "[viem-dlc] logs-divider",
       request: request as EIP1193RequestFn,
       retryCount: 0,
-      timeout: params.timeout,
       type: logsDividerTransportKey,
     });
   };

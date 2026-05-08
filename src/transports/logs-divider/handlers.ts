@@ -3,9 +3,9 @@ import { type EIP1193RequestFn, hexToBigInt, type RpcLog, toHex } from "viem";
 import type { BlockRange, EthGetLogsHashlessFilter, RpcSignature } from "../../types.js";
 import { augment } from "../../utils/arrays.js";
 import {
+  classifyBlockRangeError,
   divideBlockRange,
   halveBlockRange,
-  isErrorCausedByBlockRange,
   isInBlockRange,
   resolveBlockNumber,
 } from "../../utils/blocks.js";
@@ -25,7 +25,12 @@ interface ProcessContext {
 }
 
 /** Fetches logs for a single range with automatic retry and range halving on range-related failure. */
-async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange, priority?: number): Promise<RpcLog[]> {
+async function fetchRangeWithRetry(
+  ctx: ProcessContext,
+  range: BlockRange,
+  priority?: number,
+  timeoutSplitsRemaining = 1,
+): Promise<RpcLog[]> {
   // Constrain toBlock to chain tip (range may span past it due to alignment)
   const constrainedRange: BlockRange = {
     fromBlock: range.fromBlock,
@@ -64,13 +69,14 @@ async function fetchRangeWithRetry(ctx: ProcessContext, range: BlockRange, prior
 
     return ctx.onLogsResponseOnly ? [] : logs;
   } catch (error) {
-    if (isErrorCausedByBlockRange(error)) {
+    const cause = classifyBlockRangeError(error);
+    if (cause === "range" || (cause === "timeout" && timeoutSplitsRemaining > 0)) {
       // Use constrainedRange to avoid halving into invalid ranges
       const halves = halveBlockRange(constrainedRange);
 
       if (halves) {
-        // Recursively fetch both halves
-        const logs = await Promise.all(halves.map((half) => fetchRangeWithRetry(ctx, half, priority)));
+        const nextBudget = cause === "timeout" ? timeoutSplitsRemaining - 1 : timeoutSplitsRemaining;
+        const logs = await Promise.all(halves.map((half) => fetchRangeWithRetry(ctx, half, priority, nextBudget)));
         return ctx.onLogsResponseOnly ? [] : logs.flat();
       }
     }

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  classifyBlockRangeError,
   divideBlockRange,
   halveBlockRange,
-  isErrorCausedByBlockRange,
   resolveBlockNumber,
 } from "../../src/utils/blocks.js";
 
@@ -216,7 +216,7 @@ describe("halveBlockRange", () => {
   });
 });
 
-describe("isErrorCausedByBlockRange", () => {
+describe("classifyBlockRangeError", () => {
   function createRpcError(code: number, message: string): Error {
     return Object.assign(new Error(message), { code });
   }
@@ -224,88 +224,107 @@ describe("isErrorCausedByBlockRange", () => {
   describe("code-based detection", () => {
     it("detects -32602 errors", () => {
       const error = createRpcError(-32602, "Invalid params");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
 
     it("detects -32005 errors", () => {
       const error = createRpcError(-32005, "Limit exceeded");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
 
     it("detects -32012 errors", () => {
       const error = createRpcError(-32012, "Query limit");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
 
     it("detects -32000 errors", () => {
       const error = createRpcError(-32000, "Server error");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
   });
 
   describe("message-based detection", () => {
     it('detects "range exceeded" messages', () => {
       const error = createRpcError(-1, "block range exceeded limit");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
 
     it('detects "range too large" messages', () => {
       const error = createRpcError(-1, "range too large");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
 
     it('detects "exceed block" messages', () => {
       const error = createRpcError(-1, "query would exceed block limit");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
 
     it('detects "max block" messages', () => {
       const error = createRpcError(-1, "max block range is 10000");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
 
     it('detects "returned more than" messages (Alchemy/Infura style)', () => {
       const error = createRpcError(-1, "query returned more than 10000 results");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
 
     it('detects "response size" messages', () => {
       const error = createRpcError(-1, "response size exceeded");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
+    });
+  });
+
+  describe("timeout detection", () => {
+    it("detects viem-shaped TimeoutError by name", () => {
+      const error = Object.assign(new Error("aborted"), { name: "TimeoutError" });
+      expect(classifyBlockRangeError(error)).toBe("timeout");
+    });
+
+    it('detects "timed out" messages', () => {
+      const error = new Error("request timed out after 10000ms");
+      expect(classifyBlockRangeError(error)).toBe("timeout");
+    });
+
+    it("detects HTTP 408 / 504 / 524 status codes", () => {
+      for (const status of [408, 504, 524]) {
+        const error = Object.assign(new Error("upstream"), { status });
+        expect(classifyBlockRangeError(error)).toBe("timeout");
+      }
     });
   });
 
   describe("non-matching errors", () => {
-    it("returns false for unrelated error codes", () => {
+    it("returns null for unrelated error codes", () => {
       const error = createRpcError(-32601, "Method not found");
-      expect(isErrorCausedByBlockRange(error)).toBe(false);
+      expect(classifyBlockRangeError(error)).toBe(null);
     });
 
-    it("returns false for plain Error without code", () => {
+    it("returns null for plain Error without code", () => {
       const error = new Error("Some random error");
-      expect(isErrorCausedByBlockRange(error)).toBe(false);
+      expect(classifyBlockRangeError(error)).toBe(null);
     });
 
-    it("returns false for non-Error values", () => {
-      expect(isErrorCausedByBlockRange("string")).toBe(false);
-      expect(isErrorCausedByBlockRange(null)).toBe(false);
+    it("returns null for non-Error values", () => {
+      expect(classifyBlockRangeError("string")).toBe(null);
+      expect(classifyBlockRangeError(null)).toBe(null);
     });
   });
 
   describe("real-world RPC error formats", () => {
     it("handles QuickNode style errors", () => {
       const error = createRpcError(-32602, "block range limit exceeded");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
 
     it("handles Alchemy style errors", () => {
       const error = createRpcError(-32005, "query returned more than 10000 results");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
 
     it("handles Infura style errors", () => {
       const error = createRpcError(-32005, "query returned more than 10000 results");
-      expect(isErrorCausedByBlockRange(error)).toBe(true);
+      expect(classifyBlockRangeError(error)).toBe("range");
     });
   });
 });

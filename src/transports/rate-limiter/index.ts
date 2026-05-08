@@ -62,7 +62,6 @@ export function rateLimiter(
       name: "[viem-dlc] rate-limiter",
       request: request as EIP1193RequestFn,
       retryCount: 0,
-      timeout: params.timeout,
       type: rateLimiterTransportKey,
     });
   };

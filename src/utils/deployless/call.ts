@@ -1,6 +1,7 @@
 import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
+import { isTimeoutLikeError } from "../errors.js";
 import type { Tail } from "../tuples.js";
 
 import {
@@ -78,7 +79,12 @@ export async function factorisedFactoryCall(
 
   const fetchChunk = exfil === "return" ? fetchChunkReturn : fetchChunkRevert;
 
-  const fetchRecursive = async (els: readonly Hex[], startIdx: number, precomputed?: Hex): Promise<void> => {
+  const fetchRecursive = async (
+    els: readonly Hex[],
+    startIdx: number,
+    precomputed?: Hex,
+    timeoutSplitsRemaining = 1,
+  ): Promise<void> => {
     const wrapped = precomputed ?? wrap(els);
     try {
       const returndata = await fetchChunk(requestFn, wrapped, restOfEthCallParams);
@@ -88,13 +94,17 @@ export async function factorisedFactoryCall(
       }
       for (let j = 0; j < chunkOutputs.length; j++) outputs[startIdx + j] = chunkOutputs[j]!;
     } catch (e) {
-      if (els.length > 1 && isErrorCausedByBatchSize(e)) {
-        const mid = Math.floor(els.length / 2);
-        await Promise.all([
-          fetchRecursive(els.slice(0, mid), startIdx),
-          fetchRecursive(els.slice(mid), startIdx + mid),
-        ]);
-        return;
+      if (els.length > 1) {
+        const cause = classifyBatchSizeError(e);
+        if (cause === "size" || (cause === "timeout" && timeoutSplitsRemaining > 0)) {
+          const nextBudget = cause === "timeout" ? timeoutSplitsRemaining - 1 : timeoutSplitsRemaining;
+          const mid = Math.floor(els.length / 2);
+          await Promise.all([
+            fetchRecursive(els.slice(0, mid), startIdx, undefined, nextBudget),
+            fetchRecursive(els.slice(mid), startIdx + mid, undefined, nextBudget),
+          ]);
+          return;
+        }
       }
       throw e;
     }
@@ -173,20 +183,37 @@ function hexByteLength(hex: Hex): number {
 }
 
 /**
- * Returns `true` when the error is likely caused by the batch being too large for the RPC,
- * making it safe to retry with a smaller element slice.
+ * Classifies an upstream error for the deployless batcher. Returns `null` for unrelated
+ * errors (which should propagate without retry). Timeout is checked first so a TimeoutError
+ * with an incidentally size-shaped message still routes through the cautious-bisect path.
  *
- * Covers three failure modes:
+ * `"timeout"` covers errors that *may* be batch-induced but can also indicate a slow/flaky
+ * upstream. Callers should bisect cautiously (e.g. limited splits per chunk) so a downed node
+ * doesn't get hammered with `2^depth` retries:
+ *   - viem TimeoutError, HTTP 408 / 504 / 524, generic "timed out" / "timeout" messages
+ *
+ * `"size"` covers errors that scale deterministically with batch size; bisecting always helps:
  *   - Calldata size:   HTTP 413; messages containing "too large" or "request size"
  *   - Gas limit:       "out of gas" during execution
  *   - Return data size (RETURN mode): EIP-170 "code size" exceeded
  *   - Initcode size (EIP-3860): "max initcode size exceeded" — also matched by /code.*size/
  */
-function isErrorCausedByBatchSize(error: unknown): boolean {
+function classifyBatchSizeError(error: unknown): "size" | "timeout" | null {
+  if (isTimeoutLikeError(error)) return "timeout";
+
   const e = error instanceof BaseError ? error.walk() : error;
-  if ((e as { status?: number }).status === 413) return true;
+  const status = (e as { status?: number }).status;
   const msg = (e as { message?: string }).message ?? "";
-  return (
-    /too large/i.test(msg) || /request.{0,10}size/i.test(msg) || /out of gas/i.test(msg) || /code.{0,10}size/i.test(msg)
-  );
+
+  if (status === 413) return "size";
+  if (
+    /too large/i.test(msg) ||
+    /request.{0,10}size/i.test(msg) ||
+    /out of gas/i.test(msg) ||
+    /code.{0,10}size/i.test(msg)
+  ) {
+    return "size";
+  }
+
+  return null;
 }
