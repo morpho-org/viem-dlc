@@ -31,8 +31,7 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  *   or dynamic (string, bytes, nested arrays, dynamic tuples).
  *
  * @param opts.batch Optional batching config. Omit to send all elements in a single
- *   upstream `eth_call`. When set, chunks honor whichever of `batchSize` and
- *   `estimatedGasPerItem` are provided (they intersect — both must hold per chunk).
+ *   upstream `eth_call`. When set, chunks honor both `batchSize` and `gas`.
  * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk.
  *   Input elements are greedy-packed under this limit and fetched in parallel. Omit to
  *   skip byte-budget enforcement (useful when the gas budget is the only relevant cap).
