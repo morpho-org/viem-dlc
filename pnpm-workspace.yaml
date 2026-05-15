@@ -4,7 +4,9 @@ packages:
 # Minimum age (in minutes) a package version must reach before pnpm will install it.
 # 7 days = 10080 minutes, preferred for supply-chain hardening.
 minimumReleaseAge: 10080
-minimumReleaseAgeIgnoreMissingTime: true
+resolutionMode: time-based
 
+# esbuild is a transitive dependency (via Vitest/Vite/tsx), but pnpm 11 blocks its
+# postinstall unless approved, causing ERR_PNPM_IGNORED_BUILDS during install.
 allowBuilds:
   esbuild: true
