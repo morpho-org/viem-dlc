@@ -102,5 +102,5 @@
     "viem": "2.45.1",
     "vitest": "4.0.18"
   },
-  "packageManager": "pnpm@10.22.0"
+  "packageManager": "pnpm@11.0.9"
 }
