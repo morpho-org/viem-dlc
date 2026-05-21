@@ -1,5 +1,6 @@
 import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
+import { type Observability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 import { isRevertExpected } from "../../utils/deployless/codec.envelope.js";
 import { estimateUtf8Bytes } from "../../utils/json.js";
@@ -29,19 +30,27 @@ export function logsSieve<T extends Base>(
   return (params) => {
     const requestFn = baseTransportFn(params).request as EIP1193RequestFn<Base>;
 
-    const request = async (args: EIP1193Parameters<T>) => {
+    const request = async (args: EIP1193Parameters<T>, observability?: Observability) => {
       if (args.method !== "eth_getLogs") {
         return requestFn(args, isRevertExpected(args) ? { retryCount: 0 } : undefined);
       }
 
       const logs = await requestFn(args as EIP1193Parameters<Base, "eth_getLogs">);
-      return logs.filter((log) => estimateUtf8Bytes(log) <= maxBytes);
+      const kept = logs.filter((log) => estimateUtf8Bytes(log) <= maxBytes);
+
+      if (kept.length < logs.length) {
+        observability?.logger?.withContext({
+          [`${logsSieveTransportKey}.${observability.counter}.logs_dropped`]: logs.length - kept.length,
+        });
+      }
+
+      return kept;
     };
 
     return createTransport({
       key: logsSieveTransportKey,
       name: "[viem-dlc] logs-sieve",
-      request: request as EIP1193RequestFn,
+      request: observe(request) as EIP1193RequestFn,
       retryCount: 0,
       type: logsSieveTransportKey,
     });

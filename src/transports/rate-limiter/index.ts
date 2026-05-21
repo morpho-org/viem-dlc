@@ -1,5 +1,6 @@
 import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
+import { observe } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
 import { isRevertExpected } from "../../utils/deployless/codec.envelope.js";
 import { hash } from "../../utils/hash.js";
@@ -60,7 +61,7 @@ export function rateLimiter(
     return createTransport({
       key: rateLimiterTransportKey,
       name: "[viem-dlc] rate-limiter",
-      request: request as EIP1193RequestFn,
+      request: observe(request) as EIP1193RequestFn,
       retryCount: 0,
       type: rateLimiterTransportKey,
     });

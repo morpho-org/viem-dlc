@@ -13,15 +13,17 @@ import {
 import { parse, stringify } from "../../../utils/json.js";
 import { extractEthCallPolicy } from "../../state-overrides.js";
 import { keychain } from "../keychain.js";
-import type { CacheSchema } from "../schema.js";
+import { type CacheSchema, cacheTransportKey } from "../schema.js";
 import type { HandlerContext } from "../types.js";
 
 import type { CachedEthCallEntry } from "./types.js";
 
 export async function handleEthCall(
-  { store, coalesce, requestFn, chainId }: HandlerContext,
+  ctx: HandlerContext,
   req: EIP1193Parameters<CacheSchema, "eth_call">,
 ): Promise<Hex> {
+  const { store, coalesce, requestFn, chainId } = ctx;
+
   const extracted = extractEthCallPolicy(req.params[2]);
   if (!extracted) {
     return requestFn(req);
@@ -53,6 +55,9 @@ export async function handleEthCall(
   const solidity = resolveArrayFunction(extracted.policy.abi);
   const inputElements = calldataToArray(solidity, targetData);
 
+  const tag = `${cacheTransportKey}.${ctx.observability?.counter}.eth_call`;
+  ctx.observability?.logger?.withContext({ [`${tag}.input_elements`]: inputElements.length });
+
   if (inputElements.length === 0) {
     return arrayToHex(solidity.outputLayout, []);
   }
@@ -63,6 +68,7 @@ export async function handleEthCall(
   // No TTL → caching disabled. Still honor `batch` by splitting the call, but skip
   // all cache reads, writes, coalescing, and dedup.
   if (!blobKey || ttl === undefined) {
+    ctx.observability?.logger?.withContext({ [`${tag}.elements_fetched`]: inputElements.length });
     const outputs = await factorisedFactoryCall(requestFn, {
       target,
       elements: inputElements,
@@ -73,6 +79,7 @@ export async function handleEthCall(
     return arrayToHex(solidity.outputLayout, outputs);
   }
 
+  ctx.observability?.logger?.withContext({ [`${tag}.cache`]: { blobKey, ttl, delta } });
   return coalesce(blobKey, req, async (_leaderReq, collectFollowers) => {
     /*//////////////////////////////////////////////////////////////
                                LEADER OPS
@@ -94,9 +101,13 @@ export async function handleEthCall(
         keyToInfo.set(ek, { indices: [i], element });
       }
     });
+    ctx.observability?.logger?.withContext({ [`${tag}.input_elements_unique`]: keyToInfo.size });
 
     // Open blob lazily — read once, buffer writes, flush when done.
+    const t0 = performance.now();
     let buffers = (await store.get(blobKey)) ?? [];
+    const t1 = performance.now();
+
     const ndjson = new LazyNdjsonMap<CachedEthCallEntry>(
       { toJson: stringify, fromJson: parse },
       {
@@ -113,6 +124,7 @@ export async function handleEthCall(
     const misses: { entryKey: string; indices: number[]; element: Hex }[] = [];
     const now = Date.now();
 
+    const t2 = performance.now();
     await ndjson.scan((record) => {
       const match = keyToInfo.get(record.key);
       if (!match) return;
@@ -128,10 +140,13 @@ export async function handleEthCall(
 
       if (keyToInfo.size === 0) return false;
     });
+    const t3 = performance.now();
 
     for (const [entryKey, info] of keyToInfo) {
       misses.push({ entryKey, ...info });
     }
+
+    ctx.observability?.logger?.withContext({ [`${tag}.elements_fetched`]: misses.length });
 
     // Fetch misses
     if (misses.length > 0) {
@@ -151,8 +166,14 @@ export async function handleEthCall(
         return { key: miss.entryKey, value: { output, fetchedAt } };
       });
 
+      const t4 = performance.now();
       ndjson.upsert(allEntries);
       await ndjson.flush();
+      const t5 = performance.now();
+
+      ctx.observability?.logger?.withContext({
+        [`${tag}.duration_ms`]: { fetch_cache: t1 - t0, read_cache: t3 - t2, write_cache: t5 - t4 },
+      });
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -164,6 +185,7 @@ export async function handleEthCall(
     const leaderHash = cyrb64Hash(JSON.stringify(req.params));
     const collected = collectFollowers();
     const matching = collected.filter((f) => cyrb64Hash(JSON.stringify(f.args.params)) === leaderHash);
+    ctx.observability?.logger?.withContext({ [`${tag}.followers`]: matching.length });
 
     return {
       leader: { action: "resolve", result },

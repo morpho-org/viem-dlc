@@ -7,7 +7,7 @@ import { divideBlockRange, extractRangeFromFilter, isInBlockRange, mergeBlockRan
 import { tryCatch } from "../../../utils/errors.js";
 import { parse, stringify } from "../../../utils/json.js";
 import { keychain } from "../keychain.js";
-import type { CacheSchema } from "../schema.js";
+import { type CacheSchema, cacheTransportKey } from "../schema.js";
 import type { HandlerContext, InvalidationStrategy } from "../types.js";
 
 import { createSink } from "./sink.js";
@@ -41,9 +41,10 @@ function shouldFetchRange(
 }
 
 export async function handleEthGetLogs(
-  { binSize, invalidationStrategy, store, coalesce, requestFn, chainId }: HandlerContext,
+  ctx: HandlerContext,
   req: EIP1193Parameters<CacheSchema, "eth_getLogs">,
 ): Promise<RpcLog[]> {
+  const { binSize, invalidationStrategy, store, coalesce, requestFn, chainId } = ctx;
   const blobKey = keychain.blobKey(chainId, req);
 
   return coalesce(blobKey, req, async (args, collectFollowers) => {
@@ -119,11 +120,15 @@ export async function handleEthGetLogs(
 
     // Start fetching all gaps. `logsDivider` and `rateLimiter` handle splitting, concurrency, and rate limits.
     // viem also provides request deduplication at each layer, and at this point we've already normalized it.
+    let gapsFetchedCount = 0;
+    let fetchMs = 0;
     if (gaps.length > 0) {
       const rangesToFetch = mergeBlockRanges(gaps);
+      gapsFetchedCount = rangesToFetch.length;
 
       const sink = createSink({ chainId, binSize, ndjson });
 
+      const tFetchStart = performance.now();
       try {
         await Promise.all(
           rangesToFetch.map((range) =>
@@ -154,6 +159,8 @@ export async function handleEthGetLogs(
           throw error;
         }
         throw new Error(`${context} ${String(error)}`);
+      } finally {
+        fetchMs = performance.now() - tFetchStart;
       }
     }
 
@@ -166,6 +173,21 @@ export async function handleEthGetLogs(
     // Leader is prepended at index 0; matching followers follow.
     const leader = { slot: -1, args };
     const followers = collectFollowers();
+
+    if (ctx.observability) {
+      // TODO(observability): once `coalesce` carries a `meta: { call_id }` per
+      // caller, populate `<slot>.participant_call_ids` from the leader's `call_id`
+      // plus followers' meta. For now the event only describes leader-side work.
+      const blobBytesWritten = buffers.reduce((s, b) => s + b.byteLength, 0);
+      const tag = `${cacheTransportKey}.${ctx.observability.counter}.eth_getLogs`;
+      ctx.observability.logger?.withContext({
+        [`${tag}.blob_key`]: blobKey,
+        [`${tag}.gaps_fetched`]: gapsFetchedCount,
+        [`${tag}.n_followers`]: followers.length,
+        [`${tag}.blob_bytes_written`]: blobBytesWritten,
+        [`${tag}.fetch_ms`]: fetchMs,
+      });
+    }
 
     const leaderFilterJson = JSON.stringify(filter);
     const participants = [leader, ...followers]

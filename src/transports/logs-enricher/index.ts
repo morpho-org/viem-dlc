@@ -1,5 +1,6 @@
 import { createTransport, type EIP1193RequestFn, type Hex, type PublicRpcSchema, type Transport } from "viem";
 
+import { type Observability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 import { isRevertExpected } from "../../utils/deployless/codec.envelope.js";
 
@@ -19,7 +20,7 @@ export function logsEnricher<T extends Base>(
   return (params) => {
     const requestFn = baseTransportFn(params).request as EIP1193RequestFn<Base>;
 
-    const request = async (args: EIP1193Parameters<T>) => {
+    const request = async (args: EIP1193Parameters<T>, observability?: Observability) => {
       if (args.method !== "eth_getLogs") {
         return requestFn(args, isRevertExpected(args) ? { retryCount: 0 } : undefined);
       }
@@ -51,7 +52,7 @@ export function logsEnricher<T extends Base>(
       );
 
       // Enrich logs, dropping any whose block was reorged away
-      return logs.reduce<typeof logs>((acc, log) => {
+      const enriched = logs.reduce<typeof logs>((acc, log) => {
         if (log.blockTimestamp !== undefined || log.blockNumber === null) {
           acc.push(log);
           return acc;
@@ -63,12 +64,22 @@ export function logsEnricher<T extends Base>(
         }
         return acc;
       }, []);
+
+      if (observability) {
+        const tag = `${logsEnricherTransportKey}.${observability.counter}`;
+        observability.logger?.withContext({
+          [`${tag}.blocks_fetched`]: blockNumbers.size,
+          [`${tag}.logs_dropped`]: logs.length - enriched.length,
+        });
+      }
+
+      return enriched;
     };
 
     return createTransport({
       key: logsEnricherTransportKey,
       name: "[viem-dlc] logs-enricher",
-      request: request as EIP1193RequestFn,
+      request: observe(request) as EIP1193RequestFn,
       retryCount: 0,
       type: logsEnricherTransportKey,
     });

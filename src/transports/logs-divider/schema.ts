@@ -23,3 +23,5 @@ export type LogsDividerSchema = SafelyExtendRpcSchema<
     },
   ]
 >;
+
+export const logsDividerTransportKey = "viem-dlc-logs-divider" as const;

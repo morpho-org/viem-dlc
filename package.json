@@ -97,6 +97,7 @@
     "@types/node": "25.2.0",
     "@upstash/redis": "1.36.1",
     "@vercel/blob": "^2.3.3",
+    "loglayer": "^9.0.0",
     "tsx": "4.21.0",
     "typescript": "5.9.3",
     "viem": "2.45.1",

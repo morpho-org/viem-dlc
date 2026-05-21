@@ -1,6 +1,7 @@
 import type { MaybePromise } from "viem";
 import { withTimeout } from "viem";
 
+import type { Logger } from "../observability.js";
 import type { Store } from "../types.js";
 import { createRateLimit, RateLimitGateError } from "../utils/with-rate-limit.js";
 
@@ -17,6 +18,12 @@ export type ThrottledStoreOptions = {
   maxStalenessMs: number;
   /** Optional: handle write errors (default: ignore) -- MUST NOT THROW. */
   onWriteError?: (key: string, err: unknown, durationMs: number) => void;
+  /**
+   * Optional logger for non-request-bound emissions (e.g. background flush boundaries).
+   * Per-`set`/`get`/`delete` events are read from the ambient ALS scope via `getCurrentLog()`
+   * — this field is only needed for events that fire outside any caller's async scope.
+   */
+  logger?: Logger;
 };
 
 /**
@@ -33,6 +40,7 @@ export class ThrottledStore implements Store {
   private readonly rateLimiter: ReturnType<typeof createRateLimit>;
   private readonly maxStalenessMs: number;
   private readonly onWriteError?: (key: string, err: unknown, durationMs: number) => void;
+  protected readonly logger?: Logger;
 
   /** Latest pending op per key. Written at call time, read lazily at admission time, deleted at completion. */
   private readonly pending = new Map<string, { op: PendingOp; version: number; lastUpdatedAt: number }>();
@@ -48,6 +56,7 @@ export class ThrottledStore implements Store {
     this.rateLimiter = createRateLimit(opts.maxWritesBurst, opts.maxWritesPerSecond, opts.maxConcurrent);
     this.maxStalenessMs = opts.maxStalenessMs;
     this.onWriteError = opts.onWriteError;
+    this.logger = opts.logger;
   }
 
   get(key: string) {
@@ -104,6 +113,16 @@ export class ThrottledStore implements Store {
               },
             );
           } catch (err) {
+            this.logger
+              ?.withMetadata({
+                class: ThrottledStore.name,
+                method: "ensureQueued",
+                key,
+                kind: entry.op.kind,
+                duration_ms: Date.now() - t0,
+              })
+              .withError(err)
+              .warn("upstream write failed");
             this.onWriteError?.(key, err, Date.now() - t0);
           }
 
@@ -119,6 +138,15 @@ export class ThrottledStore implements Store {
 
             const isValid = Date.now() - entry.lastUpdatedAt <= this.maxStalenessMs;
             if (!isValid) {
+              this.logger
+                ?.withMetadata({
+                  class: ThrottledStore.name,
+                  method: "ensureQueued",
+                  key,
+                  kind: entry.op.kind,
+                  age_ms: Date.now() - entry.lastUpdatedAt,
+                })
+                .info("dropped stale pending op");
               this.pending.delete(key);
               this.resolveFlushBoundaries(key, entry.version);
             }

@@ -1,6 +1,8 @@
 import type { EIP1193RequestFn, RpcSchema, Transport } from "viem";
 
+import { type Observability, observe } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
+import { serializeError } from "../../utils/errors.js";
 
 export const failoverTransportKey = "viem-dlc-failover" as const;
 
@@ -41,18 +43,45 @@ export function failover<S extends RpcSchema>(
   return (params) => {
     const requestFns = transports.map((t) => t(params).request);
 
-    const request = async (args: EIP1193Parameters<S>) => {
-      let lastErr: unknown;
-      for (const requestFn of requestFns) {
-        try {
-          return await requestFn(args);
-        } catch (err) {
-          if (shouldThrow(err)) throw err;
-          lastErr = err;
+    const request = async (args: EIP1193Parameters<S>, observability?: Observability) => {
+      const stats: {
+        branchErrors: unknown[];
+        branchDurationsMs: number[];
+        succeededIndex: number;
+        terminatedByShouldThrow: boolean;
+      } = { branchErrors: [], branchDurationsMs: [], succeededIndex: -1, terminatedByShouldThrow: false };
+
+      try {
+        for (let i = 0; i < requestFns.length; i++) {
+          const t0 = performance.now();
+          try {
+            const result = await requestFns[i]!(args);
+            stats.branchDurationsMs.push(performance.now() - t0);
+            stats.succeededIndex = i;
+            return result;
+          } catch (err) {
+            stats.branchDurationsMs.push(performance.now() - t0);
+            stats.branchErrors.push(err);
+            if (shouldThrow(err)) {
+              stats.terminatedByShouldThrow = true;
+              throw err;
+            }
+          }
         }
+        throw stats.branchErrors.at(-1);
+      } finally {
+        const tag = `${failoverTransportKey}.${observability?.counter}`;
+        observability?.logger?.withContext({
+          [`${tag}.branches_attempted`]: stats.branchErrors.length + (stats.succeededIndex >= 0 ? 1 : 0),
+          [`${tag}.succeeded_index`]: stats.succeededIndex,
+          [`${tag}.branch_errors`]: stats.branchErrors.map(serializeError),
+          [`${tag}.branch_durations_ms`]: stats.branchDurationsMs,
+          [`${tag}.terminated_by_should_throw`]: stats.terminatedByShouldThrow,
+        });
       }
-      throw lastErr;
     };
+
+    const observed = observe(request) as EIP1193RequestFn;
 
     // Bypass `createTransport` so we don't add a redundant `buildRequest` layer.
     // Failover doesn't classify errors, retry, or dedupe — wrapping here would only
@@ -62,10 +91,10 @@ export function failover<S extends RpcSchema>(
         key: failoverTransportKey,
         name: "[viem-dlc] failover",
         type: failoverTransportKey,
-        request: request as EIP1193RequestFn,
+        request: observed,
         retryCount: 0,
       },
-      request: request as EIP1193RequestFn,
+      request: observed,
     };
   };
 }

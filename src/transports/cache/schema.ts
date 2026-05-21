@@ -34,3 +34,5 @@ export type CacheSchema = SafelyExtendRpcSchema<
 export const cachedMethods = ["eth_call", "eth_getLogs"] as const satisfies EIP1193Parameters<CacheSchema>["method"][];
 
 export type CachedMethod = (typeof cachedMethods)[number];
+
+export const cacheTransportKey = "viem-dlc-cache" as const;

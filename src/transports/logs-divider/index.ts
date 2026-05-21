@@ -1,5 +1,6 @@
 import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
+import { type Observability, observe } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
 import { isRevertExpected } from "../../utils/deployless/codec.envelope.js";
 import { logsEnricher } from "../logs-enricher/index.js";
@@ -8,13 +9,13 @@ import { type LogsSieveConfig, logsSieve } from "../logs-sieve/index.js";
 import { type RateLimiterConfig, rateLimiter } from "../rate-limiter/index.js";
 
 import { handleEthGetLogs } from "./handlers.js";
-import type { LogsDividerSchema } from "./schema.js";
+import { type LogsDividerSchema, logsDividerTransportKey } from "./schema.js";
 import type { LogsDividerConfig } from "./types.js";
 
 export type * from "./schema.js";
 export type * from "./types.js";
 
-export const logsDividerTransportKey = "viem-dlc-logs-divider" as const;
+export { logsDividerTransportKey };
 
 /**
  * Creates a transport wrapper that divides large eth_getLogs requests into smaller chunks.
@@ -75,18 +76,18 @@ export function logsDivider(
       logsEnricherConfig,
     ])(params);
 
-    const request = (args: EIP1193Parameters<LogsDividerSchema>) => {
-      if (args.method !== "eth_getLogs") {
-        return transport.request(args, isRevertExpected(args) ? { retryCount: 0 } : undefined);
+    const request = (req: EIP1193Parameters<LogsDividerSchema>, observability?: Observability) => {
+      if (req.method !== "eth_getLogs") {
+        return transport.request(req, isRevertExpected(req) ? { retryCount: 0 } : undefined);
       }
 
-      return handleEthGetLogs(transport.request, args.params, logsDividerConfig);
+      return handleEthGetLogs(transport.request, req.params, logsDividerConfig, observability);
     };
 
     return createTransport({
       key: logsDividerTransportKey,
       name: "[viem-dlc] logs-divider",
-      request: request as EIP1193RequestFn,
+      request: observe(request) as EIP1193RequestFn,
       retryCount: 0,
       type: logsDividerTransportKey,
     });
