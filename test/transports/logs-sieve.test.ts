@@ -39,6 +39,8 @@ describe("logsSieve", () => {
     const blockNumber = await transport.request({ method: "eth_blockNumber" });
 
     expect(blockNumber).toBe("0x64");
-    expect(requestFn).toHaveBeenCalledWith({ method: "eth_blockNumber" });
+    // viem's `buildRequest` appends an options argument, so assert on the payload only.
+    expect(requestFn).toHaveBeenCalledOnce();
+    expect(requestFn.mock.lastCall?.[0]).toEqual({ method: "eth_blockNumber" });
   });
 });

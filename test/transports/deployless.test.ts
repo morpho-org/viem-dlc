@@ -167,7 +167,9 @@ describe("deployless", () => {
     const result = await transport.request(req);
 
     expect(result).toBe("0x1234");
-    expect(requestFn).toHaveBeenCalledWith(req);
+    // viem's `buildRequest` appends an options argument, so assert on the payload only.
+    expect(requestFn).toHaveBeenCalledOnce();
+    expect(requestFn.mock.lastCall?.[0]).toEqual(req);
   });
 
   it("passes non-eth_call requests through unchanged", async () => {
@@ -177,7 +179,8 @@ describe("deployless", () => {
     const result = await transport.request({ method: "eth_blockNumber" });
 
     expect(result).toBe("0x64");
-    expect(requestFn).toHaveBeenCalledWith({ method: "eth_blockNumber" });
+    expect(requestFn).toHaveBeenCalledOnce();
+    expect(requestFn.mock.lastCall?.[0]).toEqual({ method: "eth_blockNumber" });
   });
 
   describe.each(["revert", "return"] as const)("exfil=%s", (exfil) => {

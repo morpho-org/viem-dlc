@@ -1,4 +1,4 @@
-import type { Address, Hex } from "viem";
+import type { Address, Hex, LogTopic } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
 import { deepTransform, deepTransformOptions as dt } from "../../utils/objects.js";
@@ -57,16 +57,18 @@ const EthGetLogs = {
   // [[0xDEF, 0xABC], ...] → [[0xabc, 0xdef], ...]
   // [] → undefined
   // [null, null, null, null] → undefined
-  normalizeFilterTopics(topics: (Hex[] | Hex | null)[] | undefined) {
-    topics = topics?.map((topic) =>
+  normalizeFilterTopics(topics: readonly LogTopic[] | undefined) {
+    const normalized = topics?.map((topic) =>
       EthGetLogs.normalizeFilterArray(
-        topic,
+        // viem's `LogTopic` allows a `readonly` inner array; copy it so the helper keeps
+        // its simpler mutable signature.
+        Array.isArray(topic) ? [...topic] : topic,
         null,
         (x) => x.toLowerCase() as Hex,
         (a, b) => a.localeCompare(b),
       ),
     );
-    return topics?.every((topic) => topic === null) ? undefined : topics;
+    return normalized?.every((topic) => topic === null) ? undefined : normalized;
   },
 };
 
