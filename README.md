@@ -276,6 +276,7 @@ interface Store {
 | Store | Import | Description |
 | --- | --- | --- |
 | `LruStore` | `@morpho-org/viem-dlc/stores` | LRU cache with configurable byte-size limit |
+| `TtlStore` | `@morpho-org/viem-dlc/stores` | Wraps any store with an absolute per-entry TTL — bounds how long a warm tier may diverge from a fresher source behind it |
 | `MemoryStore` | `@morpho-org/viem-dlc/stores` | Simple in-memory Map (prefer `LruStore`) |
 | `HierarchicalStore` | `@morpho-org/viem-dlc/stores` | Layered stores — reads fall through, writes fan out |
 | `DebouncedStore` | `@morpho-org/viem-dlc/stores` | Batches writes with debounce + max staleness timeout |
@@ -300,6 +301,20 @@ const store = createOptimizedUpstashStore({
   maxRequestBytes: 1_000_000,
   maxWritesPerSecond: 300,
 })
+```
+
+`TtlStore` wraps any store to cap how long its entries stay warm. Fronting a shared remote with a
+TTL-bounded in-memory tier keeps reads fast while ensuring a cross-instance write is masked for at
+most `ttlMs` — after which the read falls through to the authoritative remote (a plain `LruStore`
+front would pin the stale copy for the whole process lifetime):
+
+```ts
+import { HierarchicalStore, LruStore, TtlStore } from '@morpho-org/viem-dlc/stores'
+
+const store = new HierarchicalStore(
+  [new TtlStore(new LruStore(100_000_000), { ttlMs: 60_000 }), remote],
+  { populateOnMiss: true },
+)
 ```
 
 ## Actions

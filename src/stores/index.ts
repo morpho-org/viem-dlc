@@ -5,5 +5,4 @@ export { LruStore } from "./lru.js";
 export { MemoryStore } from "./memory.js";
 export { NodeFsStore } from "./node-fs.js";
 export { ThrottledStore } from "./throttled.js";
-
-// TODO: (@haydenshively future-work) Add TtlStore
+export { TtlStore } from "./ttl.js";
