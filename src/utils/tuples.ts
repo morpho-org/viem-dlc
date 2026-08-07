@@ -55,13 +55,14 @@ type HasMultipleElements<T extends Tuple> = Exclude<T, readonly [any, ...any[]]>
  * @example
  * type u = ElementwiseUnionUnion<[A] | [B, C]>; // [A | B, (C | undefined)?]
  */
-export type ElementwiseUnionUnion<T extends Tuple, OptionalTail extends boolean = false> = Head<T> extends never
-  ? readonly []
-  : HasMultipleElements<T> extends true
-    ? OptionalTail extends true
-      ? readonly [Head<T>?, ...ElementwiseUnionUnion<Tail<T>, true>]
-      : readonly [Head<T>, ...ElementwiseUnionUnion<Tail<T>, false>]
-    : readonly [Head<T>?, ...ElementwiseUnionUnion<Tail<T>, true>];
+export type ElementwiseUnionUnion<T extends Tuple, OptionalTail extends boolean = false> =
+  Head<T> extends never
+    ? readonly []
+    : HasMultipleElements<T> extends true
+      ? OptionalTail extends true
+        ? readonly [Head<T>?, ...ElementwiseUnionUnion<Tail<T>, true>]
+        : readonly [Head<T>, ...ElementwiseUnionUnion<Tail<T>, false>]
+      : readonly [Head<T>?, ...ElementwiseUnionUnion<Tail<T>, true>];
 
 /**
  * The element-wise union of all tuples in 2D tuple `T`.
