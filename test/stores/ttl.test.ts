@@ -127,7 +127,18 @@ describe("TtlStore", () => {
 
   it("treats an entry too short to carry the header as a miss", () => {
     const inner = new LruStore(1024);
-    inner.set("k", [Buffer.from("short")]); // 5 bytes < 8 — could not have been written through TtlStore
+    inner.set("k", [Buffer.from("short")]); // 5 bytes < header — could not have been written by TtlStore
+    const store = new TtlStore(inner, { ttlMs: 1000 });
+    expect(store.get("k")).toBeNull();
+  });
+
+  it("treats a foreign value (no magic header) as a miss instead of misreading it", () => {
+    // A value written to the wrapped store by something other than TtlStore (a pre-existing entry, or
+    // another consumer sharing the store). Long enough to look header-sized, but lacks the magic — so
+    // it must NOT be served as a stamped value with its leading bytes stripped.
+    const inner = new LruStore(1024);
+    const foreign = Buffer.from("a plain value that was never written through the TtlStore wrapper");
+    inner.set("k", [foreign]);
     const store = new TtlStore(inner, { ttlMs: 1000 });
     expect(store.get("k")).toBeNull();
   });
@@ -140,10 +151,11 @@ describe("TtlStore", () => {
     expect(() => store.flush()).not.toThrow();
   });
 
-  it("delegates byte-cap eviction to a wrapped LruStore (the stamp header counts toward the cap)", () => {
-    const store = new TtlStore(new LruStore(8 + 3 + 3), { ttlMs: 1_000_000 });
-    store.set("a", bytes("xxx")); // 3 bytes + 8 stamp = 11
-    store.set("b", bytes("yyy")); // 11 more → total 22 > 14, evicts 'a'
+  it("delegates byte-cap eviction to a wrapped LruStore (the header counts toward the cap)", () => {
+    // Each stored entry is a 12-byte header + 3-byte payload = 15 bytes; a cap of 18 holds one, not two.
+    const store = new TtlStore(new LruStore(12 + 3 + 3), { ttlMs: 1_000_000 });
+    store.set("a", bytes("xxx")); // 15 bytes
+    store.set("b", bytes("yyy")); // 15 more → total 30 > 18, evicts 'a'
     expect(store.get("a")).toBeNull();
     expect(store.get("b")).toEqual(bytes("yyy"));
   });
