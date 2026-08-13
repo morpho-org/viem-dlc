@@ -322,6 +322,34 @@ describe("ThrottledStore", () => {
     });
   });
 
+  describe("write acceptance", () => {
+    it("returns without waiting on the rate limiter", () => {
+      const underlying = new MemoryStore();
+      const setSpy = vi.spyOn(underlying, "set");
+      // One token, no refill: the second key can never be admitted.
+      const store = createStore(underlying, { maxWritesBurst: 1, maxWritesPerSecond: 0 });
+
+      expect(store.set("a", [Buffer.from("1")])).toBeUndefined();
+      expect(store.set("b", [Buffer.from("2")])).toBeUndefined();
+      expect(store.delete("c")).toBeUndefined();
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it("reports a failed upstream delete instead of rejecting", async () => {
+      const underlying = new MemoryStore();
+      const error = new Error("boom");
+      vi.spyOn(underlying, "delete").mockRejectedValueOnce(error);
+
+      const onWriteError = vi.fn();
+      const store = createStore(underlying, { onWriteError });
+
+      store.delete("key");
+      await store.flush();
+
+      expect(onWriteError).toHaveBeenCalledWith("key", error, expect.any(Number));
+    });
+  });
+
   describe("maxStalenessMs", () => {
     it("drops stale writes and clears pending", async () => {
       const underlying = new MemoryStore();
