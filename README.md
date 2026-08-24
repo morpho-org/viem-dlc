@@ -144,8 +144,9 @@ those would swap a real answer for whatever the next branch returns, and lose it
 that branch fails for an unrelated reason. (viem's stock `fallback` does not make this
 distinction, which is one more reason to prefer `failover` for paged reads.)
 
-Pass a custom `shouldThrow` to override — note that doing so replaces *both* behaviors, so
-compose with `defaultShouldThrow` unless you mean to fall over on payload-carrying errors:
+Payload-carrying errors are handled by `failover` itself, ahead of `shouldThrow`, and are not
+overridable: this library produced them and knows their semantics better than a caller-supplied
+predicate can. `shouldThrow` governs everything else — pass one to override:
 
 ```ts
 import { defaultShouldThrow, failover } from '@morpho-org/viem-dlc/transports'

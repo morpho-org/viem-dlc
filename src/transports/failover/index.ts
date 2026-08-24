@@ -9,10 +9,10 @@ export interface FailoverConfig {
   /**
    * Predicate deciding whether an error should propagate immediately rather than
    * trigger a fallover to the next branch. Defaults to {@link defaultShouldThrow}, which
-   * mirrors viem's stock `fallback` — contract reverts and user-rejection errors are not
-   * retried — and additionally stops on {@link isTerminalError}. Overriding this replaces
-   * both behaviors, so compose with `defaultShouldThrow` rather than starting from scratch
-   * unless you intend to fall over on errors that already carry a usable payload.
+   * mirrors viem's stock `fallback`: contract reverts and user-rejection errors are not retried.
+   *
+   * Consulted only for errors that are not {@link isTerminalError} — those always propagate,
+   * whatever this returns.
    */
   shouldThrow?: (error: unknown) => boolean;
 }
@@ -51,7 +51,10 @@ export function failover<S extends RpcSchema>(
         try {
           return await requestFn(args);
         } catch (err) {
-          if (shouldThrow(err)) throw err;
+          // Ahead of `shouldThrow`, and not overridable: a terminal error is one this library
+          // produced and knows the semantics of. Falling over swaps its payload for whatever the
+          // next branch returns, and loses it entirely if that branch fails for its own reasons.
+          if (isTerminalError(err) || shouldThrow(err)) throw err;
           lastErr = err;
         }
       }
@@ -77,15 +80,11 @@ export function failover<S extends RpcSchema>(
 /**
  * Mirrors viem's stock fallback `shouldThrow`: don't fall over on contract reverts
  * or user-rejection errors. See `node_modules/viem/_esm/clients/transports/fallback.js`.
- * Additionally stops on {@link isTerminalError}.
+ *
+ * Terminal errors are handled by {@link failover} itself and never reach this predicate.
  */
 export function defaultShouldThrow(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
-
-  // An error carrying a usable payload is an answer, not a branch failure — falling over would
-  // replace it with whatever the next branch produces, losing the payload outright. Checked
-  // before the `code` guard below, which bails out on any error lacking a numeric `code`.
-  if (isTerminalError(error)) return true;
 
   const code = (error as { code?: unknown }).code;
   const message = (error as { message?: unknown }).message;

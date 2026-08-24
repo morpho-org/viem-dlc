@@ -192,6 +192,27 @@ describe("failover", () => {
     expect(secondary).not.toHaveBeenCalled();
   });
 
+  it("does not fall over on a partial result even under a custom shouldThrow", async () => {
+    const primary = mockPagedLens([2]);
+    const secondary = mockPagedLens([]);
+    const client = createPublicClient({
+      transport: failover(
+        [
+          deployless(custom({ request: primary as never }), { gasLimit: 30_000_000 }),
+          deployless(custom({ request: secondary as never }), { gasLimit: 30_000_000 }),
+        ],
+        // A predicate that falls over on everything — terminal errors still must not.
+        { shouldThrow: () => false },
+      ),
+    });
+
+    const { data, missing } = await call2(client, callParameters([1, 2, 3].map(addr)));
+
+    expect(decodeServed(data)).toEqual([1n, 3n]);
+    expect(missing).toEqual([1]);
+    expect(secondary).not.toHaveBeenCalled();
+  });
+
   it("still falls over when a branch fails for an ordinary reason", async () => {
     const primary = vi.fn().mockRejectedValue(new Error("connection refused"));
     const secondary = mockPagedLens([]);
