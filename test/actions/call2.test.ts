@@ -12,10 +12,13 @@ import {
   toHex,
 } from "viem";
 import { call } from "viem/actions";
+import { mainnet } from "viem/chains";
 import { describe, expect, it, vi } from "vitest";
 
 import { policy } from "../../src/actions/call.js";
 import { call2 } from "../../src/actions/call2.js";
+import { MemoryStore } from "../../src/stores/memory.js";
+import { cache } from "../../src/transports/cache/index.js";
 import { deployless } from "../../src/transports/deployless/index.js";
 import { failover } from "../../src/transports/failover/index.js";
 import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../src/utils/deployless/codec.envelope.js";
@@ -55,13 +58,13 @@ function clientWith(requestFn: ReturnType<typeof vi.fn>) {
   });
 }
 
-function callParameters(addrs: readonly Address[]) {
+function callParameters(addrs: readonly Address[], cacheOpts?: { blobKey: string; ttl: number }) {
   return {
     factory: FACTORY,
     factoryData: FACTORY_DATA,
     to: TARGET_TO,
     data: encodeFunctionData({ abi: [pageAbi], functionName: "page", args: [addrs] }),
-    stateOverride: [policy({ abi: pageAbi, paged: true })],
+    stateOverride: [policy({ abi: pageAbi, paged: true, ...(cacheOpts ? { cache: cacheOpts } : {}) })],
   } as const;
 }
 
@@ -86,6 +89,28 @@ describe("call2", () => {
     const { data, missing } = await call2(client, callParameters([1, 2, 3].map(addr)));
 
     expect(decodeServed(data)).toEqual([1n, 3n]);
+    expect(missing).toEqual([1]);
+  });
+
+  it("works through the cache transport, whose extra layers must not swallow the error", async () => {
+    const requestFn = mockPagedLens([2]);
+    const client = createPublicClient({
+      chain: mainnet,
+      transport: cache(custom({ request: requestFn as never }), [
+        { store: new MemoryStore(), binSize: 10_000, invalidationStrategy: () => 0, gasLimit: 30_000_000 },
+        { maxBlockRange: 100_000 },
+        { retryCount: 0, retryDelay: 0, blockTimestamp: false },
+        { maxBytes: 8_192 },
+        { maxRequestsPerSecond: 100, maxBurstRequests: 10, maxConcurrentRequests: 10 },
+      ]),
+    });
+
+    // Goes through coalescing and the dedup/rebase branch: addr(1) is repeated, so `missing`
+    // and `data` both have to be re-expressed against the caller's input.
+    const params = callParameters([1, 2, 3, 1].map(addr), { blobKey: "test-blob", ttl: 60_000 });
+    const { data, missing } = await call2(client, params);
+
+    expect(decodeServed(data)).toEqual([1n, 3n, 1n]);
     expect(missing).toEqual([1]);
   });
 
@@ -128,6 +153,26 @@ describe("failover", () => {
 
     const { missing } = await call2(client, callParameters([1, 2, 3].map(addr)));
 
+    expect(missing).toEqual([1]);
+    expect(secondary).not.toHaveBeenCalled();
+  });
+
+  it("does not discard a partial result when a later branch fails for an unrelated reason", async () => {
+    const primary = mockPagedLens([2]);
+    const secondary = vi.fn().mockRejectedValue(new Error("connection refused"));
+    const client = createPublicClient({
+      transport: failover([
+        deployless(custom({ request: primary as never }), { gasLimit: 30_000_000 }),
+        deployless(custom({ request: secondary as never }), { gasLimit: 30_000_000 }),
+      ]),
+    });
+
+    // Falling over here would replace the primary's answer with the secondary's transport
+    // error, so `lastErr` would surface "connection refused" and every served element would
+    // be lost — not merely re-fetched.
+    const { data, missing } = await call2(client, callParameters([1, 2, 3].map(addr)));
+
+    expect(decodeServed(data)).toEqual([1n, 3n]);
     expect(missing).toEqual([1]);
     expect(secondary).not.toHaveBeenCalled();
   });

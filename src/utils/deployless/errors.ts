@@ -1,5 +1,7 @@
 import { BaseError, type Hex } from "viem";
 
+import { causeChain, TERMINAL_ERROR } from "../errors.js";
+
 /** Brand marking a {@link DeploylessPartialResultError} across package instances. */
 export const DEPLOYLESS_PARTIAL_RESULT = "__viemDlcPartialResult" as const;
 
@@ -18,6 +20,9 @@ export class DeploylessPartialResultError extends BaseError {
   override name = "DeploylessPartialResultError";
 
   readonly [DEPLOYLESS_PARTIAL_RESULT] = true;
+
+  /** Terminal for `failover`: the missing elements are unservable on every provider. */
+  readonly [TERMINAL_ERROR] = true;
 
   /** ABI-encoded `U[]` holding every element that was served, in input order, gaps omitted. */
   readonly data: Hex;
@@ -43,13 +48,7 @@ export function isDeploylessPartialResultError(e: unknown): e is DeploylessParti
  * returning `null` if there is none.
  */
 export function findDeploylessPartialResult(e: unknown): DeploylessPartialResultError | null {
-  const seen = new Set<unknown>();
-  for (
-    let cur: unknown = e;
-    cur && typeof cur === "object" && !seen.has(cur);
-    cur = (cur as { cause?: unknown }).cause
-  ) {
-    seen.add(cur);
+  for (const cur of causeChain(e)) {
     if (isDeploylessPartialResultError(cur)) return cur;
   }
   return null;

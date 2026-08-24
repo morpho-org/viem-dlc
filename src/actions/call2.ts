@@ -7,6 +7,8 @@ export type Call2ReturnType = {
   /**
    * ABI-encoded `U[]` holding every element that was served, in input order, with the
    * {@link Call2ReturnType.missing} indices omitted. Decode against the lens's `results` type.
+   * `"0x"` stands in for the `undefined` viem's `call` returns on an empty response, which a
+   * paged read never produces.
    */
   data: Hex;
   /**

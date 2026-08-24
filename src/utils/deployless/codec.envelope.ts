@@ -1,6 +1,8 @@
 import type { Address, Hex } from "viem";
 import { decodeAbiParameters, deploylessCallViaFactoryBytecode, encodeAbiParameters, parseAbiParameters } from "viem";
 
+import { causeChain } from "../errors.js";
+
 import { flzCompress } from "./flz.js";
 
 /**
@@ -179,13 +181,7 @@ export function isOutOfGasRevert(e: unknown): boolean {
  * shapes are tolerated.
  */
 function* revertDataCandidates(e: unknown): Generator<string> {
-  const seen = new Set<unknown>();
-  for (
-    let cur: unknown = e;
-    cur && typeof cur === "object" && !seen.has(cur);
-    cur = (cur as { cause?: unknown }).cause
-  ) {
-    seen.add(cur);
+  for (const cur of causeChain(e)) {
     const data = (cur as { data?: unknown }).data;
     const raw =
       typeof data === "string"
