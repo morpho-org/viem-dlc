@@ -21,8 +21,18 @@ export class DeploylessPartialResultError extends BaseError {
 
   readonly [DEPLOYLESS_PARTIAL_RESULT] = true;
 
-  /** Terminal for `failover`: the missing elements are unservable on every provider. */
+  /** Terminal for `failover` — see {@link TERMINAL_ERROR}. */
   readonly [TERMINAL_ERROR] = true;
+
+  /**
+   * Stops viem from retrying the request. `shouldRetry` treats any error lacking a numeric
+   * `code` as retryable, so without this a caller-supplied `requestOptions.retryCount` re-runs
+   * the whole request and a second-attempt failure would replace this payload. The value sits
+   * in JSON-RPC's implementation-defined server-error range and is absent from `buildRequest`'s
+   * code switch, so the error passes through unmapped.
+   * See `node_modules/viem/_esm/utils/buildRequest.js`.
+   */
+  readonly code = -32099;
 
   /** ABI-encoded `U[]` holding every element that was served, in input order, gaps omitted. */
   readonly data: Hex;

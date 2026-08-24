@@ -57,7 +57,15 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  *
  *   A lens that also caps per-element gas — optional, and only worth it when elements may be
  *   unbounded — must leave element 0 uncapped, or retrying a range headed by an unbounded
- *   element returns `([], [])` instead of the "unservable" answer the transport needs.
+ *   element returns `([], [])` instead of the "unservable" answer the transport needs. It must
+ *   also tell a capped out-of-gas apart from a plain `revert(0, 0)`, since both yield empty
+ *   returndata: measure `gasleft()` around the sub-call and treat "consumed ≈ the cap **and**
+ *   empty returndata" as gas-driven, so it stops rather than recording a skip. Same heuristic,
+ *   and same imprecision, as the envelope's own 63/64 check.
+ *
+ *   Note that an element reported unservable via out-of-gas is unservable *under this node's
+ *   gas cap*; a provider with a higher cap could serve it. Skips, by contrast, are a property
+ *   of the element.
  * @param opts.batch Optional batching config. Omit to send all elements in a single
  *   upstream `eth_call`. When set, chunks honor both `batchSize` and `gas`.
  * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk.

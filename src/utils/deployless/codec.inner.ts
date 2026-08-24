@@ -108,7 +108,15 @@ export function hexToPage(layout: ElementLayout, encoded: Hex): Page {
   const totalBytes = hexByteLength(encoded);
   const resultsAt = readUint256(encoded, 0);
   const skippedAt = readUint256(encoded, 32);
-  if (resultsAt >= skippedAt || skippedAt > totalBytes) {
+  // Both must land past the two-word head and be word-aligned; `skippedAt` doubles as the end
+  // bound for `results`, so an offset pointing into the head would silently truncate it.
+  if (
+    resultsAt < 64 ||
+    resultsAt % 32 !== 0 ||
+    skippedAt % 32 !== 0 ||
+    resultsAt >= skippedAt ||
+    skippedAt > totalBytes
+  ) {
     throw new Error("paged encoding parameter offsets out of order or out of range");
   }
 
@@ -183,10 +191,18 @@ function sliceArray(layout: ElementLayout, encoded: Hex, arrayAt: number, region
     throw new Error("dynamic-layout array body shorter than offset table");
   }
   const offsets = new Array<number>(length);
+  const tableBytes = length * 32;
   for (let i = 0; i < length; i++) {
     const off = Number.parseInt(encoded.slice(innerStartHex + i * 64, innerStartHex + (i + 1) * 64), 16);
     if (!Number.isSafeInteger(off)) {
       throw new Error("dynamic-layout offset exceeds safe integer range");
+    }
+    // Must land in the tail, word-aligned, and strictly after its predecessor: every dynamic
+    // value occupies at least a length word, so equal offsets are never canonical. Without the
+    // `>= tableBytes` floor an element can point back into the offset table and slice bytes
+    // that decode as a plausible value — a malformed response would be believed, not rejected.
+    if (off < tableBytes || off % 32 !== 0 || (i > 0 && off <= offsets[i - 1]!)) {
+      throw new Error("dynamic-layout offsets out of order or out of range");
     }
     offsets[i] = off;
   }

@@ -138,8 +138,14 @@ branch A persist in cache and are visible to branch B on fallover, making recove
 
 `failover` only sees errors that escape per-branch halving (`logsDivider` range-halving and
 `deployless` size-bisection run inside each branch first). By default, contract reverts and
-user-rejection errors propagate immediately instead of triggering fallover — pass a custom
-`shouldThrow` to override:
+user-rejection errors propagate immediately instead of triggering fallover, as do errors that
+already carry a usable payload — a paged `DeploylessPartialResultError`. Falling over on one of
+those would swap a real answer for whatever the next branch returns, and lose it outright if
+that branch fails for an unrelated reason. (viem's stock `fallback` does not make this
+distinction, which is one more reason to prefer `failover` for paged reads.)
+
+Pass a custom `shouldThrow` to override — note that doing so replaces *both* behaviors, so
+compose with `defaultShouldThrow` unless you mean to fall over on payload-carrying errors:
 
 ```ts
 import { defaultShouldThrow, failover } from '@morpho-org/viem-dlc/transports'

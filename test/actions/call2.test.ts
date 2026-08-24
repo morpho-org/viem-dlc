@@ -114,6 +114,21 @@ describe("call2", () => {
     expect(missing).toEqual([1]);
   });
 
+  it("is not re-run by a caller-supplied retryCount", async () => {
+    const requestFn = mockPagedLens([2]);
+    const client = clientWith(requestFn);
+
+    // viem's `shouldRetry` retries anything without a numeric `code`; a second attempt that
+    // failed for an infrastructure reason would replace this answer rather than add to it.
+    const { missing } = await call2(client, {
+      ...callParameters([1, 2, 3].map(addr)),
+      requestOptions: { retryCount: 3 },
+    });
+
+    expect(missing).toEqual([1]);
+    expect(requestFn).toHaveBeenCalledOnce();
+  });
+
   it("rethrows errors that are not partial results", async () => {
     const client = clientWith(vi.fn().mockRejectedValue(new Error("upstream exploded")));
 

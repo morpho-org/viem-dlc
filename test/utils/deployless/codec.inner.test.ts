@@ -90,10 +90,13 @@ describe("hexToPage", () => {
     ["results after skipped", 0x40, 0x20],
     ["equal offsets", 0x40, 0x40],
     ["skipped past end of buffer", 0x40, 0xffff],
+    ["results pointing into the two-word head", 0x00, 0xa0],
+    ["a word-misaligned results offset", 0x44, 0xa0],
+    ["a word-misaligned skipped offset", 0x40, 0x84],
   ])("rejects %s", (_name, resultsAt, skippedAt) => {
     const word = (n: number) => n.toString(16).padStart(64, "0");
     const encoded = `0x${word(resultsAt)}${word(skippedAt)}${word(0)}${word(0)}` as Hex;
-    expect(() => hexToPage(STATIC, encoded)).toThrow(/parameter offsets out of order or out of range/);
+    expect(() => hexToPage(STATIC, encoded)).toThrow(/paged encoding parameter offsets out of order or out of range/);
   });
 
   it("rejects a skipped array shorter than its declared length", () => {
@@ -102,11 +105,19 @@ describe("hexToPage", () => {
     expect(() => hexToPage(STATIC, encoded)).toThrow(/skipped array shorter than declared length/);
   });
 
-  it("rejects out-of-order dynamic element offsets inside results", () => {
+  it.each([
+    ["an element offset pointing back into its own offset table", 1, [0]],
+    ["a word-misaligned element offset", 1, [0x24]],
+    ["duplicate element offsets", 2, [0x40, 0x40]],
+    ["descending element offsets", 2, [0x60, 0x40]],
+  ])("rejects %s", (_name, length, offsets) => {
     const word = (n: number) => n.toString(16).padStart(64, "0");
-    // results at 0x40 holding 2 elements whose offset table points backwards; skipped at 0xa0.
-    const encoded = `0x${word(0x40)}${word(0xa0)}${word(2)}${word(0x60)}${word(0x40)}${word(0)}` as Hex;
-    expect(() => hexToPage(DYNAMIC, encoded)).toThrow(/offsets out of order or out of range/);
+    // A `string[]` at 0x40 with the given offset table, then an empty `skipped` array. Without
+    // the tail/alignment floor, offset 0 slices the table itself and decodes as a plausible "".
+    const table = (offsets as number[]).map(word).join("");
+    const skippedAt = 0x60 + (offsets as number[]).length * 32;
+    const encoded = `0x${word(0x40)}${word(skippedAt)}${word(length as number)}${table}${word(0)}` as Hex;
+    expect(() => hexToPage(DYNAMIC, encoded)).toThrow(/dynamic-layout offsets out of order or out of range/);
   });
 });
 

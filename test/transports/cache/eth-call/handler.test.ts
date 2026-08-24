@@ -547,6 +547,77 @@ describe("handleEthCall", () => {
       expect(keys).toEqual([1, 3].map((n) => entryKeyFor(pad(toHex(n), { size: 32 }), pageAbi)));
     });
 
+    it("waits for a slow sibling chunk to commit before a failing chunk's error escapes", async () => {
+      const store = new MemoryStore();
+      const addrs = [addr(1), addr(2), addr(3), addr(4)];
+      // Two chunks of two. The first rejects at once; the second resolves a few ticks later.
+      const req: EthCallRequest = {
+        method: "eth_call",
+        params: [
+          { data: buildDeploylessCall(buildTargetCalldata(pageAbi, addrs)) },
+          "latest",
+          {
+            [ETH_CALL_POLICY_ADDRESS]: {
+              code: toHex(
+                JSON.stringify({
+                  abi: pageAbi,
+                  paged: true,
+                  cache: { blobKey: "test-blob", ttl },
+                  batch: { gas: { constant: 0, linear: 15_000_000, quadratic: 0 } },
+                }),
+              ),
+            },
+          },
+        ],
+      };
+      const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
+        const sent = decodeSentAddresses((args.params[0] as { data: Hex }).data);
+        if (sent[0] === addr(1)) throw new Error("upstream exploded");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const results = sent.map((a) => BigInt(a));
+        throw revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], [results, []]));
+      });
+
+      const error = await handleEthCall(ctx(requestFn, store), req).catch((e) => e);
+
+      // The transport error wins over any partial state, but the slow chunk's work is kept.
+      expect(error.message).toMatch(/upstream exploded/);
+      const blobKey = keychain.blobKey(chainId, req)!;
+      const cached = new LazyNdjsonMap<CachedEthCallEntry>(codec, { get: () => store.get(blobKey) ?? [] });
+      const keys: string[] = [];
+      await cached.scan((record) => void keys.push(record.key));
+      expect(keys).toEqual([3, 4].map((n) => entryKeyFor(pad(toHex(n), { size: 32 }), pageAbi)));
+    });
+
+    it("orders `data` correctly when warm hits, fresh misses, and skips interleave", async () => {
+      const store = new MemoryStore();
+      const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
+      const req = pagedRequest(addrs);
+      const blobKey = keychain.blobKey(chainId, req)!;
+      // Pre-seed 2 and 4 so the fetch sees only [1, 3, 5]; the lens then declines 3.
+      await populateStore(
+        store,
+        blobKey,
+        [2, 4].map((n) => ({
+          key: entryKeyFor(pad(toHex(n), { size: 32 }), pageAbi),
+          value: { output: pad(toHex(n * 10), { size: 32 }), fetchedAt: Date.now() },
+        })),
+      );
+      const requestFn = mockPagedFn([3]);
+
+      const error = await handleEthCall(ctx(requestFn, store), req).catch((e) => e);
+
+      expect(decodeSentAddresses((requestFn.mock.calls[0]![0] as EthCallRequest).params[0].data as Hex)).toEqual([
+        addr(1),
+        addr(3),
+        addr(5),
+      ]);
+      expect(error.missing).toEqual([2]);
+      // Warm values (20, 40) must sit at their original positions among the fetched ones.
+      const [served] = decodeAbiParameters([{ type: "uint256[]" }], error.data);
+      expect(served).toEqual([1n, 20n, 40n, 5n]);
+    });
+
     it("reports missing indices against the caller's input, not the deduped miss list", async () => {
       const store = new MemoryStore();
       // addr(2) appears three times but dedupes to one miss; all three indices must be reported.

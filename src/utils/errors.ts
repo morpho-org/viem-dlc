@@ -27,9 +27,9 @@ function isTimeoutShape(error: unknown): boolean {
 
 /**
  * Brand marking an error that is an *answer* rather than a failed attempt: it carries a usable
- * payload, and re-running the request — against the same provider or a different one — cannot
- * improve on it and would discard what it holds. {@link isTerminalError} is how dispatchers
- * recognize one without knowing which feature produced it.
+ * payload, and re-running the request would discard that payload in favour of whatever the retry
+ * produces — including, if the retry fails for an unrelated reason, nothing at all.
+ * {@link isTerminalError} is how dispatchers recognize one without knowing which feature made it.
  */
 export const TERMINAL_ERROR = "__viemDlcTerminal" as const;
 
