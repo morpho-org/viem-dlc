@@ -26,13 +26,19 @@ export type ResolvedArrayFunction = {
   inputLayout: ElementLayout;
   /** Element layout for the output array. */
   outputLayout: ElementLayout;
+  /** Whether the fragment is a paged lens — see {@link resolveArrayFunction}. */
+  paged: boolean;
 };
 
 /**
- * Validates that `fragment` is a single-input, single-output function whose input and
- * output are both dynamic arrays, and resolves the element layout for each.
+ * Validates that `fragment` is a single-input function whose input is a dynamic array, and
+ * resolves the element layout of that input and of the result array.
+ *
+ * With `paged`, the fragment must return `(U[] results, uint256[] skipped)` instead of a bare
+ * `U[]`; `outputLayout` describes `U` either way. The paged contract — index order, "attempt at
+ * least one item", deterministic skips — is documented on `policy`'s `paged` option.
  */
-export function resolveArrayFunction(fragment: AbiFunction): ResolvedArrayFunction {
+export function resolveArrayFunction(fragment: AbiFunction, paged = false): ResolvedArrayFunction {
   if (fragment.type !== "function") {
     throw new Error("eth_call policy abi must be a function fragment");
   }
@@ -41,13 +47,22 @@ export function resolveArrayFunction(fragment: AbiFunction): ResolvedArrayFuncti
   if (fragment.inputs.length !== 1 || !input?.type.endsWith("[]")) {
     throw new Error(`function ${fragment.name}: expected exactly one dynamic-array input`);
   }
-  if (fragment.outputs.length !== 1 || !output?.type.endsWith("[]")) {
+  if (paged) {
+    const skipped = fragment.outputs[1];
+    if (fragment.outputs.length !== 2 || !output?.type.endsWith("[]")) {
+      throw new Error(`function ${fragment.name}: paged lenses must return (U[] results, uint256[] skipped)`);
+    }
+    if (skipped?.type !== "uint256[]") {
+      throw new Error(`function ${fragment.name}: paged output 1 must be uint256[], got ${skipped?.type}`);
+    }
+  } else if (fragment.outputs.length !== 1 || !output?.type.endsWith("[]")) {
     throw new Error(`function ${fragment.name}: expected exactly one dynamic-array output`);
   }
   return {
     selector: toFunctionSelector(fragment),
     inputLayout: layoutOf(input),
     outputLayout: layoutOf(output),
+    paged,
   };
 }
 
@@ -67,14 +82,86 @@ export function hexToArray(layout: ElementLayout, encoded: Hex): readonly Hex[] 
   if (encoded.length < 2 + 64) {
     throw new Error("array encoding shorter than a parameter-tuple offset");
   }
-  const arrayOffsetBytes = readUint256(encoded, 0);
-  if (encoded.length < 2 + (arrayOffsetBytes + 32) * 2) {
+  return sliceArray(layout, encoded, readUint256(encoded, 0), hexByteLength(encoded));
+}
+
+/** A paged lens's return tuple — see {@link hexToPage}. */
+export type Page = {
+  /** Raw element bytes for the attempted-and-served items, in input order. */
+  results: readonly Hex[];
+  /** Indices (into *this call's* input) the lens attempted and declined. */
+  skipped: readonly number[];
+};
+
+/**
+ * Slices a paged lens's `(U[] results, uint256[] skipped)` return tuple, keeping `results`
+ * as raw element bytes the way {@link hexToArray} does and instantiating only `skipped`.
+ *
+ * Bounding `results` needs both head words: with one array the body runs to end-of-buffer, but
+ * here `skipped`'s offset is where `results` stops. Reusing {@link hexToArray} would let the
+ * final `U` swallow the whole `skipped` array whenever `U` is dynamic.
+ */
+export function hexToPage(layout: ElementLayout, encoded: Hex): Page {
+  if (encoded.length < 2 + 128) {
+    throw new Error("paged encoding shorter than a two-parameter head");
+  }
+  const totalBytes = hexByteLength(encoded);
+  const resultsAt = readUint256(encoded, 0);
+  const skippedAt = readUint256(encoded, 32);
+  if (resultsAt >= skippedAt || skippedAt > totalBytes) {
+    throw new Error("paged encoding parameter offsets out of order or out of range");
+  }
+
+  const skippedLength = readUint256(encoded, skippedAt);
+  const skippedStart = 2 + (skippedAt + 32) * 2;
+  if (encoded.length < skippedStart + skippedLength * 64) {
+    throw new Error("paged skipped array shorter than declared length");
+  }
+  const skipped = new Array<number>(skippedLength);
+  for (let i = 0; i < skippedLength; i++) {
+    skipped[i] = readUint256(encoded, skippedAt + 32 + i * 32);
+  }
+
+  return { results: sliceArray(layout, encoded, resultsAt, skippedAt), skipped };
+}
+
+/**
+ * Builds a single-parameter tuple encoding `(T[])` from pre-sliced raw element bytes.
+ * Emits `[offset=0x20][length][inner tuple]`. Element bytes for a dynamic layout must
+ * be the tail bytes that originally sat at each offset.
+ */
+export function arrayToHex(layout: ElementLayout, elements: readonly Hex[]): Hex {
+  return `0x${writeUint256(32)}${encodeArrayBody(layout, elements)}` as Hex;
+}
+
+/** Inverse of {@link hexToPage}; used to build paged responses in tests and fixtures. */
+export function pageToHex(layout: ElementLayout, { results, skipped }: Page): Hex {
+  const resultsBody = encodeArrayBody(layout, results);
+  const skippedBody = encodeArrayBody(
+    { mode: "static", size: 32 },
+    skipped.map((i) => `0x${writeUint256(i)}` as Hex),
+  );
+  const skippedAt = 64 + resultsBody.length / 2;
+  return `0x${writeUint256(64)}${writeUint256(skippedAt)}${resultsBody}${skippedBody}` as Hex;
+}
+
+/*//////////////////////////////////////////////////////////////
+                         ARRAY BODY CODEC
+//////////////////////////////////////////////////////////////*/
+
+/**
+ * Slices the array whose length word sits at `arrayAt`, treating `regionEnd` as the end of its
+ * body. Callers must pass the true end: for a dynamic layout the last element's extent is only
+ * knowable from it.
+ */
+function sliceArray(layout: ElementLayout, encoded: Hex, arrayAt: number, regionEnd: number): readonly Hex[] {
+  if (arrayAt + 32 > regionEnd) {
     throw new Error("array encoding shorter than declared length position");
   }
-  const length = readUint256(encoded, arrayOffsetBytes);
-  const innerStartBytes = arrayOffsetBytes + 32;
+  const length = readUint256(encoded, arrayAt);
+  const innerStartBytes = arrayAt + 32;
   const innerStartHex = 2 + innerStartBytes * 2;
-  const innerBytes = (encoded.length - innerStartHex) / 2;
+  const innerBytes = regionEnd - innerStartBytes;
 
   if (layout.mode === "static") {
     const hexPerElement = layout.size * 2;
@@ -90,7 +177,7 @@ export function hexToArray(layout: ElementLayout, encoded: Hex): readonly Hex[] 
   }
 
   // Dynamic layout: k offsets (32 bytes each) inside the inner tuple, each measured from
-  // the start of the inner tuple. Use consecutive offsets (or end-of-buffer for the last)
+  // the start of the inner tuple. Use consecutive offsets (or end-of-region for the last)
   // to derive element byte ranges.
   if (innerBytes < length * 32) {
     throw new Error("dynamic-layout array body shorter than offset table");
@@ -115,18 +202,13 @@ export function hexToArray(layout: ElementLayout, encoded: Hex): readonly Hex[] 
   return out;
 }
 
-/**
- * Builds a single-parameter tuple encoding `(T[])` from pre-sliced raw element bytes.
- * Emits `[offset=0x20][length][inner tuple]`. Element bytes for a dynamic layout must
- * be the tail bytes that originally sat at each offset.
- */
-export function arrayToHex(layout: ElementLayout, elements: readonly Hex[]): Hex {
-  const offsetWord = writeUint256(32);
+/** Emits `[length][inner tuple]` — the body {@link sliceArray} reads, without a leading offset. */
+function encodeArrayBody(layout: ElementLayout, elements: readonly Hex[]): string {
   const lengthWord = writeUint256(elements.length);
   const body = elements.map((e) => e.slice(2)).join("");
 
   if (layout.mode === "static") {
-    return `0x${offsetWord}${lengthWord}${body}` as Hex;
+    return `${lengthWord}${body}`;
   }
 
   // Dynamic inner type: write an offset table that points at each element's position
@@ -135,11 +217,15 @@ export function arrayToHex(layout: ElementLayout, elements: readonly Hex[]): Hex
   const head = elements
     .map((el) => {
       const word = writeUint256(cursor);
-      cursor += (el.length - 2) / 2;
+      cursor += hexByteLength(el);
       return word;
     })
     .join("");
-  return `0x${offsetWord}${lengthWord}${head}${body}` as Hex;
+  return `${lengthWord}${head}${body}`;
+}
+
+function hexByteLength(hex: Hex): number {
+  return (hex.length - 2) / 2;
 }
 
 /*//////////////////////////////////////////////////////////////

@@ -25,6 +25,7 @@ import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overri
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
 import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../../../src/utils/deployless/codec.envelope.js";
+import { isDeploylessPartialResultError } from "../../../../src/utils/deployless/errors.js";
 import { flzDecompress } from "../../../../src/utils/deployless/flz.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
 
@@ -146,10 +147,10 @@ function mockCompressibleFn(compress: boolean) {
   });
 }
 
-function entryKeyFor(element: Hex) {
+function entryKeyFor(element: Hex, abi: AbiFunction = balancesOfAbi) {
   return keychain.entryKey(chainId, "eth_call", {
     target: { address: TARGET_TO, factory: FACTORY, factoryData: FACTORY_DATA },
-    selector: toFunctionSelector(balancesOfAbi),
+    selector: toFunctionSelector(abi),
     element,
     restOfEthCallParams: ["latest"],
   }).data;
@@ -494,6 +495,69 @@ describe("handleEthCall", () => {
     };
 
     await expect(handleEthCall(ctx(vi.fn()), req)).rejects.toThrow(/found extras:.*from.*gas.*value/);
+  });
+
+  describe("paged lenses", () => {
+    const pageAbi = parseAbiItem(
+      "function page(address[] input) view returns (uint256[] results, uint256[] skipped)",
+    ) as AbiFunction;
+
+    function pagedRequest(addrs: readonly Address[]): EthCallRequest {
+      return {
+        method: "eth_call",
+        params: [
+          { data: buildDeploylessCall(buildTargetCalldata(pageAbi, addrs)) },
+          "latest",
+          {
+            [ETH_CALL_POLICY_ADDRESS]: {
+              code: toHex(JSON.stringify({ abi: pageAbi, paged: true, cache: { blobKey: "test-blob", ttl } })),
+            },
+          },
+        ],
+      };
+    }
+
+    /** Declines the given address values; serves every other element in a single page. */
+    function mockPagedFn(decline: readonly number[]) {
+      return vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
+        const addrs = decodeSentAddresses((args.params[0] as { data: Hex }).data);
+        const results: bigint[] = [];
+        const skipped: bigint[] = [];
+        addrs.forEach((a, i) => {
+          if (decline.includes(Number(BigInt(a)))) skipped.push(BigInt(i));
+          else results.push(BigInt(a));
+        });
+        throw revertWithSentinel(
+          encodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], [results, skipped]),
+        );
+      });
+    }
+
+    it("caches the elements it did fetch even though the call ends up failing", async () => {
+      const store = new MemoryStore();
+      const req = pagedRequest([addr(1), addr(2), addr(3)]);
+
+      const error = await handleEthCall(ctx(mockPagedFn([2]), store), req).catch((e) => e);
+
+      expect(isDeploylessPartialResultError(error)).toBe(true);
+      const blobKey = keychain.blobKey(chainId, req)!;
+      const cached = new LazyNdjsonMap<CachedEthCallEntry>(codec, { get: () => store.get(blobKey) ?? [] });
+      const keys: string[] = [];
+      await cached.scan((record) => void keys.push(record.key));
+      expect(keys).toEqual([1, 3].map((n) => entryKeyFor(pad(toHex(n), { size: 32 }), pageAbi)));
+    });
+
+    it("reports missing indices against the caller's input, not the deduped miss list", async () => {
+      const store = new MemoryStore();
+      // addr(2) appears three times but dedupes to one miss; all three indices must be reported.
+      const req = pagedRequest([addr(1), addr(2), addr(2), addr(3), addr(2)]);
+
+      const error = await handleEthCall(ctx(mockPagedFn([2]), store), req).catch((e) => e);
+
+      expect(error.missing).toEqual([1, 2, 4]);
+      expect(error.outputs[0]).toBe(pad(toHex(1), { size: 32 }));
+      expect(error.outputs[3]).toBe(pad(toHex(3), { size: 32 }));
+    });
   });
 
   it("honors gas budget on the cache miss-fetch path", async () => {

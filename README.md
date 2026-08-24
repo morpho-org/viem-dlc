@@ -360,6 +360,7 @@ untouched, so tuples, nested arrays, and other complex element types are support
 ```ts
 policy(opts: {
   abi: AbiFunction
+  paged?: boolean
   batch?: {
     batchSize?: number
     compress?: boolean
@@ -374,7 +375,16 @@ policy(opts: {
 ```
 
 - **`opts.abi`** — the `AbiFunction` fragment for the callee. Must have exactly one
-  input and one output, both dynamic arrays.
+  input and one output, both dynamic arrays — or, with `paged`, two outputs.
+- **`opts.paged`** — marks `abi` as a *paged* lens returning
+  `(U[] results, uint256[] skipped)` instead of a bare `U[]`. A paged lens walks its
+  input in index order, stops once it is short on gas, and reports what it attempted, so
+  an over-packed chunk costs one extra round trip instead of a bisection and `batch.gas`
+  only has to be a rough opening guess. Elements the lens *declines* — invalid input, a
+  reverting element — surface as a `DeploylessPartialResultError` carrying the outputs it
+  did fetch. See the `policy` TSDoc for the full lens contract; the load-bearing rule is
+  that a lens must always attempt at least one element, so `(results=[], skipped=[])` is a
+  protocol violation rather than a retryable state.
 - **`opts.batch`** — optional batching config. Omit to send all elements in a single
   upstream `eth_call`. When set, chunks honor `batchSize` and `gas` together — either
   budget can be left unset.

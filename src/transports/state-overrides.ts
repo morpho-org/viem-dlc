@@ -9,6 +9,11 @@ const ETH_CALL_POLICY_ADDRESS_LOWER = ETH_CALL_POLICY_ADDRESS.toLowerCase() as A
 
 export type EthCallPolicy = {
   abi: AbiFunction;
+  /**
+   * Whether `abi` describes a paged lens returning `(U[] results, uint256[] skipped)`. See
+   * `policy`'s docs for the contract a paged lens must honor.
+   */
+  paged?: boolean;
   batch?: {
     batchSize?: number;
     compress?: boolean;

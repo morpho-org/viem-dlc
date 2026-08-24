@@ -10,7 +10,8 @@ import {
   isOutOfGasRevert,
   wrapDeploylessFactoryCall,
 } from "./codec.envelope.js";
-import { arrayToCalldata, hexToArray, type ResolvedArrayFunction } from "./codec.inner.js";
+import { arrayToCalldata, hexToArray, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
+import { DeploylessPartialResultError } from "./errors.js";
 
 type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
@@ -27,7 +28,16 @@ type FactorisedFactoryCallParams = {
   };
   gasLimit?: number;
   restOfEthCallParams: RestOfEthCallParams;
+  /**
+   * Invoked with each freshly fetched element as soon as its chunk lands, before any sibling
+   * chunk has necessarily finished. Awaited, so a caller can persist results incrementally and
+   * keep them even when a later chunk fails.
+   */
+  onResolved?: (entries: readonly ResolvedElement[]) => void | Promise<void>;
 };
+
+/** An input element's index paired with the raw output bytes fetched for it. */
+export type ResolvedElement = { index: number; output: Hex };
 
 type MeasureBytes = (start: number, end: number) => number;
 
@@ -36,10 +46,14 @@ type MeasureBytes = (start: number, end: number) => number;
  * (`batch.batchSize`) and the gas budget (largest `N` with `batch.gas(N) ≤ gasLimit`),
  * fetches them in parallel, and returns per-element outputs aligned to `elements`. Either
  * budget can be unset; with neither, sends all elements in a single upstream call.
+ *
+ * When `solidity.paged`, chunks that stop early are re-requested from where they stopped rather
+ * than bisected, and elements the lens declines surface as a {@link DeploylessPartialResultError}
+ * once every servable element has been fetched.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  { target, elements, solidity, batch, gasLimit, restOfEthCallParams }: FactorisedFactoryCallParams,
+  { target, elements, solidity, batch, gasLimit, restOfEthCallParams, onResolved }: FactorisedFactoryCallParams,
 ): Promise<Hex[]> {
   const compress = batch?.compress ?? false;
   const wrap = (els: readonly Hex[]): Hex =>
@@ -100,44 +114,123 @@ export async function factorisedFactoryCall(
   });
   const outputs = new Array<Hex>(elements.length);
 
+  const commit = async (entries: readonly ResolvedElement[]) => {
+    for (const { index, output } of entries) outputs[index] = output;
+    if (entries.length > 0) await onResolved?.(entries);
+  };
+
+  /** Re-packs `[from, to)` under the byte budget and an item cap the lens just demonstrated. */
+  const packRange = (from: number, to: number, maxItems: number): BatchRange[] =>
+    packBatches({
+      count: to - from,
+      maxBytes: batch?.batchSize,
+      maxItems: Math.min(maxItems, maxItemsByGas ?? Infinity),
+      measureBytes: (s, e) => measureBytes(from + s, from + e),
+    }).map(([s, e]) => [from + s, from + e] as const);
+
+  const missing: number[] = [];
+
   const fetchRecursive = async (
-    els: readonly Hex[],
-    startIdx: number,
+    [start, end]: BatchRange,
+    /** Ranges the paged path defers to the next wave. Unused (and never appended to) otherwise. */
+    nextWave: BatchRange[],
     precomputed?: Hex,
     timeoutSplitsRemaining = 1,
   ): Promise<void> => {
-    const wrapped = precomputed ?? wrap(els);
+    const count = end - start;
+    const wrapped = precomputed ?? wrap(elements.slice(start, end));
+
+    let returndata: Hex;
     try {
-      const returndata = await fetchChunk(requestFn, wrapped, restOfEthCallParams);
-      const chunkOutputs = hexToArray(solidity.outputLayout, returndata);
-      if (chunkOutputs.length !== els.length) {
-        throw new Error(`eth_call returned ${chunkOutputs.length} output elements, expected ${els.length}`);
-      }
-      for (let j = 0; j < chunkOutputs.length; j++) outputs[startIdx + j] = chunkOutputs[j]!;
+      returndata = await fetchChunk(requestFn, wrapped, restOfEthCallParams);
     } catch (e) {
-      if (els.length > 1) {
+      if (count > 1) {
         const cause = classifyBatchSizeError(e);
         if (cause === "size" || (cause === "timeout" && timeoutSplitsRemaining > 0)) {
           const nextBudget = cause === "timeout" ? timeoutSplitsRemaining - 1 : timeoutSplitsRemaining;
-          const mid = Math.floor(els.length / 2);
-          await Promise.all([
-            fetchRecursive(els.slice(0, mid), startIdx, undefined, nextBudget),
-            fetchRecursive(els.slice(mid), startIdx + mid, undefined, nextBudget),
+          const mid = start + Math.floor(count / 2);
+          return settleAll([
+            fetchRecursive([start, mid], nextWave, undefined, nextBudget),
+            fetchRecursive([mid, end], nextWave, undefined, nextBudget),
           ]);
-          return;
         }
+      } else if (solidity.paged && isOutOfGasRevert(e)) {
+        // A frame that dies on a single element is how a paged lens reports "unservable": its
+        // contract forbids declining index 0, so it must attempt the item and let it burn.
+        missing.push(start);
+        return;
       }
       throw e;
     }
+
+    if (!solidity.paged) {
+      const chunkOutputs = hexToArray(solidity.outputLayout, returndata);
+      if (chunkOutputs.length !== count) {
+        throw new Error(`eth_call returned ${chunkOutputs.length} output elements, expected ${count}`);
+      }
+      await commit(chunkOutputs.map((output, j) => ({ index: start + j, output })));
+      return;
+    }
+
+    const page = hexToPage(solidity.outputLayout, returndata);
+    const attempted = validatePage(page, count);
+    const declined = new Set(page.skipped);
+    const entries: ResolvedElement[] = [];
+    for (let i = 0, served = 0; i < attempted; i++) {
+      if (declined.has(i)) missing.push(start + i);
+      else entries.push({ index: start + i, output: page.results[served++]! });
+    }
+    await commit(entries);
+
+    if (attempted < count) nextWave.push(...packRange(start + attempted, end, attempted));
   };
 
-  await Promise.all(
-    ranges.map(([start, end]) =>
-      fetchRecursive(elements.slice(start, end), start, ranges.length === 1 ? getReferenceWrapped() : undefined),
-    ),
-  );
+  let wave: BatchRange[] = ranges;
+  while (wave.length > 0) {
+    const nextWave: BatchRange[] = [];
+    const isWholeInput = wave.length === 1 && wave[0]![0] === 0 && wave[0]![1] === elements.length;
+    await settleAll(
+      wave.map((range) => fetchRecursive(range, nextWave, isWholeInput ? getReferenceWrapped() : undefined)),
+    );
+    wave = nextWave;
+  }
 
+  if (missing.length > 0) {
+    throw new DeploylessPartialResultError({ outputs, missing: missing.sort((a, b) => a - b) });
+  }
   return outputs;
+}
+
+/**
+ * `Promise.all` that waits for every branch to settle before surfacing the first failure, so
+ * in-flight siblings finish committing their results instead of being abandoned mid-flight.
+ */
+async function settleAll(promises: readonly Promise<void>[]): Promise<void> {
+  const settled = await Promise.allSettled(promises);
+  const failure = settled.find((s) => s.status === "rejected");
+  if (failure) throw (failure as PromiseRejectedResult).reason;
+}
+
+/**
+ * Checks a paged response against the parts of the lens contract that are visible in the tuple
+ * and returns the number of elements attempted. Order of execution, batching-invariance, and
+ * "skips are deterministic" are not observable here and remain lens obligations.
+ *
+ * The `attempted >= 1` floor is load-bearing rather than cosmetic: `([], [])` satisfies every
+ * other rule while making no progress, so without it a lens could stall a range forever.
+ */
+function validatePage({ results, skipped }: Page, count: number): number {
+  const attempted = results.length + skipped.length;
+  if (attempted < 1 || attempted > count) {
+    throw new Error(`paged lens attempted ${attempted} of ${count} elements, expected 1..${count}`);
+  }
+  for (let k = 0; k < skipped.length; k++) {
+    const index = skipped[k]!;
+    if (index >= attempted || (k > 0 && index <= skipped[k - 1]!)) {
+      throw new Error(`paged lens returned skipped indices that are not strictly increasing below ${attempted}`);
+    }
+  }
+  return attempted;
 }
 
 async function fetchChunk(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: Hex, rest: RestOfEthCallParams) {

@@ -3,6 +3,7 @@ export * from "./coalescing-mutex.js";
 export * from "./deployless/call.js";
 export * from "./deployless/codec.envelope.js";
 export * from "./deployless/codec.inner.js";
+export * from "./deployless/errors.js";
 export * from "./errors.js";
 export * from "./hash.js";
 export * from "./in-flight.js";
