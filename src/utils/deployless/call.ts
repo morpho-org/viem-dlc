@@ -8,6 +8,7 @@ import {
   type DeploylessExfilMode,
   type DeploylessTarget,
   extractRevertData,
+  isOutOfGasRevert,
   wrapDeploylessFactoryCall,
 } from "./codec.envelope.js";
 import { arrayToCalldata, hexToArray, type ResolvedArrayFunction } from "./codec.inner.js";
@@ -246,12 +247,13 @@ function hexByteLength(hex: Hex): number {
  *
  * `"size"` covers errors that scale deterministically with batch size; bisecting always helps:
  *   - Calldata size:   HTTP 413; messages containing "too large" or "request size"
- *   - Gas limit:       "out of gas" during execution
+ *   - Gas limit:       the wrapper's out-of-gas marker ({@link isOutOfGasRevert}), or "out of gas"
  *   - Return data size (RETURN mode): EIP-170 "code size" exceeded
  *   - Initcode size (EIP-3860): "max initcode size exceeded" — also matched by /code.*size/
  */
 function classifyBatchSizeError(error: unknown): "size" | "timeout" | null {
   if (isTimeoutLikeError(error)) return "timeout";
+  if (isOutOfGasRevert(error)) return "size";
 
   const e = error instanceof BaseError ? error.walk() : error;
   const status = (e as { status?: number }).status;

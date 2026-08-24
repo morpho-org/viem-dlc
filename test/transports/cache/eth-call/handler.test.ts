@@ -24,7 +24,11 @@ import type { HandlerContext } from "../../../../src/transports/cache/types.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
-import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../../../src/utils/deployless/codec.envelope.js";
+import {
+  FACTORY_BYTECODE_RETURN,
+  OK_SENTINEL,
+  unwrapDeploylessFactoryCall,
+} from "../../../../src/utils/deployless/codec.envelope.js";
 import { flzDecompress } from "../../../../src/utils/deployless/flz.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
 
@@ -130,7 +134,7 @@ function mockBalancesOfFn() {
     const data = (args.params[0] as { data: Hex }).data;
     const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
     const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
-    if (data.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())) {
+    if (data.toLowerCase().startsWith(FACTORY_BYTECODE_RETURN)) {
       return encoded;
     }
     const err = new Error("execution reverted") as Error & { data: Hex };
@@ -346,8 +350,8 @@ describe("handleEthCall", () => {
 
   describe.each(["revert", "return"] as const)("exfil=%s", (exfil) => {
     it("batchSize splits misses, never exceeding the byte budget", async () => {
-      const batchSize = exfil === "revert" ? 520 : 1088;
-      const overshootCap = exfil === "revert" ? 600 : 1200;
+      const batchSize = 520;
+      const overshootCap = 600;
       const requestFn = mockBalancesOfFn();
       const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
       const req = createRequest(addrs, { batch: { batchSize, exfil } });

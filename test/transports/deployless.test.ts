@@ -19,7 +19,9 @@ import { deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
 import {
+  FACTORY_BYTECODE_RETURN,
   OK_SENTINEL,
+  OOG_SENTINEL,
   unwrapDeploylessFactoryCall,
   wrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
@@ -99,7 +101,7 @@ function decodeSentAddresses(data: Hex): readonly Address[] {
 
 /**
  * Mode-aware mock. Inspects the wrapper prefix on the outgoing `data`:
- *   - viem's RETURN wrapper → resolves with the encoded uint256[].
+ *   - RETURN wrapper → resolves with the encoded uint256[].
  *   - REVERT wrapper        → throws an error with `.data` = OK_SENTINEL || encoded uint256[].
  *
  * Behavioral tests can stay mode-agnostic; both code paths exercise the same logic.
@@ -109,7 +111,7 @@ function mockBalancesOfFn() {
     const data = (args.params[0] as { data: Hex }).data;
     const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
     const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
-    if (data.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())) {
+    if (data.toLowerCase().startsWith(FACTORY_BYTECODE_RETURN)) {
       return encoded;
     }
     throw revertWithSentinel(encoded);
@@ -185,10 +187,9 @@ describe("deployless", () => {
 
   describe.each(["revert", "return"] as const)("exfil=%s", (exfil) => {
     it("batchSize splits marked deployless calls without exceeding the byte budget", async () => {
-      // Mode-specific budgets — the RETURN wrapper is ~700 bytes, REVERT ~100, so a
-      // budget that meaningfully splits 5×32-byte elements differs sharply between modes.
-      const batchSize = exfil === "revert" ? 520 : 1088;
-      const overshootCap = exfil === "revert" ? 600 : 1200;
+      // Both wrappers are ~130 bytes, so one budget splits 5×32-byte elements in either mode.
+      const batchSize = 520;
+      const overshootCap = 600;
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn);
       const req = createRequest([addr(1), addr(2), addr(3), addr(4), addr(5)], { batch: { batchSize, exfil } });
@@ -388,7 +389,7 @@ describe("deployless", () => {
       await transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return" } }));
 
       const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
-      expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(true);
+      expect(sentData.toLowerCase().startsWith(FACTORY_BYTECODE_RETURN)).toBe(true);
     });
 
     it("uses RETURN-mode wrapper bytecode upstream by default (no batch opts)", async () => {
@@ -397,7 +398,7 @@ describe("deployless", () => {
       await transport.request(createRequest([addr(1)]));
 
       const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
-      expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(true);
+      expect(sentData.toLowerCase().startsWith(FACTORY_BYTECODE_RETURN)).toBe(true);
     });
   });
 
@@ -478,6 +479,44 @@ describe("deployless", () => {
       expect(requestFn).toHaveBeenCalledTimes(3); // 1 failed + 2 halves
       const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
       expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+
+    it.each(["revert", "return"] as const)(
+      "bisects to singletons on the wrapper's out-of-gas marker (exfil=%s)",
+      async (exfil) => {
+        // Stands in for a chunk whose lens frame ran out of gas: every multi-element chunk reports
+        // OOG, so the batcher must keep halving until each element is alone.
+        const addrs = [addr(1), addr(2), addr(3), addr(4)];
+        const requestFn = vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
+          const data = (args.params[0] as { data: Hex }).data;
+          const sent = decodeSentAddresses(data);
+          if (sent.length > 1) throw Object.assign(new Error("execution reverted"), { data: OOG_SENTINEL });
+          const encoded = encodeAbiParameters([{ type: "uint256[]" }], [sent.map((a) => BigInt(a))]);
+          if (exfil === "return") return encoded;
+          throw revertWithSentinel(encoded);
+        });
+        const transport = createTransport(requestFn);
+
+        const result = await transport.request(createRequest(addrs, { batch: { batchSize: 8192, exfil } }));
+
+        // 1 full batch + 2 halves + 4 singletons.
+        expect(requestFn).toHaveBeenCalledTimes(7);
+        const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+        expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+      },
+    );
+
+    it("does not treat lens revert data that merely starts with the marker as out-of-gas", async () => {
+      const lensError = Object.assign(new Error("execution reverted"), {
+        data: `${OOG_SENTINEL}${"00".repeat(32)}` as Hex,
+      });
+      const requestFn = vi.fn().mockRejectedValue(lensError);
+      const transport = createTransport(requestFn);
+
+      await expect(
+        transport.request(createRequest([addr(1), addr(2)], { batch: { batchSize: 8192, exfil: "return" } })),
+      ).rejects.toThrow("execution reverted");
+      expect(requestFn).toHaveBeenCalledTimes(1);
     });
 
     it("rethrows when a single-element batch fails with a batch-size error", async () => {

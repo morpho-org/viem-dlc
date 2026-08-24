@@ -6,6 +6,13 @@ import { flzCompress } from "./flz.js";
 /**
  * Viem's factory wrapper bytecode (RETURN-mode), lowercased to match normalized request hex.
  *
+ * Recognition only: {@link unwrapDeploylessFactoryCall} must keep accepting what viem's own
+ * `client.call({ factory, factoryData })` produces. Outbound calls use {@link FACTORY_BYTECODE_RETURN},
+ * which adds the {@link OOG_SENTINEL} branch — the whole reason we ship our own, since this constant
+ * is a fixed viem export we cannot patch. The two differ in one other respect: a failed factory call
+ * is reported as `CounterfactualDeployFailed(bytes(""))` rather than forwarding the factory's revert
+ * data. Everything else, the skip-deploy-if-`target`-has-code short-circuit included, matches.
+ *
  * Constructor arg shape: `(address target, bytes targetData, address factory, bytes factoryData)`.
  *
  * Behavior:
@@ -15,7 +22,18 @@ import { flzCompress } from "./flz.js";
  *   3. On lens success: RETURN returndata.
  *   4. On lens revert:  REVERT with returndata verbatim.
  */
-const FACTORY_BYTECODE_RETURN = deploylessCallViaFactoryBytecode.toLowerCase() as Hex;
+const FACTORY_BYTECODE_RETURN_VIEM = deploylessCallViaFactoryBytecode.toLowerCase() as Hex;
+
+/**
+ * Custom factory wrapper bytecode (RETURN-mode, no compression).
+ *
+ * Identical constructor-arg shape to {@link FACTORY_BYTECODE_RETURN_VIEM}, and matching behavior
+ * except for the two differences noted there.
+ *
+ * Source: ./ReturnEnvelope.yul. Regenerate with `pnpm build:ReturnEnvelope` and paste the output here.
+ */
+export const FACTORY_BYTECODE_RETURN: Hex =
+  "0x62000092803803905f395f516020519060405160605190823b15605e575b50505f80918351908260205a9601915af1903d9160565760061c5a1115811516604757805f803e5ffd5b633302f4d360e21b5f5260045ffd5b50805f803e5ff35b5f91829182602083519301915af115813b1517607a575f80601d565b63101bb98d60e01b5f5260206004525f60245260445ffd";
 
 /**
  * Custom factory wrapper bytecode (RETURN-mode, FLZ input compression).
@@ -29,8 +47,8 @@ const FACTORY_BYTECODE_RETURN = deploylessCallViaFactoryBytecode.toLowerCase() a
  *   2b. flzDecompress(compressedTargetData) → targetData, then CALL(target, targetData).
  *   3b. On success: RETURN returndata (no output compression, no sentinel needed).
  */
-const FACTORY_BYTECODE_RETURN_COMPRESSED: Hex =
-  "0x6200011e803803905f395f51602051905f806040516060519082602083519301915af115813b15176101065781515992839160208083019184930101905b81811061006657838084035f808284828b5af1913d9261005f5782805f803e5ffd5b01815f823ef35b8091935051805f1a918260051c9182156001146100eb5760078314928160011a600701811884021893611f008560020192856001011a9160081b160160018101908603906020811860208211021890815f5b8281015f190151818a0152018381106100e457505050506002929183910101920101915b84929161003d565b82906100b8565b508260019392508184600293015186520101920101916100dc565b63101bb98d60e01b5f5260206004525f60245260445ffd";
+export const FACTORY_BYTECODE_RETURN_COMPRESSED: Hex =
+  "0x62000157803803905f395f516020519060405160605190823b15610070575b5050610032826020935159948592016100a6565b5f808285825a965af1923d9361006757505060061c5a111581151661005857805f803e5ffd5b633302f4d360e21b5f5260045ffd5b019050815f823ef35b5f91829182602083519301915af115813b151761008e575f8061001e565b63101bb98d60e01b5f5260206004525f60245260445ffd5b9082908201915b8281106100bb575090500390565b8051805f1a918260051c91821560011461013c5760078314928160011a600701811884021893611f008560020192856001011a9160081b160160018101908603906020811860208211021890815f5b8281015f190151818a01520183811061013557505050506002929183910101920101915b91906100ad565b829061010a565b5082600193925081846002930151865201019201019161012e56";
 
 /**
  * Custom factory wrapper bytecode (REVERT-mode, no compression).
@@ -50,9 +68,10 @@ const FACTORY_BYTECODE_RETURN_COMPRESSED: Hex =
  *   3. On lens success: REVERT with OK_SENTINEL || returndata.
  *   4. On lens revert:  REVERT with returndata verbatim (no sentinel) — propagates the
  *      lens's revert to the caller as if the lens had been called directly.
+ *   5. On lens OOG:     REVERT with {@link OOG_SENTINEL}.
  */
-const FACTORY_BYTECODE_REVERT: Hex =
-  "0x62000071803803905f395f51602051905f806040516060519082602083519301915af115813b15176059575f82819282602083519301915af13d90604457805f803e5ffd5b631580d19d60e01b5f52805f60043e6004015ffd5b63101bb98d60e01b5f5260206004525f60245260445ffd";
+export const FACTORY_BYTECODE_REVERT: Hex =
+  "0x620000a0803803905f395f516020519060405160605190823b15606c575b50505f80918351908260205a9601915af1903d9160565760061c5a1115811516604757805f803e5ffd5b633302f4d360e21b5f5260045ffd5b50631580d19d60e01b5f52805f60043e6004015ffd5b5f91829182602083519301915af115813b15176088575f80601d565b63101bb98d60e01b5f5260206004525f60245260445ffd";
 
 /**
  * Custom factory wrapper bytecode (REVERT-mode, FLZ input compression).
@@ -63,18 +82,40 @@ const FACTORY_BYTECODE_REVERT: Hex =
  *
  * Source: ./RevertEnvelopeCompressed.yul. Regenerate with `pnpm build:RevertEnvelopeCompressed`.
  *
- * Behavior (additions over FACTORY_BYTECODE_REVERT):
+ * Behavior (additions over {@link FACTORY_BYTECODE_REVERT}):
  *   2b. flzDecompress(compressedTargetData) → targetData, then CALL(target, targetData).
  *   3b. On success: REVERT with OK_SENTINEL || returndata (no output compression).
  */
-const FACTORY_BYTECODE_REVERT_COMPRESSED: Hex =
-  "0x62000139803803905f395f51602051905f806040516060519082602083519301915af115813b1517610070575f808092602061004386519659978893849201610088565b9485925af1913d926100575782805f803e5ffd5b0190631580d19d60e01b8252805f600484013e60040190fd5b63101bb98d60e01b5f5260206004525f60245260445ffd5b9082908201915b82811061009d575090500390565b8051805f1a918260051c91821560011461011e5760078314928160011a600701811884021893611f008560020192856001011a9160081b160160018101908603906020811860208211021890815f5b8281015f190151818a01520183811061011757505050506002929183910101920101915b919061008f565b82906100ec565b5082600193925081846002930151865201019201019161011056";
+export const FACTORY_BYTECODE_REVERT_COMPRESSED: Hex =
+  "0x6200016b803803905f395f516020519060405160605190823b15610084575b5050610032826020935159948592016100ba565b5f808285825a965af1923d9361006757505060061c5a111581151661005857805f803e5ffd5b633302f4d360e21b5f5260045ffd5b631580d19d60e01b9101908152919050805f600484013e60040190fd5b5f91829182602083519301915af115813b15176100a2575f8061001e565b63101bb98d60e01b5f5260206004525f60245260445ffd5b9082908201915b8281106100cf575090500390565b8051805f1a918260051c9182156001146101505760078314928160011a600701811884021893611f008560020192856001011a9160081b160160018101908603906020811860208211021890815f5b8281015f190151818a01520183811061014957505050506002929183910101920101915b91906100c1565b829061011e565b5082600193925081846002930151865201019201019161014256";
+
+/**
+ * Every wrapper here except {@link FACTORY_BYTECODE_RETURN_VIEM}, in both exfil modes.
+ */
+const OWN_FACTORY_BYTECODES = [
+  FACTORY_BYTECODE_RETURN,
+  FACTORY_BYTECODE_RETURN_COMPRESSED,
+  FACTORY_BYTECODE_REVERT,
+  FACTORY_BYTECODE_REVERT_COMPRESSED,
+] as const;
 
 /**
  * 4-byte magic prefix on revert data that means "this revert is the lens's success payload,
  * not a real revert". Equal to `bytes4(keccak256("ViemDlcOk()"))`.
  */
 export const OK_SENTINEL: Hex = "0x1580d19d";
+
+/**
+ * 4-byte revert data meaning "the lens frame ran out of gas". Equal to
+ * `bytes4(keccak256("ViemDlcOutOfGas()"))`.
+ *
+ * A lens frame that exhausts its gas cannot report it: EIP-150 gave the callee 63/64 and kept the
+ * wrapper the remainder, so the wrapper survives but sees only an empty-data failure —
+ * indistinguishable from a bare `revert()`, and no reason for a batcher to split the batch. Every
+ * wrapper in {@link OWN_FACTORY_BYTECODES} therefore checks whether the frame was drained to that
+ * 1/64 remainder and substitutes this marker. Detect it with {@link isOutOfGasRevert}.
+ */
+export const OOG_SENTINEL: Hex = "0xcc0bd34c";
 
 const DEPLOYLESS_CONSTRUCTOR_PARAMS = parseAbiParameters("address, bytes, address, bytes");
 
@@ -104,18 +145,9 @@ export type DeploylessExfilMode = "return" | "revert";
  */
 export function unwrapDeploylessFactoryCall(data: Hex): DeploylessFactoryCall {
   const lower = data.toLowerCase();
-  let argsStart: number;
-  if (lower.startsWith(FACTORY_BYTECODE_RETURN)) {
-    argsStart = FACTORY_BYTECODE_RETURN.length;
-  } else if (lower.startsWith(FACTORY_BYTECODE_RETURN_COMPRESSED)) {
-    argsStart = FACTORY_BYTECODE_RETURN_COMPRESSED.length;
-  } else if (lower.startsWith(FACTORY_BYTECODE_REVERT)) {
-    argsStart = FACTORY_BYTECODE_REVERT.length;
-  } else if (lower.startsWith(FACTORY_BYTECODE_REVERT_COMPRESSED)) {
-    argsStart = FACTORY_BYTECODE_REVERT_COMPRESSED.length;
-  } else {
-    throw new Error("eth_call data is not a deployless factory wrapper");
-  }
+  const prefix = [FACTORY_BYTECODE_RETURN_VIEM, ...OWN_FACTORY_BYTECODES].find((p) => lower.startsWith(p));
+  if (!prefix) throw new Error("eth_call data is not a deployless factory wrapper");
+  const argsStart = prefix.length;
   const argsHex = `0x${data.slice(argsStart)}` as Hex;
   const [address, targetData, factory, factoryData] = decodeAbiParameters(DEPLOYLESS_CONSTRUCTOR_PARAMS, argsHex);
   return { target: { address, factory, factoryData }, targetData };
@@ -166,16 +198,42 @@ export function isRevertExpected(req: { method: string; params?: readonly unknow
 
 /**
  * Pulls the revert-data hex out of an error thrown by a viem `requestFn` and checks for
- * {@link OK_SENTINEL}. Walks the `cause` chain so wrapped errors still surface their inner
- * `data` (e.g. Monad nests an `RpcRequestError` with `data: "0x..."` inside an
- * `InternalRpcError` whose own `data` is `undefined`). Tolerates both `data: Hex` and
- * `data: { data: Hex }` shapes.
+ * {@link OK_SENTINEL}.
  *
  * - `{ ok: true, returnData }` — sentinel present; `returnData` is the lens's payload.
  * - `{ ok: false }` — no revert data, or data does not begin with {@link OK_SENTINEL}.
  *   The caller should rethrow the original error.
  */
 export function extractRevertData(e: unknown): { ok: true; returnData: Hex } | { ok: false } {
+  for (const raw of revertDataCandidates(e)) {
+    if (raw.slice(0, 10).toLowerCase() === OK_SENTINEL) {
+      return { ok: true, returnData: `0x${raw.slice(10)}` as Hex };
+    }
+  }
+  return { ok: false };
+}
+
+/**
+ * True when `e` carries {@link OOG_SENTINEL} as its revert data — the wrapper reporting that the
+ * lens frame ran out of gas. Uses the same `cause`-chain walk as {@link extractRevertData}.
+ *
+ * The match is exact: the wrapper reverts with the bare 4-byte selector, so a lens error that
+ * merely happens to start with those bytes is not mistaken for an out-of-gas.
+ */
+export function isOutOfGasRevert(e: unknown): boolean {
+  for (const raw of revertDataCandidates(e)) {
+    if (raw.toLowerCase() === OOG_SENTINEL) return true;
+  }
+  return false;
+}
+
+/**
+ * Walks `e`'s `cause` chain, yielding every revert-data hex it finds. Wrapped errors still surface
+ * their inner `data` (e.g. Monad nests an `RpcRequestError` with `data: "0x..."` inside an
+ * `InternalRpcError` whose own `data` is `undefined`), and both `data: Hex` and `data: { data: Hex }`
+ * shapes are tolerated.
+ */
+function* revertDataCandidates(e: unknown): Generator<string> {
   const seen = new Set<unknown>();
   for (
     let cur: unknown = e;
@@ -190,9 +248,6 @@ export function extractRevertData(e: unknown): { ok: true; returnData: Hex } | {
         : data && typeof (data as { data?: unknown }).data === "string"
           ? (data as { data: string }).data
           : undefined;
-    if (raw && raw.slice(0, 10).toLowerCase() === OK_SENTINEL) {
-      return { ok: true, returnData: `0x${raw.slice(10)}` as Hex };
-    }
+    if (raw) yield raw;
   }
-  return { ok: false };
 }

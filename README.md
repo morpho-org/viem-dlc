@@ -391,9 +391,18 @@ policy(opts: {
 - **`opts.batch.gas`** — polynomial gas-cost model
   `G(N) = constant + linear·N + quadratic·N²` for the lens. Combined with the
   transport's `gasLimit`, the chunker picks the largest per-chunk `N` such that
-  `G(N) ≤ gasLimit`. No internal safety factor — pad the estimate if you want
-  headroom. `linear` is typically the dominant term; `quadratic` captures memory
-  expansion (`memWords² / 512`); pass `0` for any unused term.
+  `G(N) ≤ gasLimit`. No internal safety factor, and `gasLimit` is a client-side budget only —
+  it is never sent as a `gas` field, so the node's own cap is what actually stops execution.
+  Overshooting `G(N)` while staying under that cap simply burns more gas than budgeted.
+  When the node's cap *is* hit, a drained lens frame is recovered rather than lost: the
+  wrapper reports it as `OOG_SENTINEL` revert data, which the chunker classifies as a size
+  error and bisects on, down to a single element if need be. Two caveats — the sentinel only
+  covers the lens frame, so running out of gas inside the wrapper itself (FLZ decompression,
+  or memory expansion while copying returndata) falls back to matching the provider's error
+  text; and a lens that burns >98.4% of its frame and *then* reverts with empty data is
+  reported as out-of-gas too, which costs a full bisect to singletons (`2N-1` requests)
+  before the original error resurfaces. `linear` is typically the dominant term; `quadratic`
+  captures memory expansion (`memWords² / 512`); pass `0` for any unused term.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
   or when used with `deployless(...)`, `batch` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same
