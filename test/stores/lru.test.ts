@@ -8,6 +8,11 @@ describe("LruStore", () => {
     expect(() => new LruStore({ maxBytes: -1 })).toThrow("maxBytes must be at least 1");
   });
 
+  it("rejects the superseded positional form rather than silently going unbounded", () => {
+    // @ts-expect-error deliberately exercising the pre-options `new LruStore(bytes)` call.
+    expect(() => new LruStore(1000)).toThrow("maxBytes must be at least 1");
+  });
+
   it("returns null for missing keys", async () => {
     const store = new LruStore({ maxBytes: 1000 });
     expect(await store.get("missing")).toBeNull();

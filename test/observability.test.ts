@@ -137,6 +137,26 @@ describe("observability", () => {
       expect(req.params[0].to).toBe(short);
     });
 
+    it("shares one AsyncLocalStorage across scopes that race the cold-start import", async () => {
+      // Fresh module registry, so both calls below hit `loadAls` before it resolves.
+      vi.resetModules();
+      const fresh = await import("../src/observability.js");
+      const id = fresh.createFacetId("racer");
+      const observed = fresh.observe(async () => {}, id);
+
+      const a = createStubLogger();
+      const b = createStubLogger();
+      await Promise.all([
+        fresh.withLogging(() => observed({ method: "eth_blockNumber" }), { logger: a.logger }),
+        fresh.withLogging(() => observed({ method: "eth_chainId" }), { logger: b.logger }),
+      ]);
+
+      // If each call built its own storage, only the last-assigned one would be
+      // visible to `observe` and the other scope would emit nothing.
+      expect(a.events).toHaveLength(1);
+      expect(b.events).toHaveLength(1);
+    });
+
     it("emits nothing and reports no observability when no scope is active", async () => {
       const { logger, events } = createStubLogger();
 

@@ -170,25 +170,29 @@ interface Scope {
   root?: RootState;
 }
 
-let als:
-  | {
-      getStore(): Scope | undefined;
-      run<R>(store: Scope, fn: () => R): R;
-    }
-  | undefined;
+type AlsLike = {
+  getStore(): Scope | undefined;
+  run<R>(store: Scope, fn: () => R): R;
+};
+
+let als: AlsLike | undefined;
+let alsLoad: Promise<AlsLike | undefined> | undefined;
 
 // Imported lazily so bundles that never call `withLogging` don't pull in
 // `node:async_hooks`, and so environments lacking it (e.g. unpolyfilled browsers)
-// degrade to the no-op path rather than failing to load.
-async function loadAls() {
-  if (als !== undefined) return als;
-  try {
-    const { AsyncLocalStorage } = await import("node:async_hooks");
-    als = new AsyncLocalStorage<Scope>();
-    return als;
-  } catch {
-    return undefined;
-  }
+// degrade to the no-op path rather than failing to load. Memoizing the in-flight
+// promise (not just its result) is load-bearing: scopes racing the first import must
+// share one instance, or `withLogging` would open a scope on a storage that `observe`
+// isn't reading, and that call would silently emit nothing.
+function loadAls(): Promise<AlsLike | undefined> {
+  alsLoad ??= import("node:async_hooks").then(
+    ({ AsyncLocalStorage }) => {
+      als = new AsyncLocalStorage<Scope>();
+      return als;
+    },
+    () => undefined,
+  );
+  return alsLoad;
 }
 
 export interface WithLoggingOpts {

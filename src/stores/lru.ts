@@ -18,14 +18,17 @@ export class LruStore implements Store {
   private readonly map = new Map<string, Buffer[]>();
   private bytes = 0;
 
-  constructor(options: LruStoreOptions) {
-    if (options.maxBytes < 1) {
-      const err = new Error("maxBytes must be at least 1");
-      options.logger?.withMetadata({ class: LruStore.name, method: "constructor" }).withError(err).error();
+  constructor({ maxBytes, logger }: LruStoreOptions) {
+    // Rejects a non-number outright so the superseded `new LruStore(bytes)` form fails
+    // loudly; left to the `< 1` check alone it would yield `undefined`, making every
+    // size comparison false and turning this into an unbounded map.
+    if (typeof maxBytes !== "number" || !Number.isFinite(maxBytes) || maxBytes < 1) {
+      const err = new Error(`[LruStore] maxBytes must be at least 1 (got ${String(maxBytes)})`);
+      logger?.withMetadata({ class: LruStore.name, method: "constructor" }).withError(err).error();
       throw err;
     }
-    this.maxBytes = options.maxBytes;
-    this.logger = options.logger;
+    this.maxBytes = maxBytes;
+    this.logger = logger;
   }
 
   get(key: string) {
