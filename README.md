@@ -362,7 +362,6 @@ policy(opts: {
   abi: AbiFunction
   batch?: {
     batchSize?: number
-    exfil?: 'return' | 'revert'
     compress?: boolean
     gas?: { constant: number; linear: number; quadratic: number }
   }
@@ -382,9 +381,6 @@ policy(opts: {
 - **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk.
   Input elements are greedy-packed under this limit and fetched in parallel. Omit to
   skip byte-budget enforcement.
-- **`opts.batch.exfil`** — outer wrapper mode. Defaults to `'return'`. Set to `'revert'`
-  to exfiltrate via `REVERT`, lifting the EIP-170 24_576-byte returndata cap at the
-  cost of relying on the RPC preserving revert data.
 - **`opts.batch.compress`** — FastLZ-compress calldata on the wire. Helps fit more
   elements per chunk under EIP-3860's 49_152-byte initcode cap, at the cost of extra
   pre-request encoding time.

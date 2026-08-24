@@ -35,9 +35,6 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk.
  *   Input elements are greedy-packed under this limit and fetched in parallel. Omit to
  *   skip byte-budget enforcement (useful when the gas budget is the only relevant cap).
- * @param opts.batch.exfil Outer wrapper mode. Defaults to `'return'`. Set to `'revert'` to
- *   exfiltrate via `REVERT` instead, which lifts the EIP-170 24_576 bytes returndata cap at the
- *   cost of relying on the RPC preserving revert data.
  * @param opts.batch.compress Whether to use FastLZ (LZ77) compression on the wire (to RPC).
  *   EIP-3860 limits initcode to 49_152 bytes. For deployless reads, that constrains calldata,
  *   so compression can help squeeze more entities into the request at the cost of extra

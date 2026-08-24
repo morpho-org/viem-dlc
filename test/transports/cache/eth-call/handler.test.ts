@@ -24,11 +24,7 @@ import type { HandlerContext } from "../../../../src/transports/cache/types.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
-import {
-  FACTORY_BYTECODE_RETURN,
-  OK_SENTINEL,
-  unwrapDeploylessFactoryCall,
-} from "../../../../src/utils/deployless/codec.envelope.js";
+import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../../../src/utils/deployless/codec.envelope.js";
 import { flzDecompress } from "../../../../src/utils/deployless/flz.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
 
@@ -71,7 +67,6 @@ function buildDeploylessCall(targetData: Hex): Hex {
 type PolicyOpts = {
   batch?: {
     batchSize?: number;
-    exfil?: "return" | "revert";
     compress?: boolean;
     gas?: { constant: number; linear: number; quadratic: number };
   };
@@ -124,37 +119,30 @@ function decodeSentAddresses(data: Hex): readonly Address[] {
   return addrs as readonly Address[];
 }
 
-/**
- * Mode-aware mock. Inspects the wrapper prefix on the outgoing `data`:
- *   - viem's RETURN wrapper → resolves with the encoded uint256[].
- *   - REVERT wrapper        → throws an error with `.data` = OK_SENTINEL || encoded uint256[].
- */
+/** Builds a viem-shaped error whose `.data` field carries OK_SENTINEL || payload. */
+function revertWithSentinel(payload: Hex): Error & { data: Hex } {
+  const err = new Error("execution reverted") as Error & { data: Hex };
+  err.data = `${OK_SENTINEL}${payload.slice(2)}` as Hex;
+  return err;
+}
+
+/** The wrapper always exfiltrates via REVERT, so success arrives as a sentinel-framed throw. */
 function mockBalancesOfFn() {
   return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
     const data = (args.params[0] as { data: Hex }).data;
     const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
-    const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
-    if (data.toLowerCase().startsWith(FACTORY_BYTECODE_RETURN)) {
-      return encoded;
-    }
-    const err = new Error("execution reverted") as Error & { data: Hex };
-    err.data = `${OK_SENTINEL}${encoded.slice(2)}` as Hex;
-    throw err;
+    throw revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [outputs]));
   });
 }
 
-function mockCompressibleFn(exfil: "return" | "revert", compress: boolean) {
+function mockCompressibleFn(compress: boolean) {
   return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
     const data = (args.params[0] as { data: Hex }).data;
     const { targetData: raw } = unwrapDeploylessFactoryCall(data);
     const targetData = compress ? flzDecompress(raw) : raw;
     const [addrs] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
     const outputs = (addrs as readonly Address[]).map((a) => BigInt(a));
-    const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
-    if (exfil === "return") return encoded;
-    const err = new Error("execution reverted") as Error & { data: Hex };
-    err.data = `${OK_SENTINEL}${encoded.slice(2)}` as Hex;
-    throw err;
+    throw revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [outputs]));
   });
 }
 
@@ -348,13 +336,13 @@ describe("handleEthCall", () => {
     expect(decoded).toEqual([]);
   });
 
-  describe.each(["revert", "return"] as const)("exfil=%s", (exfil) => {
+  describe("batching", () => {
     it("batchSize splits misses, never exceeding the byte budget", async () => {
       const batchSize = 520;
       const overshootCap = 600;
       const requestFn = mockBalancesOfFn();
       const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
-      const req = createRequest(addrs, { batch: { batchSize, exfil } });
+      const req = createRequest(addrs, { batch: { batchSize } });
 
       const result = await handleEthCall(ctx(requestFn), req);
 
@@ -370,10 +358,10 @@ describe("handleEthCall", () => {
   });
 
   describe("compress=true", () => {
-    it.each(["return", "revert"] as const)("round-trips addresses correctly for exfil=%s", async (exfil) => {
+    it("round-trips addresses correctly", async () => {
       const addrs = [addr(1), addr(2), addr(3)];
-      const requestFn = mockCompressibleFn(exfil, true);
-      const req = createRequest(addrs, { batch: { batchSize: 8192, exfil, compress: true } });
+      const requestFn = mockCompressibleFn(true);
+      const req = createRequest(addrs, { batch: { batchSize: 8192, compress: true } });
 
       const result = await handleEthCall(ctx(requestFn), req);
 
@@ -408,9 +396,10 @@ describe("handleEthCall", () => {
     const addrs = [addr(1), addr(2), addr(3)];
     const expectedNames = ["one", "two", "three"];
 
-    // Use RETURN mode here so the mock can resolve directly without sentinel framing.
-    const requestFn = vi.fn().mockResolvedValue(encodeAbiParameters([{ type: "string[]" }], [expectedNames]));
-    const req = createRequest(addrs, { abi: getNamesAbi, batch: { batchSize: 8192, exfil: "return" } });
+    const requestFn = vi
+      .fn()
+      .mockRejectedValue(revertWithSentinel(encodeAbiParameters([{ type: "string[]" }], [expectedNames])));
+    const req = createRequest(addrs, { abi: getNamesAbi, batch: { batchSize: 8192 } });
 
     const result = await handleEthCall(ctx(requestFn), req);
 
@@ -420,9 +409,10 @@ describe("handleEthCall", () => {
   });
 
   it("throws when upstream returns wrong number of outputs", async () => {
-    const requestFn = vi.fn().mockResolvedValue(encodeAbiParameters([{ type: "uint256[]" }], [[1n, 2n]]));
-    // Use RETURN mode so the mock's mockResolvedValue is honored as a successful response.
-    const req = createRequest([addr(1), addr(2), addr(3)], { batch: { batchSize: 8192, exfil: "return" } });
+    const requestFn = vi
+      .fn()
+      .mockRejectedValue(revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [[1n, 2n]])));
+    const req = createRequest([addr(1), addr(2), addr(3)], { batch: { batchSize: 8192 } });
     await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow(/returned 2.*expected 3/);
   });
 
@@ -457,9 +447,9 @@ describe("handleEthCall", () => {
         }
         const data = (args.params[0] as { data: Hex }).data;
         const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
-        return encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+        throw revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [outputs]));
       });
-      const req = createRequest(addrs, { batch: { batchSize: 8192, exfil: "return" } });
+      const req = createRequest(addrs, { batch: { batchSize: 8192 } });
 
       const result = await handleEthCall(ctx(requestFn), req);
 
@@ -472,7 +462,7 @@ describe("handleEthCall", () => {
       const requestFn = vi
         .fn()
         .mockRejectedValue(Object.assign(new Error("request body too large"), { data: "0x" as Hex }));
-      const req = createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return" } });
+      const req = createRequest([addr(1)], { batch: { batchSize: 8192 } });
 
       await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow("request body too large");
       expect(requestFn).toHaveBeenCalledTimes(1);
@@ -480,7 +470,7 @@ describe("handleEthCall", () => {
 
     it("does not retry on unrecognized errors", async () => {
       const requestFn = vi.fn().mockRejectedValue(new Error("nonce too low"));
-      const req = createRequest([addr(1), addr(2)], { batch: { batchSize: 8192, exfil: "return" } });
+      const req = createRequest([addr(1), addr(2)], { batch: { batchSize: 8192 } });
 
       await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow("nonce too low");
       expect(requestFn).toHaveBeenCalledTimes(1);
@@ -511,7 +501,7 @@ describe("handleEthCall", () => {
     const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
     const requestFn = mockBalancesOfFn();
     const req = createRequest(addrs, {
-      batch: { gas: { constant: 0, linear: 12_000_000, quadratic: 0 }, exfil: "return" },
+      batch: { gas: { constant: 0, linear: 12_000_000, quadratic: 0 } },
     });
 
     await handleEthCall(ctx(requestFn), req);

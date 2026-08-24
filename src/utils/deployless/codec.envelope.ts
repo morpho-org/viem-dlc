@@ -4,51 +4,17 @@ import { decodeAbiParameters, deploylessCallViaFactoryBytecode, encodeAbiParamet
 import { flzCompress } from "./flz.js";
 
 /**
- * Viem's factory wrapper bytecode (RETURN-mode), lowercased to match normalized request hex.
+ * Viem's factory wrapper bytecode, lowercased to match normalized request hex.
  *
- * Recognition only: {@link unwrapDeploylessFactoryCall} must keep accepting what viem's own
- * `client.call({ factory, factoryData })` produces. Outbound calls use {@link FACTORY_BYTECODE_RETURN},
- * which adds the {@link OOG_SENTINEL} branch — the whole reason we ship our own, since this constant
- * is a fixed viem export we cannot patch. The two differ in one other respect: a failed factory call
- * is reported as `CounterfactualDeployFailed(bytes(""))` rather than forwarding the factory's revert
- * data. Everything else, the skip-deploy-if-`target`-has-code short-circuit included, matches.
+ * Inbound recognition only, and load-bearing: callers reach us through viem's own
+ * `client.call({ factory, factoryData })`, which encodes with this constant, so
+ * {@link unwrapDeploylessFactoryCall} must keep accepting it. We never emit it — it exfiltrates via
+ * RETURN, which caps results at EIP-170's 24 KB, and it is a fixed viem export we cannot patch to
+ * carry the {@link OOG_SENTINEL} branch.
  *
  * Constructor arg shape: `(address target, bytes targetData, address factory, bytes factoryData)`.
- *
- * Behavior:
- *   1. CALL(factory, factoryData). If the call fails OR if `target` has no code afterward,
- *      REVERT with `CounterfactualDeployFailed(bytes)` (selector 0x101bb98d).
- *   2. CALL(target, targetData).
- *   3. On lens success: RETURN returndata.
- *   4. On lens revert:  REVERT with returndata verbatim.
  */
 const FACTORY_BYTECODE_RETURN_VIEM = deploylessCallViaFactoryBytecode.toLowerCase() as Hex;
-
-/**
- * Custom factory wrapper bytecode (RETURN-mode, no compression).
- *
- * Identical constructor-arg shape to {@link FACTORY_BYTECODE_RETURN_VIEM}, and matching behavior
- * except for the two differences noted there.
- *
- * Source: ./ReturnEnvelope.yul. Regenerate with `pnpm build:ReturnEnvelope` and paste the output here.
- */
-export const FACTORY_BYTECODE_RETURN: Hex =
-  "0x62000092803803905f395f516020519060405160605190823b15605e575b50505f80918351908260205a9601915af1903d9160565760061c5a1115811516604757805f803e5ffd5b633302f4d360e21b5f5260045ffd5b50805f803e5ff35b5f91829182602083519301915af115813b1517607a575f80601d565b63101bb98d60e01b5f5260206004525f60245260445ffd";
-
-/**
- * Custom factory wrapper bytecode (RETURN-mode, FLZ input compression).
- *
- * Same constructor-arg shape, but `targetData` must be FLZ-compressed by the caller
- * (via {@link flzCompress} in ./flz.ts).
- *
- * Source: ./ReturnEnvelopeCompressed.yul. Regenerate with `pnpm build:ReturnEnvelopeCompressed`.
- *
- * Behavior (additions over {@link FACTORY_BYTECODE_RETURN}):
- *   2b. flzDecompress(compressedTargetData) → targetData, then CALL(target, targetData).
- *   3b. On success: RETURN returndata (no output compression, no sentinel needed).
- */
-export const FACTORY_BYTECODE_RETURN_COMPRESSED: Hex =
-  "0x62000157803803905f395f516020519060405160605190823b15610070575b5050610032826020935159948592016100a6565b5f808285825a965af1923d9361006757505060061c5a111581151661005857805f803e5ffd5b633302f4d360e21b5f5260045ffd5b019050815f823ef35b5f91829182602083519301915af115813b151761008e575f8061001e565b63101bb98d60e01b5f5260206004525f60245260445ffd5b9082908201915b8281106100bb575090500390565b8051805f1a918260051c91821560011461013c5760078314928160011a600701811884021893611f008560020192856001011a9160081b160160018101908603906020811860208211021890815f5b8281015f190151818a01520183811061013557505050506002929183910101920101915b91906100ad565b829061010a565b5082600193925081846002930151865201019201019161012e56";
 
 /**
  * Custom factory wrapper bytecode (REVERT-mode, no compression).
@@ -89,15 +55,8 @@ export const FACTORY_BYTECODE_REVERT: Hex =
 export const FACTORY_BYTECODE_REVERT_COMPRESSED: Hex =
   "0x6200016b803803905f395f516020519060405160605190823b15610084575b5050610032826020935159948592016100ba565b5f808285825a965af1923d9361006757505060061c5a111581151661005857805f803e5ffd5b633302f4d360e21b5f5260045ffd5b631580d19d60e01b9101908152919050805f600484013e60040190fd5b5f91829182602083519301915af115813b15176100a2575f8061001e565b63101bb98d60e01b5f5260206004525f60245260445ffd5b9082908201915b8281106100cf575090500390565b8051805f1a918260051c9182156001146101505760078314928160011a600701811884021893611f008560020192856001011a9160081b160160018101908603906020811860208211021890815f5b8281015f190151818a01520183811061014957505050506002929183910101920101915b91906100c1565b829061011e565b5082600193925081846002930151865201019201019161014256";
 
-/**
- * Every wrapper here except {@link FACTORY_BYTECODE_RETURN_VIEM}, in both exfil modes.
- */
-const OWN_FACTORY_BYTECODES = [
-  FACTORY_BYTECODE_RETURN,
-  FACTORY_BYTECODE_RETURN_COMPRESSED,
-  FACTORY_BYTECODE_REVERT,
-  FACTORY_BYTECODE_REVERT_COMPRESSED,
-] as const;
+/** Every wrapper we emit. {@link FACTORY_BYTECODE_RETURN_VIEM} is inbound-only. */
+const OWN_FACTORY_BYTECODES = [FACTORY_BYTECODE_REVERT, FACTORY_BYTECODE_REVERT_COMPRESSED] as const;
 
 /**
  * 4-byte magic prefix on revert data that means "this revert is the lens's success payload,
@@ -133,15 +92,8 @@ export type DeploylessFactoryCall = {
 };
 
 /**
- * Exfiltration mode for the outer wrapper. `'revert'` lifts the EIP-170 24KB returndata cap,
- * but may be truncated by some RPC providers.
- */
-export type DeploylessExfilMode = "return" | "revert";
-
-/**
- * Reverses {@link wrapDeploylessFactoryCall}. Accepts data produced by either mode's wrapper
- * (RETURN or REVERT). viem's stock `client.call({ factory, factoryData })` produces the
- * RETURN form.
+ * Reverses {@link wrapDeploylessFactoryCall}, and also accepts the RETURN-mode form that viem's
+ * stock `client.call({ factory, factoryData })` produces — see {@link FACTORY_BYTECODE_RETURN_VIEM}.
  */
 export function unwrapDeploylessFactoryCall(data: Hex): DeploylessFactoryCall {
   const lower = data.toLowerCase();
@@ -156,17 +108,10 @@ export function unwrapDeploylessFactoryCall(data: Hex): DeploylessFactoryCall {
 /** Builds a deployless factory `eth_call` payload from its constituent parts. */
 export function wrapDeploylessFactoryCall(
   { target, targetData }: DeploylessFactoryCall,
-  { exfil, compress }: { exfil: DeploylessExfilMode; compress: boolean },
+  { compress }: { compress: boolean },
 ) {
-  let prefix: Hex;
-  let encodedTargetData: Hex;
-  if (compress) {
-    encodedTargetData = flzCompress(targetData);
-    prefix = exfil === "revert" ? FACTORY_BYTECODE_REVERT_COMPRESSED : FACTORY_BYTECODE_RETURN_COMPRESSED;
-  } else {
-    encodedTargetData = targetData;
-    prefix = exfil === "revert" ? FACTORY_BYTECODE_REVERT : FACTORY_BYTECODE_RETURN;
-  }
+  const prefix = compress ? FACTORY_BYTECODE_REVERT_COMPRESSED : FACTORY_BYTECODE_REVERT;
+  const encodedTargetData = compress ? flzCompress(targetData) : targetData;
   const args = encodeAbiParameters(DEPLOYLESS_CONSTRUCTOR_PARAMS, [
     target.address,
     encodedTargetData,
@@ -177,7 +122,7 @@ export function wrapDeploylessFactoryCall(
 }
 
 /**
- * True when `req` is a REVERT-mode deployless `eth_call` — the lens intentionally reverts to exfiltrate
+ * True when `req` is one of our deployless `eth_call`s — the lens intentionally reverts to exfiltrate
  * its returndata. False for any other request.
  *
  * Use this to defeat per-call retries at the next transport boundary
@@ -193,7 +138,7 @@ export function isRevertExpected(req: { method: string; params?: readonly unknow
   if (typeof data !== "string") return false;
 
   const lower = data.toLowerCase();
-  return lower.startsWith(FACTORY_BYTECODE_REVERT) || lower.startsWith(FACTORY_BYTECODE_REVERT_COMPRESSED);
+  return OWN_FACTORY_BYTECODES.some((p) => lower.startsWith(p));
 }
 
 /**

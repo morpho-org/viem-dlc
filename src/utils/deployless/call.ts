@@ -5,7 +5,6 @@ import { isTimeoutLikeError } from "../errors.js";
 import type { Tail } from "../tuples.js";
 
 import {
-  type DeploylessExfilMode,
   type DeploylessTarget,
   extractRevertData,
   isOutOfGasRevert,
@@ -23,7 +22,6 @@ type FactorisedFactoryCallParams = {
   solidity: ResolvedArrayFunction;
   batch?: {
     batchSize?: number;
-    exfil?: DeploylessExfilMode;
     compress?: boolean;
     gas?: GasModel;
   };
@@ -43,10 +41,9 @@ export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
   { target, elements, solidity, batch, gasLimit, restOfEthCallParams }: FactorisedFactoryCallParams,
 ): Promise<Hex[]> {
-  const exfil: DeploylessExfilMode = batch?.exfil ?? "return";
   const compress = batch?.compress ?? false;
   const wrap = (els: readonly Hex[]): Hex =>
-    wrapDeploylessFactoryCall({ target, targetData: arrayToCalldata(solidity, els) }, { exfil, compress });
+    wrapDeploylessFactoryCall({ target, targetData: arrayToCalldata(solidity, els) }, { compress });
 
   let referenceWrapped: Hex | undefined;
   const getReferenceWrapped = () => {
@@ -103,8 +100,6 @@ export async function factorisedFactoryCall(
   });
   const outputs = new Array<Hex>(elements.length);
 
-  const fetchChunk = exfil === "return" ? fetchChunkReturn : fetchChunkRevert;
-
   const fetchRecursive = async (
     els: readonly Hex[],
     startIdx: number,
@@ -145,11 +140,7 @@ export async function factorisedFactoryCall(
   return outputs;
 }
 
-async function fetchChunkReturn(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: Hex, rest: RestOfEthCallParams) {
-  return requestFn({ method: "eth_call", params: [{ data }, ...rest] });
-}
-
-async function fetchChunkRevert(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: Hex, rest: RestOfEthCallParams) {
+async function fetchChunk(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: Hex, rest: RestOfEthCallParams) {
   try {
     await requestFn({ method: "eth_call", params: [{ data }, ...rest] }, { retryCount: 0 });
   } catch (e) {
@@ -248,8 +239,7 @@ function hexByteLength(hex: Hex): number {
  * `"size"` covers errors that scale deterministically with batch size; bisecting always helps:
  *   - Calldata size:   HTTP 413; messages containing "too large" or "request size"
  *   - Gas limit:       the wrapper's out-of-gas marker ({@link isOutOfGasRevert}), or "out of gas"
- *   - Return data size (RETURN mode): EIP-170 "code size" exceeded
- *   - Initcode size (EIP-3860): "max initcode size exceeded" — also matched by /code.*size/
+ *   - Initcode size (EIP-3860): "max initcode size exceeded" — matched by /code.*size/
  */
 function classifyBatchSizeError(error: unknown): "size" | "timeout" | null {
   if (isTimeoutLikeError(error)) return "timeout";
