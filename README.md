@@ -384,14 +384,8 @@ policy(opts: {
 - **`opts.abi`** — the `AbiFunction` fragment for the callee. Must have exactly one
   input and one output, both dynamic arrays — or, with `paged`, two outputs.
 - **`opts.paged`** — marks `abi` as a *paged* lens returning
-  `(U[] results, uint256[] skipped)` instead of a bare `U[]`. A paged lens walks its
-  input in index order, stops once it is short on gas, and reports what it attempted, so
-  an over-packed chunk costs one extra round trip instead of a bisection and `batch.gas`
-  only has to be a rough opening guess. Elements the lens *declines* — invalid input, a
-  reverting element — surface as a `DeploylessPartialResultError` carrying the outputs it
-  did fetch. See the `policy` TSDoc for the full lens contract; the load-bearing rule is
-  that a lens must always attempt at least one element, so `(results=[], skipped=[])` is a
-  protocol violation rather than a retryable state.
+  `(U[] results, uint256[] skipped)` instead of a bare `U[]`. See
+  [Paged lenses](#paged-lenses) below for what that buys and the contract it requires.
 - **`opts.batch`** — optional batching config. Omit to send all elements in a single
   upstream `eth_call`. When set, chunks honor `batchSize` and `gas` together — either
   budget can be left unset.
@@ -468,6 +462,51 @@ Cache keys are derived from `(targetTo, factory, factoryData, selector, inputEle
 so repeat elements collapse into a single blob entry and novel elements are appended to
 the blob on the next fetch. The handler rejects any tx envelope field besides `data`
 (`from`, `gas`, `value`, etc.).
+
+#### Paged lenses
+
+A paged lens may stop before consuming its whole input. It walks its input in index order, in a
+single pass, and stops once — having attempted `i = results.length + skipped.length` elements.
+`results` covers that prefix minus `skipped`; `skipped` holds ascending indices, relative to this
+call's input, that it looked at and declined.
+
+Position is what separates the two outcomes: `[i, N)` was never attempted and is **retried**,
+while an index in `skipped` is **permanent**. So an over-packed chunk costs one extra round trip
+rather than a bisection, and `batch.gas` only has to be a rough opening guess.
+
+```solidity
+function page(T[] input) view returns (U[] results, uint256[] skipped) {
+    for (uint256 i = 0; i < input.length; i++) {
+        if (i > 0 && gasleft() < reserve + estimate) break;    // tail: retryable
+        if (!isValid(input[i])) { skipped.push(i); continue; } // deterministic: permanent
+        results.push(one(input[i]));
+    }
+}
+```
+
+The contract your lens must honor:
+
+- **Index order, single pass.** Otherwise "before `i`" no longer implies "declined".
+- **Attempt at least one element.** `(results=[], skipped=[])` is a protocol violation, not a
+  retryable state — it is what would let a lens stall a range forever, so it throws. A lens that
+  cannot afford element 0 must attempt it and let the frame die; the envelope reports that as an
+  out-of-gas and the transport marks the element unservable. This is what makes termination
+  finite without a retry counter or a gas-escalation ladder.
+- **Skips are deterministic.** A skip means invalid input or a reverting element — something
+  that declines identically next time. Running out of gas is never a skip; when gas runs out, stop.
+- **Values are batching-invariant.** Neither a served value nor a decline may depend on position,
+  batch composition, or `gasleft()`. Only the stopping boundary may.
+
+Per-element gas capping is optional and usually overkill — it matters only when an element may be
+unbounded, where it turns a dead frame into a stop that preserves the prefix. A capping lens must
+leave element 0 uncapped (or retrying a range headed by that element returns `([], [])`), and must
+tell a capped out-of-gas from a plain `revert(0, 0)` — both yield empty returndata — by treating
+"consumed ≈ the cap **and** empty returndata" as gas-driven. Same heuristic, and same imprecision,
+as the envelope's own 63/64 check.
+
+One asymmetry worth knowing: an element reported unservable via out-of-gas is unservable *under
+this node's gas cap*, and a provider with a higher cap could serve it. A skip, by contrast, is a
+property of the element.
 
 ### `call2`
 

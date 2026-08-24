@@ -31,46 +31,15 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  * - Element types may be static (uint/int/bool/address/bytesN, tuples, fixed-size arrays)
  *   or dynamic (string, bytes, nested arrays, dynamic tuples).
  *
- * @param opts.paged Marks `abi` as a *paged* lens: instead of `U[]`, it returns
- *   `(U[] results, uint256[] skipped)` and may stop before consuming its whole input. The
- *   transport re-requests whatever the lens did not attempt, so an over-packed chunk costs an
- *   extra round trip instead of a bisection, and `batch.gas` only has to be a rough opening
- *   guess. Elements the lens declines surface as a `DeploylessPartialResultError`.
+ * @param opts.paged Marks `abi` as a *paged* lens: it returns `(U[] results, uint256[] skipped)`
+ *   and may stop before consuming its whole input, letting the transport re-request the
+ *   remainder instead of bisecting. Elements the lens declines surface as a
+ *   `DeploylessPartialResultError`.
  *
- *   `(U[], uint256[])` is the lens→transport format only: the transport reassembles the pages
- *   and hands back a dense `U[]`, exactly as an unpaged lens would, so paging never reaches the
- *   caller. Decode with `decodeAbiParameters([resultsType], data)` — `decodeFunctionResult`
- *   against the two-output fragment will fail, since the response is not that tuple.
- *
- *   A paged lens walks its input in index order, in a single pass, and stops once — having
- *   attempted `i = results.length + skipped.length` elements. `results` covers that prefix minus
- *   `skipped`; `skipped` holds ascending indices, relative to this call's input, that it looked
- *   at and declined. Position is what distinguishes the two outcomes: `[i, N)` was never
- *   attempted and will be retried, while an index in `skipped` is permanent.
- *
- *   The contract, all of which the caller's lens must honor:
- *   - **Index order, single pass.** Otherwise "before `i`" no longer implies "declined".
- *   - **Attempt at least one element.** `(results=[], skipped=[])` is a protocol violation, not
- *     a retryable state — it is what would let a lens stall a range forever, so it throws. A
- *     lens that cannot afford element 0 must attempt it and let the frame die; the envelope
- *     reports that as an out-of-gas, and the transport marks the element unservable.
- *   - **Skips are deterministic.** A skip means invalid input or a reverting element —
- *     something that will decline identically next time. Running out of gas is never a skip;
- *     when gas runs out, stop.
- *   - **Values are batching-invariant.** Neither a served value nor a decline may depend on
- *     position, batch composition, or `gasleft()`. Only the stopping boundary may.
- *
- *   A lens that also caps per-element gas — optional, and only worth it when elements may be
- *   unbounded — must leave element 0 uncapped, or retrying a range headed by an unbounded
- *   element returns `([], [])` instead of the "unservable" answer the transport needs. It must
- *   also tell a capped out-of-gas apart from a plain `revert(0, 0)`, since both yield empty
- *   returndata: measure `gasleft()` around the sub-call and treat "consumed ≈ the cap **and**
- *   empty returndata" as gas-driven, so it stops rather than recording a skip. Same heuristic,
- *   and same imprecision, as the envelope's own 63/64 check.
- *
- *   Note that an element reported unservable via out-of-gas is unservable *under this node's
- *   gas cap*; a provider with a higher cap could serve it. Skips, by contrast, are a property
- *   of the element.
+ *   Two things a caller cannot infer: the response is still a dense `U[]`, so decode it with
+ *   `decodeAbiParameters`, not `decodeFunctionResult` against the two-output fragment; and a
+ *   lens must attempt at least one element, making `([], [])` a protocol violation rather than
+ *   a retryable state. The full lens contract is in the README under "Paged lenses".
  * @param opts.batch Optional batching config. Omit to send all elements in a single
  *   upstream `eth_call`. When set, chunks honor both `batchSize` and `gas`.
  * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk.

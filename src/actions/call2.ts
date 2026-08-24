@@ -6,9 +6,8 @@ import { findDeploylessPartialResult } from "../utils/deployless/errors.js";
 export type Call2ReturnType = {
   /**
    * ABI-encoded `U[]` holding every element that was served, in input order, with the
-   * {@link Call2ReturnType.missing} indices omitted. Decode against the lens's `results` type.
-   * `"0x"` stands in for the `undefined` viem's `call` returns on an empty response, which a
-   * paged read never produces.
+   * {@link Call2ReturnType.missing} indices omitted. `"0x"` stands in for the `undefined` viem's
+   * `call` returns on an empty response.
    */
   data: Hex;
   /**
@@ -28,9 +27,6 @@ export type Call2ReturnType = {
  * `policy({ paged: true, ... })`; against anything else it degenerates to `call` with an empty
  * `missing`. Transport, protocol, and ordinary lens-revert errors still throw — only
  * unservable *elements* are settled.
- *
- * Decoding is left to the caller so the transport's byte-level hot path stays intact; a typed
- * `U[]` is not inferable from `call`'s raw `{ data }` return without an ABI generic.
  *
  * @example
  * const { data, missing } = await call2(client, {
