@@ -6,15 +6,11 @@ import { causeChain, TERMINAL_ERROR } from "../errors.js";
 export const DEPLOYLESS_PARTIAL_RESULT = "__viemDlcPartialResult" as const;
 
 /**
- * Thrown by a paged deployless call when some input elements could not be served: the lens
- * declined them, or a single-element retry ran the frame out of gas. Everything else was
- * fetched, and is carried on {@link DeploylessPartialResultError.data}.
+ * Thrown by a paged deployless call when some input elements could not be served. Everything
+ * else was fetched, and is carried on {@link DeploylessPartialResultError.data}.
  *
- * `call` stays strict and lets this escape; `call2` catches it and returns its payload. It
- * extends viem's `BaseError` so it survives `buildRequest`'s `UnknownRpcError` wrapping, and
- * carries {@link DEPLOYLESS_PARTIAL_RESULT} so it can be recovered from underneath viem's
- * `CallExecutionError` with `error.walk(isDeploylessPartialResultError)` — bare `walk()` returns
- * the *deepest* cause, which is not necessarily this one.
+ * Recover it with {@link findDeploylessPartialResult}, not `error.walk()`, which returns the
+ * *deepest* cause rather than necessarily this one.
  */
 export class DeploylessPartialResultError extends BaseError {
   override name = "DeploylessPartialResultError";
@@ -25,12 +21,9 @@ export class DeploylessPartialResultError extends BaseError {
   readonly [TERMINAL_ERROR] = true;
 
   /**
-   * Stops viem from retrying the request. `shouldRetry` treats any error lacking a numeric
-   * `code` as retryable, so without this a caller-supplied `requestOptions.retryCount` re-runs
-   * the whole request and a second-attempt failure would replace this payload. The value sits
-   * in JSON-RPC's implementation-defined server-error range and is absent from `buildRequest`'s
-   * code switch, so the error passes through unmapped.
-   * See `node_modules/viem/_esm/utils/buildRequest.js`.
+   * Marks the error non-retryable to viem, whose `shouldRetry` retries anything lacking a
+   * numeric `code`. Unmapped by `buildRequest`'s code switch, so the error passes through
+   * intact. See `viem/utils/buildRequest.ts`.
    */
   readonly code = -32099;
 
@@ -53,10 +46,7 @@ export function isDeploylessPartialResultError(e: unknown): e is DeploylessParti
   return typeof e === "object" && e !== null && (e as Record<string, unknown>)[DEPLOYLESS_PARTIAL_RESULT] === true;
 }
 
-/**
- * Recovers a {@link DeploylessPartialResultError} from `e` or anywhere in its `cause` chain,
- * returning `null` if there is none.
- */
+/** Recovers a {@link DeploylessPartialResultError} from `e` or its `cause` chain, else `null`. */
 export function findDeploylessPartialResult(e: unknown): DeploylessPartialResultError | null {
   for (const cur of causeChain(e)) {
     if (isDeploylessPartialResultError(cur)) return cur;

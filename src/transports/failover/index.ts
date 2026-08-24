@@ -51,9 +51,7 @@ export function failover<S extends RpcSchema>(
         try {
           return await requestFn(args);
         } catch (err) {
-          // Ahead of `shouldThrow`, and not overridable: a terminal error is one this library
-          // produced and knows the semantics of. Falling over swaps its payload for whatever the
-          // next branch returns, and loses it entirely if that branch fails for its own reasons.
+          // Ahead of `shouldThrow` and not overridable: falling over discards the payload.
           if (isTerminalError(err) || shouldThrow(err)) throw err;
           lastErr = err;
         }

@@ -148,8 +148,7 @@ export async function handleEthCall(
           batch: extracted.policy.batch,
           gasLimit,
           restOfEthCallParams,
-          // Buffer each chunk as it lands rather than after the whole fetch, so a chunk that
-          // fails later doesn't discard the siblings that already succeeded.
+          // Buffer per chunk, so a later chunk failing doesn't discard the siblings that landed.
           onResolved: (entries) => {
             ndjson.upsert(
               entries.map(({ index, output }) => {
@@ -161,8 +160,7 @@ export async function handleEthCall(
           },
         });
       } catch (e) {
-        // `missing` indexes deduped misses, and `data` omits cache hits entirely; callers expect
-        // both to be expressed against their own input array.
+        // Rebase onto the caller's input: `missing` indexes deduped misses, `data` omits hits.
         if (isDeploylessPartialResultError(e)) {
           const missing = e.missing.flatMap((i) => misses[i]!.indices).sort((a, b) => a - b);
           throw new DeploylessPartialResultError({

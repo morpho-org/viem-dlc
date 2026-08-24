@@ -108,8 +108,7 @@ export function hexToPage(layout: ElementLayout, encoded: Hex): Page {
   const totalBytes = hexByteLength(encoded);
   const resultsAt = readUint256(encoded, 0);
   const skippedAt = readUint256(encoded, 32);
-  // Both must land past the two-word head and be word-aligned; `skippedAt` doubles as the end
-  // bound for `results`, so an offset pointing into the head would silently truncate it.
+  // `skippedAt` doubles as the end bound for `results`, so a head-relative offset would truncate it.
   if (
     resultsAt < 64 ||
     resultsAt % 32 !== 0 ||
@@ -197,10 +196,8 @@ function sliceArray(layout: ElementLayout, encoded: Hex, arrayAt: number, region
     if (!Number.isSafeInteger(off)) {
       throw new Error("dynamic-layout offset exceeds safe integer range");
     }
-    // Must land in the tail, word-aligned, and strictly after its predecessor: every dynamic
-    // value occupies at least a length word, so equal offsets are never canonical. Without the
-    // `>= tableBytes` floor an element can point back into the offset table and slice bytes
-    // that decode as a plausible value — a malformed response would be believed, not rejected.
+    // Strictly increasing, since every dynamic value occupies at least a length word. Offsets
+    // below `tableBytes` would slice the offset table itself, which decodes as a plausible value.
     if (off < tableBytes || off % 32 !== 0 || (i > 0 && off <= offsets[i - 1]!)) {
       throw new Error("dynamic-layout offsets out of order or out of range");
     }

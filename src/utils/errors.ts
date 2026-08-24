@@ -27,9 +27,7 @@ function isTimeoutShape(error: unknown): boolean {
 
 /**
  * Brand marking an error that is an *answer* rather than a failed attempt: it carries a usable
- * payload, and re-running the request would discard that payload in favour of whatever the retry
- * produces — including, if the retry fails for an unrelated reason, nothing at all.
- * {@link isTerminalError} is how dispatchers recognize one without knowing which feature made it.
+ * payload, so retrying or falling over discards that payload. Dispatchers must propagate it.
  */
 export const TERMINAL_ERROR = "__viemDlcTerminal" as const;
 
@@ -42,9 +40,8 @@ export function isTerminalError(e: unknown): boolean {
 }
 
 /**
- * Yields `e` and every error in its `cause` chain, tolerating cycles. Errors reach us through
- * several wrapping layers (viem's `UnknownRpcError`, `CallExecutionError`, ...), so classification
- * has to look past the outermost one.
+ * Yields `e` and every error in its `cause` chain, tolerating cycles. Classification must look
+ * past the outermost error, which is usually a viem wrapper.
  */
 export function* causeChain(e: unknown): Generator<object> {
   const seen = new Set<unknown>();

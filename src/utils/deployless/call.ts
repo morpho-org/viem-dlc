@@ -36,9 +36,8 @@ type FactorisedFactoryCallParams = {
   gasLimit?: number;
   restOfEthCallParams: RestOfEthCallParams;
   /**
-   * Invoked with each freshly fetched element as soon as its chunk lands, before any sibling
-   * chunk has necessarily finished. Awaited, so a caller can persist results incrementally and
-   * keep them even when a later chunk fails.
+   * Invoked with each freshly fetched element as its chunk lands, before siblings finish, and
+   * awaited — so a caller's results survive a later chunk failing.
    */
   onResolved?: (entries: readonly ResolvedElement[]) => void | Promise<void>;
 };
@@ -162,8 +161,7 @@ export async function factorisedFactoryCall(
           ]);
         }
       } else if (solidity.paged && isOutOfGasRevert(e)) {
-        // A frame that dies on a single element is how a paged lens reports "unservable": its
-        // contract forbids declining index 0, so it must attempt the item and let it burn.
+        // A dead frame is a paged lens's only way to say "unservable": it may not decline index 0.
         missing.push(start);
         return;
       }
@@ -215,10 +213,7 @@ export async function factorisedFactoryCall(
   return outputs;
 }
 
-/**
- * `Promise.all` that waits for every branch to settle before surfacing the first failure, so
- * in-flight siblings finish committing their results instead of being abandoned mid-flight.
- */
+/** `Promise.all`, but every branch settles before the first failure surfaces. */
 async function settleAll(promises: readonly Promise<void>[]): Promise<void> {
   const settled = await Promise.allSettled(promises);
   const failure = settled.find((s) => s.status === "rejected");
@@ -226,12 +221,10 @@ async function settleAll(promises: readonly Promise<void>[]): Promise<void> {
 }
 
 /**
- * Checks a paged response against the parts of the lens contract that are visible in the tuple
- * and returns the number of elements attempted. Order of execution, batching-invariance, and
- * "skips are deterministic" are not observable here and remain lens obligations.
+ * Returns the number of elements the page attempted, rejecting responses that break the parts of
+ * the lens contract visible in the tuple. The rest of the contract is not observable here.
  *
- * The `attempted >= 1` floor is load-bearing rather than cosmetic: `([], [])` satisfies every
- * other rule while making no progress, so without it a lens could stall a range forever.
+ * The `attempted >= 1` floor is what bounds the wave loop: without it a lens can stall forever.
  */
 function validatePage({ results, skipped }: Page, count: number): number {
   const attempted = results.length + skipped.length;
