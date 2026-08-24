@@ -1,10 +1,11 @@
 import { type RpcLog, toHex } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createFacetId } from "../../../../src/observability.js";
 import { MemoryStore } from "../../../../src/stores/memory.js";
 import { handleEthGetLogs } from "../../../../src/transports/cache/eth-get-logs/handler.js";
 import { keychain } from "../../../../src/transports/cache/keychain.js";
-import type { CacheSchema } from "../../../../src/transports/cache/schema.js";
+import { type CacheSchema, cacheTransportKey } from "../../../../src/transports/cache/schema.js";
 import type { HandlerContext, InvalidationStrategy } from "../../../../src/transports/cache/types.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
@@ -66,6 +67,7 @@ describe("handleEthGetLogs", () => {
         chainId,
         requestFn: requestFn as unknown as HandlerContext["requestFn"],
         coalesce,
+        facetId: createFacetId(cacheTransportKey),
       },
       { method: "eth_getLogs", params } as unknown as EthGetLogsRequest,
     );

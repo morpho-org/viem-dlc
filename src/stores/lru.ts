@@ -41,7 +41,9 @@ export class LruStore implements Store {
 
     const size = sizeOf(value);
     if (size > this.maxBytes) {
-      this.logger?.withMetadata({ class: LruStore.name, method: "set", key, size, max_bytes: this.maxBytes }).warn("value exceeds maxBytes, skipping");
+      this.logger
+        ?.withMetadata({ class: LruStore.name, method: "set", key, size, max_bytes: this.maxBytes })
+        .warn("value exceeds maxBytes, skipping");
       return;
     }
 
@@ -59,7 +61,7 @@ export class LruStore implements Store {
     this.map.set(key, value);
     this.bytes += size;
 
-    this.logger?.metadataOnly({ class: LruStore.name, method: "set", key, size, max_bytes: this.maxBytes, evicted })
+    this.logger?.metadataOnly({ class: LruStore.name, method: "set", key, size, max_bytes: this.maxBytes, evicted });
   }
 
   delete(key: string) {

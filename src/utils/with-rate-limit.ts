@@ -227,6 +227,11 @@ export function createRateLimit(maxTokens: number, refillRate: number, maxConcur
      * Jobs with the same priority are processed FIFO.
      * Use `gate` to defer decision on whether to run job (doesn't consume tokens if false).
      *
+     * `onAdmitted` reports how long this call waited for admission. It runs after this
+     * caller's own `await`, so it observes the caller's async context — not that of
+     * whichever job's completion happened to drain the queue. It is skipped entirely
+     * when admission is denied by `gate`.
+     *
      * @example
      * const { withRateLimit } = createRateLimit(5, 10, 2) // 5 burst, 10/sec refill, 2 concurrent
      *
@@ -240,8 +245,13 @@ export function createRateLimit(maxTokens: number, refillRate: number, maxConcur
      */
     async withRateLimit<T>(
       fn: () => Promise<T>,
-      { priority = Infinity, gate }: { priority?: number; gate?: () => boolean },
+      {
+        priority = Infinity,
+        gate,
+        onAdmitted,
+      }: { priority?: number; gate?: () => boolean; onAdmitted?: (waitMs: number) => void },
     ): Promise<T> {
+      const queuedAt = performance.now();
       await new Promise<void>((resolve, reject) => {
         ctx.queue.push({
           resolve,
@@ -252,6 +262,7 @@ export function createRateLimit(maxTokens: number, refillRate: number, maxConcur
         });
         drainQueue(ctx);
       });
+      onAdmitted?.(performance.now() - queuedAt);
 
       try {
         return await fn();

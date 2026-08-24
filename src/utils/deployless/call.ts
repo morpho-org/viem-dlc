@@ -1,5 +1,6 @@
 import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema } from "viem";
 
+import type { Facet } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
 import { isTimeoutLikeError } from "../errors.js";
 import type { Tail } from "../tuples.js";
@@ -20,6 +21,7 @@ type FactorisedFactoryCallParams = {
   solidity: ResolvedArrayFunction;
   batch?: { batchSize: number; exfil?: DeploylessExfilMode; compress?: boolean };
   restOfEthCallParams: RestOfEthCallParams;
+  facet?: Facet;
 };
 
 type MeasureBytes = (start: number, end: number) => number;
@@ -32,7 +34,7 @@ type MeasureBytes = (start: number, end: number) => number;
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  { target, elements, solidity, batch, restOfEthCallParams }: FactorisedFactoryCallParams,
+  { target, elements, solidity, batch, restOfEthCallParams, facet }: FactorisedFactoryCallParams,
 ): Promise<Hex[]> {
   const exfil: DeploylessExfilMode = batch?.exfil ?? "return";
   const compress = batch?.compress ?? false;
@@ -77,6 +79,12 @@ export async function factorisedFactoryCall(
   const ranges = packByByteBudget(elements.length, batch?.batchSize, measureBytes);
   const outputs = new Array<Hex>(elements.length);
 
+  facet?.set({ elements_fetched: elements.length, nominal_batches: ranges.length });
+  // Packed size of each batch, to compare realized utilization against `batchSize`.
+  // Guarded rather than `facet?.stat(...)` so unobserved calls skip re-measuring.
+  if (facet) for (const [start, end] of ranges) facet.stat("batch_bytes", measureBytes(start, end));
+  const splits = { count: 0, size: 0, timeout: 0, maxDepth: 0 };
+
   const fetchChunk = exfil === "return" ? fetchChunkReturn : fetchChunkRevert;
 
   const fetchRecursive = async (
@@ -84,7 +92,10 @@ export async function factorisedFactoryCall(
     startIdx: number,
     precomputed?: Hex,
     timeoutSplitsRemaining = 1,
+    depth = 0,
   ): Promise<void> => {
+    if (depth > splits.maxDepth) splits.maxDepth = depth;
+
     const wrapped = precomputed ?? wrap(els);
     try {
       const returndata = await fetchChunk(requestFn, wrapped, restOfEthCallParams);
@@ -98,10 +109,12 @@ export async function factorisedFactoryCall(
         const cause = classifyBatchSizeError(e);
         if (cause === "size" || (cause === "timeout" && timeoutSplitsRemaining > 0)) {
           const nextBudget = cause === "timeout" ? timeoutSplitsRemaining - 1 : timeoutSplitsRemaining;
+          splits.count += 1;
+          splits[cause] += 1;
           const mid = Math.floor(els.length / 2);
           await Promise.all([
-            fetchRecursive(els.slice(0, mid), startIdx, undefined, nextBudget),
-            fetchRecursive(els.slice(mid), startIdx + mid, undefined, nextBudget),
+            fetchRecursive(els.slice(0, mid), startIdx, undefined, nextBudget, depth + 1),
+            fetchRecursive(els.slice(mid), startIdx + mid, undefined, nextBudget, depth + 1),
           ]);
           return;
         }
@@ -110,11 +123,20 @@ export async function factorisedFactoryCall(
     }
   };
 
-  await Promise.all(
-    ranges.map(([start, end]) =>
-      fetchRecursive(elements.slice(start, end), start, ranges.length === 1 ? getReferenceWrapped() : undefined),
-    ),
-  );
+  try {
+    await Promise.all(
+      ranges.map(([start, end]) =>
+        fetchRecursive(elements.slice(start, end), start, ranges.length === 1 ? getReferenceWrapped() : undefined),
+      ),
+    );
+  } finally {
+    facet?.set({
+      splits_count: splits.count,
+      splits_size: splits.size,
+      splits_timeout: splits.timeout,
+      splits_max_depth: splits.maxDepth,
+    });
+  }
 
   return outputs;
 }

@@ -15,11 +15,13 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { LazyNdjsonMap } from "../../../../src/internal/index.js";
+import { createFacetId } from "../../../../src/observability.js";
 import { MemoryStore } from "../../../../src/stores/memory.js";
 import { handleEthCall } from "../../../../src/transports/cache/eth-call/handler.js";
 import type { CachedEthCallEntry } from "../../../../src/transports/cache/eth-call/types.js";
 import { keychain } from "../../../../src/transports/cache/keychain.js";
 import type { CacheSchema } from "../../../../src/transports/cache/schema.js";
+import { cacheTransportKey } from "../../../../src/transports/cache/schema.js";
 import type { HandlerContext } from "../../../../src/transports/cache/types.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
@@ -104,6 +106,7 @@ function ctx(requestFn: HandlerContext["requestFn"], store = new MemoryStore()):
     chainId,
     binSize: 10_000,
     invalidationStrategy: () => 0,
+    facetId: createFacetId(cacheTransportKey),
   };
 }
 

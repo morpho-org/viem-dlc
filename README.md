@@ -12,6 +12,43 @@ pnpm add @morpho-org/viem-dlc
 
 Also available on the [GitHub Package Registry](https://npm.pkg.github.com).
 
+## Observability (optional)
+
+This library can emit structured events through a logger you provide. The expected
+shape is a structural subset of [`loglayer`](https://www.npmjs.com/package/loglayer)
+— a `LogLayer` instance satisfies it directly — but `loglayer` is **not** a declared
+peer dependency, so it isn't installed transitively and isn't required to typecheck.
+Pass any value matching the exported `Logger` interface (`child`, `withContext`,
+`withMetadata`, `withError`, `info`, `warn`, `error`, `metadataOnly`).
+
+```bash
+pnpm add loglayer    # only if you want to use it as the logger
+```
+
+If you don't call `withLogging`, the library emits nothing and the dep is irrelevant.
+
+```ts
+import { withLogging } from '@morpho-org/viem-dlc'
+
+await withLogging(() => client.request({ method: 'eth_getLogs', params: [filter] }), {
+  logger,           // anything satisfying the `Logger` interface, e.g. a LogLayer instance
+  service: 'indexer', // extra opts become context fields on every event
+})
+```
+
+Each outermost `client.request` made inside a `withLogging` scope emits a single
+`"concluded"` wide event. Transports contribute flat, queryable fields under their
+key — e.g. `viem-dlc-failover.succeeded_index`, `viem-dlc-logs-divider.logs_fetched` —
+and layers crossed many times per call (e.g. once per chunk under the divider)
+accumulate totals there (e.g. `viem-dlc-logs-sieve.logs_dropped`). If a call crosses
+several *instances* of the same transport — say, one cache per failover branch — later
+instances are suffixed `.1`, `.2`, ... in first-touch order, which is stable for a
+given composition. Every layer also stamps a per-instance `crossings` count, so the
+event records which transports the call traversed and how many times each. Call-level
+fields are `call_id`, `duration_ms`, and `status` (`"ok"` or `"error"`). Failed calls
+emit at `error` level with the error attached via `withError`, so hosts that forward
+`withError` entries to an error reporter (e.g. Sentry) capture them automatically.
+
 ## Transports
 
 ### `deployless`
@@ -227,7 +264,10 @@ const client = createPublicClient({ transport })
 
 ### `rateLimiter`
 
-Token-bucket rate limiting with concurrency limiting and priority scheduling:
+Token-bucket rate limiting with concurrency limiting and priority scheduling. When
+observability is enabled it reports `queue_wait_ms` (admission wait, summarized over
+every crossing in the call), which separates time spent queued behind your own limits
+from time spent waiting on the upstream RPC:
 
 ```ts
 import { createPublicClient, http } from 'viem'
@@ -426,7 +466,7 @@ Exported from `@morpho-org/viem-dlc/utils`:
 
 - `divideBlockRange` / `mergeBlockRanges` / `halveBlockRange` — block range manipulation
 - `resolveBlockNumber` / `extractRangeFromFilter` / `isInBlockRange` — block number helpers
-- `isErrorCausedByBlockRange` — detect RPC "block range too large" errors
+- `classifyBlockRangeError` — classify RPC errors as range-related, timeout-like, or neither
 - `createCoalescingMutex` — per-resource leader/follower batching
 - `createTokenBucket` / `createRateLimit` — rate limiting primitives
 - `cyrb64Hash` — fast string hashing

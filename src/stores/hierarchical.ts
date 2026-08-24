@@ -19,14 +19,16 @@ export class HierarchicalStore implements Store {
     for (let i = 0; i < this.stores.length; i++) {
       const value = await this.stores[i]!.get(key);
       if (value !== null) {
-        this.options?.logger?.withMetadata({ class: HierarchicalStore.name, method: "get", level: i, key }).info("cache hit")
+        this.options?.logger
+          ?.withMetadata({ class: HierarchicalStore.name, method: "get", level: i, key })
+          .info("cache hit");
         if (this.options?.populateOnMiss) {
           void Promise.all(this.stores.slice(0, i).map((store) => store.set(key, value)));
         }
         return value;
       }
     }
-    this.options?.logger?.withMetadata({ class: HierarchicalStore.name, method: "get", key}).info("cache miss")
+    this.options?.logger?.withMetadata({ class: HierarchicalStore.name, method: "get", key }).info("cache miss");
     return null;
   }
 

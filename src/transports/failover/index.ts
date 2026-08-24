@@ -1,6 +1,6 @@
 import type { EIP1193RequestFn, RpcSchema, Transport } from "viem";
 
-import { type Observability, observe } from "../../observability.js";
+import { createFacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
 import { serializeError } from "../../utils/errors.js";
 
@@ -40,10 +40,13 @@ export function failover<S extends RpcSchema>(
     throw new Error("[failover] requires at least one transport");
   }
 
+  const facetId = createFacetId(failoverTransportKey);
+
   return (params) => {
     const requestFns = transports.map((t) => t(params).request);
 
-    const request = async (args: EIP1193Parameters<S>, observability?: Observability) => {
+    const request = async (args: EIP1193Parameters<S>) => {
+      const facet = getObservability()?.facet(facetId);
       const stats: {
         branchErrors: unknown[];
         branchDurationsMs: number[];
@@ -70,18 +73,21 @@ export function failover<S extends RpcSchema>(
         }
         throw stats.branchErrors.at(-1);
       } finally {
-        const tag = `${failoverTransportKey}.${observability?.counter}`;
-        observability?.logger?.withContext({
-          [`${tag}.branches_attempted`]: stats.branchErrors.length + (stats.succeededIndex >= 0 ? 1 : 0),
-          [`${tag}.succeeded_index`]: stats.succeededIndex,
-          [`${tag}.branch_errors`]: stats.branchErrors.map(serializeError),
-          [`${tag}.branch_durations_ms`]: stats.branchDurationsMs,
-          [`${tag}.terminated_by_should_throw`]: stats.terminatedByShouldThrow,
+        facet?.set({
+          branches_attempted: stats.branchErrors.length + (stats.succeededIndex >= 0 ? 1 : 0),
+          succeeded_index: stats.succeededIndex,
+          branch_durations_ms: stats.branchDurationsMs,
         });
+        if (stats.branchErrors.length > 0) {
+          facet?.set({
+            branch_errors: stats.branchErrors.map(serializeError),
+            terminated_by_should_throw: stats.terminatedByShouldThrow,
+          });
+        }
       }
     };
 
-    const observed = observe(request) as EIP1193RequestFn;
+    const observed = observe(request, facetId) as EIP1193RequestFn;
 
     // Bypass `createTransport` so we don't add a redundant `buildRequest` layer.
     // Failover doesn't classify errors, retry, or dedupe — wrapping here would only

@@ -128,7 +128,9 @@ describe("LruStore", () => {
 
   it("warns and skips values that exceed maxBytes", async () => {
     const warn = vi.fn();
-    const logger = { withMetadata: () => ({ warn }), metadataOnly: () => {} } as unknown as ConstructorParameters<typeof LruStore>[0]["logger"];
+    const logger = { withMetadata: () => ({ warn }), metadataOnly: () => {} } as unknown as ConstructorParameters<
+      typeof LruStore
+    >[0]["logger"];
     const store = new LruStore({ maxBytes: 5, logger });
 
     await store.set("a", [Buffer.from("1")]); // 1 byte, fits

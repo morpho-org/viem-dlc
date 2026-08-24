@@ -110,7 +110,9 @@ export class UpstashStore implements Store {
 
       // If shard is null, array must've been shortened after our initial read (non-atomic inconsistency).
       if (shardWithId === null) {
-        this.options.logger?.withMetadata({ class: UpstashStore.name, method: "_get", key }).info("non-atomic inconsistency: skewed length");
+        this.options.logger
+          ?.withMetadata({ class: UpstashStore.name, method: "_get", key })
+          .info("non-atomic inconsistency: skewed length");
         return { value: null, motivatesRetry: true };
       }
 
@@ -118,7 +120,9 @@ export class UpstashStore implements Store {
 
       // If writeId doesn't match, array must've been overwritten after our initial read (non-atomic inconsistency).
       if (writeId !== writeId0) {
-        this.options.logger?.withMetadata({ class: UpstashStore.name, method: "_get", key }).info("non-atomic inconsistency: skewed shard");
+        this.options.logger
+          ?.withMetadata({ class: UpstashStore.name, method: "_get", key })
+          .info("non-atomic inconsistency: skewed shard");
         return { value: null, motivatesRetry: true };
       }
 
@@ -143,7 +147,7 @@ export class UpstashStore implements Store {
       }
     }
 
-    this.options?.logger?.withMetadata({ class: UpstashStore.name, method: "get", key }).warn("exhausted retries")
+    this.options?.logger?.withMetadata({ class: UpstashStore.name, method: "get", key }).warn("exhausted retries");
     return null;
   }
 
@@ -190,7 +194,10 @@ export class UpstashStore implements Store {
     try {
       await this.inFlight.track(this._set(key, value));
     } catch (err) {
-      this.options.logger?.withMetadata({ class: UpstashStore.name, method: "set", key }).withError(err).warn("set failed");
+      this.options.logger
+        ?.withMetadata({ class: UpstashStore.name, method: "set", key })
+        .withError(err)
+        .warn("set failed");
     }
   }
 
@@ -198,7 +205,10 @@ export class UpstashStore implements Store {
     try {
       await this.inFlight.track(this.redis.unlink(key));
     } catch (err) {
-      this.options.logger?.withMetadata({ class: UpstashStore.name, method: "delete", key }).withError(err).warn("delete failed");
+      this.options.logger
+        ?.withMetadata({ class: UpstashStore.name, method: "delete", key })
+        .withError(err)
+        .warn("delete failed");
     }
   }
 
@@ -206,7 +216,10 @@ export class UpstashStore implements Store {
     try {
       await this.inFlight.flush();
     } catch (err) {
-      this.options.logger?.withMetadata({ class: UpstashStore.name, method: "flush" }).withError(err).warn("flush failed");
+      this.options.logger
+        ?.withMetadata({ class: UpstashStore.name, method: "flush" })
+        .withError(err)
+        .warn("flush failed");
     }
   }
 }

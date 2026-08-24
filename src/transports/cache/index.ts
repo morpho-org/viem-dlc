@@ -1,6 +1,6 @@
 import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
-import { type Observability, observe } from "../../observability.js";
+import { createFacetId, observe } from "../../observability.js";
 import type { EIP1193Parameters, Store } from "../../types.js";
 import { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
 import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
@@ -119,6 +119,8 @@ export function cache(
     RateLimiterConfig,
   ],
 ): Transport<typeof cacheTransportKey, { store: Store }, EIP1193RequestFn<CacheSchema>> {
+  const facetId = createFacetId(cacheTransportKey);
+
   return (params) => {
     if (params.chain === undefined) {
       throw new Error("You must pass a chain to the cache transport.");
@@ -130,7 +132,7 @@ export function cache(
       params,
     );
 
-    const request = async (req: EIP1193Parameters<CacheSchema>, observability?: Observability) => {
+    const request = async (req: EIP1193Parameters<CacheSchema>) => {
       req = normalize(req);
       // TODO: compare args against allowlist
 
@@ -141,7 +143,7 @@ export function cache(
         chainId,
         requestFn: transport.request,
         coalesce,
-        observability,
+        facetId,
       };
 
       switch (req.method) {
@@ -163,7 +165,7 @@ export function cache(
       {
         key: cacheTransportKey,
         name: "[viem-dlc] cache",
-        request: observe(request) as EIP1193RequestFn,
+        request: observe(request, facetId) as EIP1193RequestFn,
         retryCount: 0,
         type: cacheTransportKey,
       },

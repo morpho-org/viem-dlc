@@ -11,6 +11,7 @@ export * from "./math.js";
 export * from "./objects.js";
 export * from "./omit.js";
 export * from "./pick.js";
+export * from "./sleep.js";
 export * from "./strings.js";
 export * from "./tuples.js";
 export * from "./with-dedupe.js";

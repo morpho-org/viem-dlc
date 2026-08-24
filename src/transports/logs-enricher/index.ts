@@ -1,6 +1,6 @@
 import { createTransport, type EIP1193RequestFn, type Hex, type PublicRpcSchema, type Transport } from "viem";
 
-import { type Observability, observe } from "../../observability.js";
+import { createFacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 import { isRevertExpected } from "../../utils/deployless/codec.envelope.js";
 
@@ -17,14 +17,19 @@ export function logsEnricher<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
   [{ retryCount, retryDelay, blockTimestamp }]: [LogsEnricherConfig],
 ): Transport<typeof logsEnricherTransportKey, unknown, EIP1193RequestFn<T>> {
+  const facetId = createFacetId(logsEnricherTransportKey);
+
   return (params) => {
     const requestFn = baseTransportFn(params).request as EIP1193RequestFn<Base>;
 
-    const request = async (args: EIP1193Parameters<T>, observability?: Observability) => {
+    const request = async (args: EIP1193Parameters<T>) => {
       if (args.method !== "eth_getLogs") {
         return requestFn(args, isRevertExpected(args) ? { retryCount: 0 } : undefined);
       }
 
+      // Crossed once per chunk under a divider fan-out; `add` accumulates the
+      // per-call totals on this transport's slot.
+      const facet = getObservability()?.facet(facetId);
       const logs = await requestFn(args as EIP1193Parameters<Base, "eth_getLogs">);
 
       if (!blockTimestamp) return logs;
@@ -65,13 +70,8 @@ export function logsEnricher<T extends Base>(
         return acc;
       }, []);
 
-      if (observability) {
-        const tag = `${logsEnricherTransportKey}.${observability.counter}`;
-        observability.logger?.withContext({
-          [`${tag}.blocks_fetched`]: blockNumbers.size,
-          [`${tag}.logs_dropped`]: logs.length - enriched.length,
-        });
-      }
+      facet?.add("blocks_fetched", blockNumbers.size);
+      facet?.add("logs_dropped", logs.length - enriched.length);
 
       return enriched;
     };
@@ -79,7 +79,7 @@ export function logsEnricher<T extends Base>(
     return createTransport({
       key: logsEnricherTransportKey,
       name: "[viem-dlc] logs-enricher",
-      request: observe(request) as EIP1193RequestFn,
+      request: observe(request, facetId) as EIP1193RequestFn,
       retryCount: 0,
       type: logsEnricherTransportKey,
     });

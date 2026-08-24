@@ -150,7 +150,10 @@ export class VercelStore implements Store {
     try {
       return await this._get(key);
     } catch (err) {
-      this.options.logger?.withMetadata({ class: VercelStore.name, method: "get", key }).withError(err).warn("get failed");
+      this.options.logger
+        ?.withMetadata({ class: VercelStore.name, method: "get", key })
+        .withError(err)
+        .warn("get failed");
       return null;
     }
   }
@@ -173,7 +176,10 @@ export class VercelStore implements Store {
     try {
       await this.inFlight.track(this._set(key, value));
     } catch (err) {
-      this.options.logger?.withMetadata({ class: VercelStore.name, method: "set", key }).withError(err).warn("set failed");
+      this.options.logger
+        ?.withMetadata({ class: VercelStore.name, method: "set", key })
+        .withError(err)
+        .warn("set failed");
     }
   }
 
@@ -181,7 +187,10 @@ export class VercelStore implements Store {
     try {
       await this.inFlight.track(Promise.resolve(del(this.resolvePathname(key), this.tokenOption)));
     } catch (err) {
-      this.options.logger?.withMetadata({ class: VercelStore.name, method: "delete", key }).withError(err).warn("delete failed");
+      this.options.logger
+        ?.withMetadata({ class: VercelStore.name, method: "delete", key })
+        .withError(err)
+        .warn("delete failed");
     }
   }
 
@@ -189,7 +198,10 @@ export class VercelStore implements Store {
     try {
       await this.inFlight.flush();
     } catch (err) {
-      this.options.logger?.withMetadata({ class: VercelStore.name, method: "flush" }).withError(err).warn("flush failed");
+      this.options.logger
+        ?.withMetadata({ class: VercelStore.name, method: "flush" })
+        .withError(err)
+        .warn("flush failed");
     }
   }
 }

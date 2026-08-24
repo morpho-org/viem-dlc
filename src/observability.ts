@@ -1,12 +1,11 @@
+import { estimateUtf8Bytes } from "./utils/json.js";
 import { deepTransform } from "./utils/objects.js";
-import { pick } from "./utils/pick.js";
 
 /**
- * Minimal structural slice of the `loglayer` `LogLayer` interface — only the methods
- * this library calls. Defined locally so `loglayer` is a *true* optional dep: the
- * emitted `.d.ts` files reference `Logger` rather than `import("loglayer").LogLayer`,
- * so consumers who don't pass a logger don't need to install `loglayer` to typecheck.
- * A real `LogLayer` instance satisfies this structurally.
+ * Minimal structural slice of `loglayer`'s `LogLayer`, which satisfies it directly.
+ * Declared locally so `loglayer` stays a *true* optional dep: the emitted `.d.ts`
+ * refers to `Logger`, not `import("loglayer").LogLayer`, so consumers who don't use
+ * it needn't install it to typecheck.
  */
 export interface Logger {
   child(): Logger;
@@ -19,34 +18,156 @@ export interface Logger {
   metadataOnly(metadata: Record<string, unknown>): void;
 }
 
-export type Observability = {
-  logger?: Logger;
-  call_id?: string;
+/**
+ * Accumulates one transport instance's fields on the call's wide event, under the
+ * prefix its {@link FacetId} claims.
+ *
+ * Re-allocating a facet for the same id returns the same slot, so a layer crossed
+ * many times per call (e.g. once per chunk under a divider fan-out) aggregates
+ * naturally. Writes are valid at any point in the operation's lifetime, including
+ * after `await`s. All facets share one byte budget per event; if it is exceeded,
+ * the largest fields are dropped and named in `truncated_fields`.
+ */
+export interface Facet {
   /**
-   * Monotonic ordinal incremented on every `observe` boundary crossing inside this
-   * call's scope. Transports can stamp it into their dotted keys (e.g.
-   * `viem-dlc-logs-sieve.${counter}.logs_dropped`) so that the same transport invoked
-   * N times in one outer request (e.g. a log-sieve under a divider fan-out) doesn't
-   * clobber its `withContext` field N-1 times.
+   * Merges fields into this facet's slot; last write per field wins. Reserve it for
+   * once-per-call facts — on a layer crossed repeatedly, prefer `add`/`stat`/`push`.
    */
-  counter?: number;
-};
+  set(fields: Record<string, unknown>): void;
+  /** Adds `n` (default 1) to a numeric accumulator field. */
+  add(field: string, n?: number): void;
+  /**
+   * Records a sample into a streaming summary. Emitted at conclusion as
+   * `${field}.count`, `${field}.min`, `${field}.max`, and `${field}.avg`.
+   */
+  stat(field: string, sample: number): void;
+  /**
+   * Appends to a bounded array (default limit 10). Values pushed past the limit
+   * are dropped and counted in `${field}_truncated`.
+   */
+  push(field: string, value: unknown, limit?: number): void;
+  /** Returns a facet writing under `prefix` within this same slot. */
+  sub(prefix: string): Facet;
+}
 
 /**
- * Per-operation ALS scope.
+ * Identity of one transport instance, naming its fields on the wide event.
  *
- * `parentLogger` and `context` are the seed captured by `withLogging`; they're
- * used once by the outermost `observe` for a given `client.request` to derive
- * `logger` (a single `.child().withContext({ ...context, method, call_id })`).
- * Inner viem-dlc transport layers reuse the same `logger` and `call_id`, and
- * each increments `counter` so they can disambiguate their emitted keys.
+ * The first id of a given key touched during a call writes bare `${key}.${field}`
+ * fields; later ids sharing that key (e.g. one cache per failover branch) get
+ * `${key}.1.*`, `${key}.2.*`, ... in first-touch order — stable across calls
+ * because transports traverse in a fixed order for a given composition.
+ *
+ * Create exactly one per composition node, at transport-factory scope, and pass it
+ * to both {@link observe} and {@link Observability.facet}: identity is by object
+ * reference, so an id created per request would claim a fresh label every call.
+ */
+export interface FacetId {
+  readonly key: string;
+}
+
+export function createFacetId(key: string): FacetId {
+  return { key };
+}
+
+export type Observability = {
+  logger: Logger;
+  call_id: string;
+  facet(id: FacetId): Facet;
+};
+
+/** Streaming summary accumulator backing `Facet["stat"]`. */
+interface StatAcc {
+  count: number;
+  sum: number;
+  min: number;
+  max: number;
+}
+
+/** Per-call state, shared by reference across the call's ALS scope; every facet writes here. */
+interface RootState {
+  /** First-touch labels: facet key → (id → field prefix). */
+  labels: Map<string, Map<FacetId, string>>;
+  /** Flattened `${prefix}.${field}` → value. */
+  fields: Record<string, unknown>;
+  /** Streaming summaries, keyed by full dotted field path. */
+  stats: Map<string, StatAcc>;
+}
+
+class FacetImpl implements Facet {
+  constructor(
+    private readonly root: RootState,
+    private readonly prefix: string,
+  ) {}
+
+  set(fields: Record<string, unknown>): void {
+    for (const [k, v] of Object.entries(fields)) this.root.fields[`${this.prefix}.${k}`] = v;
+  }
+
+  add(field: string, n = 1): void {
+    const fk = `${this.prefix}.${field}`;
+    const current = this.root.fields[fk];
+    this.root.fields[fk] = (typeof current === "number" ? current : 0) + n;
+  }
+
+  stat(field: string, sample: number): void {
+    const fk = `${this.prefix}.${field}`;
+    let acc = this.root.stats.get(fk);
+    if (!acc) {
+      acc = { count: 0, sum: 0, min: Number.POSITIVE_INFINITY, max: Number.NEGATIVE_INFINITY };
+      this.root.stats.set(fk, acc);
+    }
+    acc.count += 1;
+    acc.sum += sample;
+    if (sample < acc.min) acc.min = sample;
+    if (sample > acc.max) acc.max = sample;
+  }
+
+  push(field: string, value: unknown, limit = 10): void {
+    const fk = `${this.prefix}.${field}`;
+    let arr = this.root.fields[fk] as unknown[];
+    if (!Array.isArray(arr)) {
+      arr = [];
+      this.root.fields[fk] = arr;
+    }
+    if (arr.length < limit) {
+      arr.push(value);
+    } else {
+      const tk = `${fk}_truncated`;
+      this.root.fields[tk] = ((this.root.fields[tk] as number) ?? 0) + 1;
+    }
+  }
+
+  sub(prefix: string): Facet {
+    return new FacetImpl(this.root, `${this.prefix}.${prefix}`);
+  }
+}
+
+/** Suffixes count per key ({@link FacetId}), so unrelated keys never shift each other's labels. */
+function resolvePrefix(root: RootState, id: FacetId): string {
+  let labels = root.labels.get(id.key);
+  if (!labels) {
+    labels = new Map();
+    root.labels.set(id.key, labels);
+  }
+  let prefix = labels.get(id);
+  if (prefix === undefined) {
+    prefix = labels.size === 0 ? id.key : `${id.key}.${labels.size}`;
+    labels.set(id, prefix);
+  }
+  return prefix;
+}
+
+/**
+ * Per-operation ALS scope. `parentLogger` and `context` are the seed captured by
+ * `withLogging`; `obs` and `root` are derived once by the outermost {@link observe}
+ * and reused by every inner boundary, so one call produces one wide event.
  */
 interface Scope {
   parentLogger: Logger;
   context: Record<string, unknown>;
-  logger?: Logger;
-  call_id?: string;
-  counter?: number;
+  obs?: Observability;
+  root?: RootState;
 }
 
 let als:
@@ -56,9 +177,9 @@ let als:
     }
   | undefined;
 
-// Lazy import: avoid pulling `node:async_hooks` into bundles that don't need it.
-// In environments without `AsyncLocalStorage` (e.g. browsers without a polyfill),
-// `withLogging` becomes a no-op and the library emits nothing.
+// Imported lazily so bundles that never call `withLogging` don't pull in
+// `node:async_hooks`, and so environments lacking it (e.g. unpolyfilled browsers)
+// degrade to the no-op path rather than failing to load.
 async function loadAls() {
   if (als !== undefined) return als;
   try {
@@ -72,18 +193,19 @@ async function loadAls() {
 
 export interface WithLoggingOpts {
   logger: Logger;
-  /** Additional context fields stamped onto the scope's child logger. */
+  /** Additional context fields, stamped onto every event emitted in this scope. */
   [key: string]: unknown;
 }
 
 /**
- * Opens an ALS scope holding a child `Logger` instance for the duration of `fn`.
- * Every viem-dlc transport call made inside `fn` (synchronously or via awaits)
- * emits events through descendants of this child. Outside the scope, the library
- * emits nothing.
+ * Opens an ALS scope seeding `logger` and `opts` for the duration of `fn`. Each
+ * outermost viem-dlc transport call made inside `fn` (synchronously or via awaits)
+ * derives its own child logger and emits one wide event; the transport layers it
+ * nests through contribute fields to that same event. Outside the scope, the
+ * library emits nothing.
  *
- * Parallel `client.request` calls inside one `withLogging` scope each get their
- * own per-call child via `enterRequest`, fully isolated from one another.
+ * Parallel `client.request` calls inside one `withLogging` scope are fully
+ * isolated from one another.
  *
  * In environments without `AsyncLocalStorage`, this is a no-op pass-through.
  */
@@ -96,36 +218,132 @@ export async function withLogging<T>(fn: () => Promise<T> | T, opts: WithLogging
   return storage.run({ parentLogger: logger, context: rest }, fn);
 }
 
+/** Soft ceiling on accumulated facet bytes emitted on one wide event. */
+const MAX_FIELDS_BYTES = 32 * 1024;
+
+function fieldSize(key: string, value: unknown): number {
+  try {
+    return key.length + estimateUtf8Bytes(value);
+  } catch {
+    // Unestimable (e.g. circular) values are treated as oversized so they're dropped first.
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+/**
+ * Resolves stat accumulators into scalar fields and enforces `MAX_FIELDS_BYTES`,
+ * dropping the largest fields first and recording their names in `truncated_fields`.
+ */
+function finalizeFields(root: RootState): Record<string, unknown> {
+  const { fields } = root;
+
+  for (const [fk, acc] of root.stats) {
+    fields[`${fk}.count`] = acc.count;
+    fields[`${fk}.min`] = acc.min;
+    fields[`${fk}.max`] = acc.max;
+    fields[`${fk}.avg`] = acc.sum / acc.count;
+  }
+
+  let total = 0;
+  for (const [k, v] of Object.entries(fields)) total += fieldSize(k, v);
+  if (total <= MAX_FIELDS_BYTES) return fields;
+
+  // Over budget (rare): re-measure so the largest fields can be dropped first.
+  const sizes = Object.entries(fields)
+    .map(([k, v]) => [k, fieldSize(k, v)] as const)
+    .sort((a, b) => b[1] - a[1]);
+  const dropped: string[] = [];
+  for (const [k, size] of sizes) {
+    if (total <= MAX_FIELDS_BYTES) break;
+    delete fields[k];
+    dropped.push(k);
+    total -= size;
+  }
+  fields.truncated_fields = dropped;
+
+  return fields;
+}
+
 /**
  * Inherit-or-originate primitive used by every viem-dlc transport's `request` fn.
+ *
+ * The outermost boundary for a call derives the per-call child logger and facet
+ * accumulator, then emits one `"concluded"` wide event when the call settles:
+ * `info`-level on success, `error`-level with `withError` on rejection. Inner
+ * boundaries contribute to that same event; no new ALS store is created past the
+ * outermost one.
+ *
+ * Every crossing (outermost included) increments `id`'s `crossings` field, so the
+ * event records which transports this call traversed and how many times each.
+ * Running on boundary entry also pins `id`'s label before any handler writes.
  */
-export function observe<Input, Output>(
-  fn: (req: Input, observability?: Observability) => Promise<Output>,
-): (req: Input) => Promise<Output> {
-  return (req: Input) => {
+export function observe<F extends (req: never) => Promise<unknown>>(fn: F, id: FacetId): F {
+  const countCrossing = (root: RootState) => {
+    const fk = `${resolvePrefix(root, id)}.crossings`;
+    root.fields[fk] = ((root.fields[fk] as number) ?? 0) + 1;
+  };
+  const wrapped = (req: Parameters<F>[0]) => {
     const scope = als?.getStore();
     if (!als || !scope) return fn(req);
-    if (scope.logger) {
-      // Inner traversal: bump the shared ordinal so each layer sees a fresh slot.
-      scope.counter = (scope.counter ?? 0) + 1;
-      return fn(req, pick(scope, ["logger", "call_id", "counter"]));
+    if (scope.root) {
+      countCrossing(scope.root);
+      return fn(req);
     }
 
     const call_id = crypto.randomUUID();
     const logger = scope.parentLogger.child().withContext({
-      library: "viem-dlc",
+      // Seeded context first, so the canonical fields below can't be overwritten.
       ...scope.context,
+      library: "viem-dlc",
+      // Trimmed so a large calldata or filter payload can't dominate the event.
       req: deepTransform(req, {
-        /** Trims strings longer than 100 characters, adding a trailing '...' in place of the last 3 chars. */
         transformLeaf: <T>(v: T) => (typeof v === "string" && v.length > 100 ? v.slice(0, 97).concat("...") : v) as T,
       }),
       call_id,
     });
-    return als.run({ ...scope, logger, call_id, counter: 0 }, () => {
+    const root: RootState = { labels: new Map(), fields: {}, stats: new Map() };
+    countCrossing(root);
+    const obs: Observability = {
+      logger,
+      call_id,
+      facet: (facetId) => new FacetImpl(root, resolvePrefix(root, facetId)),
+    };
+    return als.run({ ...scope, obs, root }, () => {
       const t0 = performance.now();
-      return fn(req, { logger, call_id, counter: 0 }).finally(() =>
-        logger?.withContext({ duration_ms: performance.now() - t0 }).info("concluded"),
+      const conclude = (status: "ok" | "error", error?: unknown) => {
+        const fields = finalizeFields(root);
+        fields.status = status;
+        fields.duration_ms = performance.now() - t0;
+        // `withError` on the error path so hosts wired like Morpho's `@repo/observability`
+        // (LogLayer plugin forwarding `.withError()` entries to an ErrorReporter) capture it.
+        const enriched = logger.withContext(fields);
+        if (status === "ok") enriched.info("concluded");
+        else enriched.withError(error).error("concluded");
+      };
+      return fn(req).then(
+        (result) => {
+          conclude("ok");
+          return result;
+        },
+        (error) => {
+          conclude("error", error);
+          throw error;
+        },
       );
     });
   };
+  return wrapped as F;
+}
+
+/**
+ * Reads the active per-request observability scope from ambient ALS. Returns
+ * `undefined` when called outside a `withLogging` scope, in environments
+ * without `AsyncLocalStorage`, or before `observe` has derived a per-call
+ * child logger.
+ *
+ * ALS context flows through `await`s, so this may be called at any point in a
+ * transport's lifetime.
+ */
+export function getObservability(): Observability | undefined {
+  return als?.getStore()?.obs;
 }

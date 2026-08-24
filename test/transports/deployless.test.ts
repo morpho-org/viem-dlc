@@ -15,6 +15,7 @@ import {
 } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
+import { withLogging } from "../../src/observability.js";
 import { deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
@@ -24,6 +25,7 @@ import {
   wrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
 import { flzDecompress } from "../../src/utils/deployless/flz.js";
+import { createStubLogger, findDotted } from "../helpers/logger.js";
 
 type EthCallRequest = EIP1193Parameters<import("viem").PublicRpcSchema, "eth_call">;
 
@@ -197,6 +199,31 @@ describe("deployless", () => {
 
       const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
       expect(decoded).toEqual([addr(1), addr(2), addr(3), addr(4), addr(5)].map((a) => BigInt(a)));
+    });
+
+    it("stamps input_elements, nominal_batches, and splits onto the wide event", async () => {
+      const batchSize = exfil === "revert" ? 520 : 1088;
+      const requestFn = mockBalancesOfFn();
+      const transport = createTransport(requestFn);
+      const req = createRequest([addr(1), addr(2), addr(3), addr(4), addr(5)], { batch: { batchSize, exfil } });
+
+      const { logger, events } = createStubLogger();
+      await withLogging(() => transport.request(req), { logger });
+
+      expect(events).toHaveLength(1);
+      const { context } = events[0]!;
+      const field = (name: string) => findDotted(context, "viem-dlc-deployless", `eth_call.${name}`);
+      expect(field("input_elements")).toBe(5);
+      expect(field("elements_fetched")).toBe(5);
+      expect(field("nominal_batches")).toBeGreaterThan(1);
+      expect(field("splits_count")).toBe(0);
+      expect(field("splits_size")).toBe(0);
+      expect(field("splits_timeout")).toBe(0);
+      expect(field("splits_max_depth")).toBe(0);
+
+      // One packed-size sample per batch, none exceeding the budget they were packed under.
+      expect(field("batch_bytes.count")).toBe(field("nominal_batches"));
+      expect(field("batch_bytes.max")).toBeLessThanOrEqual(batchSize);
     });
 
     it("forwards block, cleaned stateOverride, and blockOverride upstream", async () => {

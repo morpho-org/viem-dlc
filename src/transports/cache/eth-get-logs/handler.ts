@@ -2,12 +2,13 @@ import { hexToBigInt, type RpcLog, toHex } from "viem";
 
 import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
 import type { LazyEntry } from "../../../internal/ndjson-map.js";
+import { getObservability } from "../../../observability.js";
 import type { BlockRange, EIP1193Parameters } from "../../../types.js";
 import { divideBlockRange, extractRangeFromFilter, isInBlockRange, mergeBlockRanges } from "../../../utils/blocks.js";
 import { tryCatch } from "../../../utils/errors.js";
 import { parse, stringify } from "../../../utils/json.js";
 import { keychain } from "../keychain.js";
-import { type CacheSchema, cacheTransportKey } from "../schema.js";
+import type { CacheSchema } from "../schema.js";
 import type { HandlerContext, InvalidationStrategy } from "../types.js";
 
 import { createSink } from "./sink.js";
@@ -45,6 +46,7 @@ export async function handleEthGetLogs(
   req: EIP1193Parameters<CacheSchema, "eth_getLogs">,
 ): Promise<RpcLog[]> {
   const { binSize, invalidationStrategy, store, coalesce, requestFn, chainId } = ctx;
+  const facet = getObservability()?.facet(ctx.facetId).sub("eth_getLogs");
   const blobKey = keychain.blobKey(chainId, req);
 
   return coalesce(blobKey, req, async (args, collectFollowers) => {
@@ -174,20 +176,16 @@ export async function handleEthGetLogs(
     const leader = { slot: -1, args };
     const followers = collectFollowers();
 
-    if (ctx.observability) {
-      // TODO(observability): once `coalesce` carries a `meta: { call_id }` per
-      // caller, populate `<slot>.participant_call_ids` from the leader's `call_id`
-      // plus followers' meta. For now the event only describes leader-side work.
-      const blobBytesWritten = buffers.reduce((s, b) => s + b.byteLength, 0);
-      const tag = `${cacheTransportKey}.${ctx.observability.counter}.eth_getLogs`;
-      ctx.observability.logger?.withContext({
-        [`${tag}.blob_key`]: blobKey,
-        [`${tag}.gaps_fetched`]: gapsFetchedCount,
-        [`${tag}.n_followers`]: followers.length,
-        [`${tag}.blob_bytes_written`]: blobBytesWritten,
-        [`${tag}.fetch_ms`]: fetchMs,
-      });
-    }
+    // TODO(observability): once `coalesce` carries a `meta: { call_id }` per
+    // caller, stamp `served_by` onto followers' facets and record
+    // `follower_call_ids` here. For now the event only describes leader-side work.
+    facet?.set({
+      blob_key: blobKey,
+      gaps_fetched: gapsFetchedCount,
+      n_followers: followers.length,
+      blob_bytes_written: buffers.reduce((s, b) => s + b.byteLength, 0),
+      fetch_ms: fetchMs,
+    });
 
     const leaderFilterJson = JSON.stringify(filter);
     const participants = [leader, ...followers]

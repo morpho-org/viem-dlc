@@ -1,6 +1,7 @@
 import type { Hex } from "viem";
 
 import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
+import { getObservability } from "../../../observability.js";
 import type { EIP1193Parameters } from "../../../types.js";
 import { cyrb64Hash } from "../../../utils/hash.js";
 import {
@@ -13,7 +14,7 @@ import {
 import { parse, stringify } from "../../../utils/json.js";
 import { extractEthCallPolicy } from "../../state-overrides.js";
 import { keychain } from "../keychain.js";
-import { type CacheSchema, cacheTransportKey } from "../schema.js";
+import type { CacheSchema } from "../schema.js";
 import type { HandlerContext } from "../types.js";
 
 import type { CachedEthCallEntry } from "./types.js";
@@ -28,6 +29,8 @@ export async function handleEthCall(
   if (!extracted) {
     return requestFn(req);
   }
+
+  const facet = getObservability()?.facet(ctx.facetId).sub("eth_call");
 
   const [txn, ...restOfEthCallParams] = req.params;
   if (txn.data === undefined) {
@@ -55,8 +58,7 @@ export async function handleEthCall(
   const solidity = resolveArrayFunction(extracted.policy.abi);
   const inputElements = calldataToArray(solidity, targetData);
 
-  const tag = `${cacheTransportKey}.${ctx.observability?.counter}.eth_call`;
-  ctx.observability?.logger?.withContext({ [`${tag}.input_elements`]: inputElements.length });
+  facet?.set({ input_elements: inputElements.length });
 
   if (inputElements.length === 0) {
     return arrayToHex(solidity.outputLayout, []);
@@ -68,18 +70,18 @@ export async function handleEthCall(
   // No TTL → caching disabled. Still honor `batch` by splitting the call, but skip
   // all cache reads, writes, coalescing, and dedup.
   if (!blobKey || ttl === undefined) {
-    ctx.observability?.logger?.withContext({ [`${tag}.elements_fetched`]: inputElements.length });
     const outputs = await factorisedFactoryCall(requestFn, {
       target,
       elements: inputElements,
       solidity,
       batch: extracted.policy.batch,
       restOfEthCallParams,
+      facet,
     });
     return arrayToHex(solidity.outputLayout, outputs);
   }
 
-  ctx.observability?.logger?.withContext({ [`${tag}.cache`]: { blobKey, ttl, delta } });
+  facet?.set({ blob_key: blobKey, ttl_ms: ttl, delta_ms: delta });
   return coalesce(blobKey, req, async (_leaderReq, collectFollowers) => {
     /*//////////////////////////////////////////////////////////////
                                LEADER OPS
@@ -101,7 +103,7 @@ export async function handleEthCall(
         keyToInfo.set(ek, { indices: [i], element });
       }
     });
-    ctx.observability?.logger?.withContext({ [`${tag}.input_elements_unique`]: keyToInfo.size });
+    facet?.set({ input_elements_unique: keyToInfo.size });
 
     // Open blob lazily — read once, buffer writes, flush when done.
     const t0 = performance.now();
@@ -146,7 +148,9 @@ export async function handleEthCall(
       misses.push({ entryKey, ...info });
     }
 
-    ctx.observability?.logger?.withContext({ [`${tag}.elements_fetched`]: misses.length });
+    // `factorisedFactoryCall` stamps the same value when it runs; this records the
+    // zero-misses (full cache hit) case, where it doesn't.
+    facet?.set({ elements_fetched: misses.length });
 
     // Fetch misses
     if (misses.length > 0) {
@@ -158,6 +162,7 @@ export async function handleEthCall(
         solidity,
         batch: extracted.policy.batch,
         restOfEthCallParams,
+        facet,
       });
 
       const allEntries = misses.map((miss, i) => {
@@ -171,9 +176,7 @@ export async function handleEthCall(
       await ndjson.flush();
       const t5 = performance.now();
 
-      ctx.observability?.logger?.withContext({
-        [`${tag}.duration_ms`]: { fetch_cache: t1 - t0, read_cache: t3 - t2, write_cache: t5 - t4 },
-      });
+      facet?.set({ fetch_cache_ms: t1 - t0, read_cache_ms: t3 - t2, write_cache_ms: t5 - t4 });
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -185,7 +188,7 @@ export async function handleEthCall(
     const leaderHash = cyrb64Hash(JSON.stringify(req.params));
     const collected = collectFollowers();
     const matching = collected.filter((f) => cyrb64Hash(JSON.stringify(f.args.params)) === leaderHash);
-    ctx.observability?.logger?.withContext({ [`${tag}.followers`]: matching.length });
+    facet?.set({ n_followers: matching.length });
 
     return {
       leader: { action: "resolve", result },
