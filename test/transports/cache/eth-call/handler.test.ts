@@ -555,8 +555,9 @@ describe("handleEthCall", () => {
       const error = await handleEthCall(ctx(mockPagedFn([2]), store), req).catch((e) => e);
 
       expect(error.missing).toEqual([1, 2, 4]);
-      expect(error.outputs[0]).toBe(pad(toHex(1), { size: 32 }));
-      expect(error.outputs[3]).toBe(pad(toHex(3), { size: 32 }));
+      // `data` is the complement, in original order — cache hits and fetched values alike.
+      const [served] = decodeAbiParameters([{ type: "uint256[]" }], error.data);
+      expect(served).toEqual([1n, 3n]);
     });
   });
 

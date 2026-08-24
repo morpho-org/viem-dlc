@@ -1,6 +1,7 @@
 import type { EIP1193RequestFn, RpcSchema, Transport } from "viem";
 
 import type { EIP1193Parameters } from "../../types.js";
+import { findDeploylessPartialResult } from "../../utils/deployless/errors.js";
 
 export const failoverTransportKey = "viem-dlc-failover" as const;
 
@@ -76,6 +77,12 @@ export function failover<S extends RpcSchema>(
  */
 export function defaultShouldThrow(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
+
+  // A partial result is an answer, not a branch failure: the elements are unservable on any
+  // provider, and re-running would re-fetch every sibling this branch already paid for. Checked
+  // before the `code` guard below, which would otherwise bail out on its absence.
+  if (findDeploylessPartialResult(error)) return true;
+
   const code = (error as { code?: unknown }).code;
   const message = (error as { message?: unknown }).message;
   if (typeof code !== "number") return false;

@@ -462,6 +462,51 @@ so repeat elements collapse into a single blob entry and novel elements are appe
 the blob on the next fetch. The handler rejects any tx envelope field besides `data`
 (`from`, `gas`, `value`, etc.).
 
+### `call2`
+
+Settled counterpart to viem's `call` for paged deployless reads. Where `call` throws if
+any element is unservable, `call2` returns the elements that *were* served alongside the
+indices that were not.
+
+```ts
+import { decodeAbiParameters, parseAbiItem } from 'viem'
+import { call2, policy } from '@morpho-org/viem-dlc/actions'
+
+const pageAbi = parseAbiItem(
+  'function page(address[] input) view returns (uint256[] results, uint256[] skipped)'
+)
+
+const { data, missing } = await call2(client, {
+  factory,
+  factoryData,
+  to,
+  data: encodeFunctionData({ abi: [pageAbi], functionName: 'page', args: [inputs] }),
+  stateOverride: [policy({ abi: pageAbi, paged: true })],
+})
+
+const [served] = decodeAbiParameters([{ type: 'uint256[]' }], data)
+// `served` is the complement of `missing`, in input order.
+```
+
+- **`data`** — ABI-encoded `U[]` of every element that was served, in input order, with
+  the `missing` indices omitted. Decoding is left to the caller so the transport's
+  byte-level hot path stays intact.
+- **`missing`** — ascending indices into the input array that could not be served: the
+  lens declined them, or a single-element retry ran the frame out of gas. Empty on full
+  success, so there is only one shape to handle.
+
+There is one transport path, always settled internally, surfaced two ways. `call` stays
+strict — it throws a `DeploylessPartialResultError` carrying the same `data`/`missing`,
+which `call2` simply catches. Use `call` when a dense array is a precondition and `call2`
+when partial coverage is acceptable; `call`'s dense contract is why these are two actions
+rather than one that sometimes returns sparse results.
+
+Only unservable *elements* are settled. Transport errors, protocol violations, and
+ordinary lens reverts still throw from both. Results fetched before the failure are
+already committed to the cache either way, and `failover` treats a partial result as an
+answer rather than a branch failure, so it will not re-run the whole request against the
+next provider.
+
 ### `getDeploymentBlockNumber`
 
 Finds the block at which a contract was deployed using binary search over `getCode`.

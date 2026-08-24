@@ -10,7 +10,14 @@ import {
   isOutOfGasRevert,
   wrapDeploylessFactoryCall,
 } from "./codec.envelope.js";
-import { arrayToCalldata, hexToArray, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
+import {
+  arrayToCalldata,
+  arrayToHex,
+  hexToArray,
+  hexToPage,
+  type Page,
+  type ResolvedArrayFunction,
+} from "./codec.inner.js";
 import { DeploylessPartialResultError } from "./errors.js";
 
 type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
@@ -196,7 +203,14 @@ export async function factorisedFactoryCall(
   }
 
   if (missing.length > 0) {
-    throw new DeploylessPartialResultError({ outputs, missing: missing.sort((a, b) => a - b) });
+    throw new DeploylessPartialResultError({
+      data: arrayToHex(
+        solidity.outputLayout,
+        outputs.filter((o) => o !== undefined),
+      ),
+      missing: missing.sort((a, b) => a - b),
+      total: elements.length,
+    });
   }
   return outputs;
 }

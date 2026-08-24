@@ -161,11 +161,18 @@ export async function handleEthCall(
           },
         });
       } catch (e) {
-        // `missing` indexes deduped misses; callers expect indices into their own input array.
+        // `missing` indexes deduped misses, and `data` omits cache hits entirely; callers expect
+        // both to be expressed against their own input array.
         if (isDeploylessPartialResultError(e)) {
+          const missing = e.missing.flatMap((i) => misses[i]!.indices).sort((a, b) => a - b);
           throw new DeploylessPartialResultError({
-            outputs: hits,
-            missing: e.missing.flatMap((i) => misses[i]!.indices).sort((a, b) => a - b),
+            // Sparse exactly at the missing indices, and `filter` skips holes.
+            data: arrayToHex(
+              solidity.outputLayout,
+              hits.filter((o) => o !== undefined),
+            ),
+            missing,
+            total: inputElements.length,
           });
         }
         throw e;

@@ -156,7 +156,7 @@ describe("deployless (paged)", () => {
 
     expect(isDeploylessPartialResultError(error)).toBe(true);
     expect(error.missing).toEqual([1]);
-    expect(error.outputs).toEqual([expectedWord(1), undefined, expectedWord(3), expectedWord(4)]);
+    expect(decodeResults(error.data)).toEqual([1n, 3n, 4n]);
     const asked = requestedIndices(requestFn).flat();
     expect(asked.filter((v) => v === 2)).toHaveLength(1);
     expect(asked).toContain(4);
@@ -170,9 +170,7 @@ describe("deployless (paged)", () => {
 
     expect(isDeploylessPartialResultError(error)).toBe(true);
     expect(error.missing).toEqual([2]);
-    expect(error.outputs[0]).toBe(expectedWord(1));
-    expect(error.outputs[2]).toBeUndefined();
-    expect(error.outputs[3]).toBe(expectedWord(4));
+    expect(decodeResults(error.data)).toEqual([1n, 2n, 4n]);
   });
 
   it("reports every unservable element, in ascending order", async () => {
@@ -209,7 +207,3 @@ describe("deployless (paged)", () => {
     });
   });
 });
-
-function expectedWord(n: number): Hex {
-  return `0x${n.toString(16).padStart(64, "0")}` as Hex;
-}

@@ -5,34 +5,52 @@ export const DEPLOYLESS_PARTIAL_RESULT = "__viemDlcPartialResult" as const;
 
 /**
  * Thrown by a paged deployless call when some input elements could not be served: the lens
- * declined them, or a single-element retry ran the frame out of gas. Every other element was
- * fetched successfully and is carried on {@link DeploylessPartialResultError.outputs}.
+ * declined them, or a single-element retry ran the frame out of gas. Everything else was
+ * fetched, and is carried on {@link DeploylessPartialResultError.data}.
  *
- * Extends viem's `BaseError` so it survives `createTransport`'s `UnknownRpcError` wrapping, and
- * carries {@link DEPLOYLESS_PARTIAL_RESULT} so `error.walk(isDeploylessPartialResultError)` can
- * find it under viem's `CallExecutionError` without relying on `instanceof` across package
- * instances.
+ * `call` stays strict and lets this escape; `call2` catches it and returns its payload. It
+ * extends viem's `BaseError` so it survives `buildRequest`'s `UnknownRpcError` wrapping, and
+ * carries {@link DEPLOYLESS_PARTIAL_RESULT} so it can be recovered from underneath viem's
+ * `CallExecutionError` with `error.walk(isDeploylessPartialResultError)` — bare `walk()` returns
+ * the *deepest* cause, which is not necessarily this one.
  */
 export class DeploylessPartialResultError extends BaseError {
   override name = "DeploylessPartialResultError";
 
   readonly [DEPLOYLESS_PARTIAL_RESULT] = true;
 
-  /** Per-element outputs aligned to the request's input array; `undefined` at every missing index. */
-  readonly outputs: readonly (Hex | undefined)[];
+  /** ABI-encoded `U[]` holding every element that was served, in input order, gaps omitted. */
+  readonly data: Hex;
 
-  /** Ascending indices into the request's input array that could not be served. */
+  /** Ascending indices into the input array that could not be served. Never empty. */
   readonly missing: readonly number[];
 
-  constructor({ outputs, missing }: { outputs: readonly (Hex | undefined)[]; missing: readonly number[] }) {
-    super(`${missing.length} of ${outputs.length} elements could not be served`, {
+  constructor({ data, missing, total }: { data: Hex; missing: readonly number[]; total: number }) {
+    super(`${missing.length} of ${total} elements could not be served`, {
       metaMessages: [`Missing indices: ${missing.join(", ")}`],
     });
-    this.outputs = outputs;
+    this.data = data;
     this.missing = missing;
   }
 }
 
 export function isDeploylessPartialResultError(e: unknown): e is DeploylessPartialResultError {
   return typeof e === "object" && e !== null && (e as Record<string, unknown>)[DEPLOYLESS_PARTIAL_RESULT] === true;
+}
+
+/**
+ * Recovers a {@link DeploylessPartialResultError} from `e` or anywhere in its `cause` chain,
+ * returning `null` if there is none.
+ */
+export function findDeploylessPartialResult(e: unknown): DeploylessPartialResultError | null {
+  const seen = new Set<unknown>();
+  for (
+    let cur: unknown = e;
+    cur && typeof cur === "object" && !seen.has(cur);
+    cur = (cur as { cause?: unknown }).cause
+  ) {
+    seen.add(cur);
+    if (isDeploylessPartialResultError(cur)) return cur;
+  }
+  return null;
 }
