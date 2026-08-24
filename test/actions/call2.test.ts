@@ -68,8 +68,9 @@ function callParameters(addrs: readonly Address[], cacheOpts?: { blobKey: string
   } as const;
 }
 
-function decodeServed(data: Hex): readonly bigint[] {
-  const [values] = decodeAbiParameters([{ type: "uint256[]" }], data);
+function decodeServed(data: Hex | undefined): readonly bigint[] {
+  expect(data).toBeDefined();
+  const [values] = decodeAbiParameters([{ type: "uint256[]" }], data as Hex);
   return values as readonly bigint[];
 }
 

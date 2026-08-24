@@ -540,8 +540,8 @@ also means you decode with `decodeAbiParameters([resultsType], data)`, not
 `decodeFunctionResult` against the two-output fragment.
 
 - **`data`** — ABI-encoded `U[]` of every element that was served, in input order, with
-  the `missing` indices omitted. Decoding is left to the caller so the transport's
-  byte-level hot path stays intact.
+  the `missing` indices omitted; `undefined` exactly where viem's `call` would return it.
+  Decoding is left to the caller so the transport's byte-level hot path stays intact.
 - **`missing`** — ascending indices into the input array that could not be served: the
   lens declined them, or a single-element retry ran the frame out of gas. Empty on full
   success, so there is only one shape to handle.

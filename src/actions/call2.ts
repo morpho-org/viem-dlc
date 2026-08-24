@@ -6,10 +6,10 @@ import { findDeploylessPartialResult } from "../utils/deployless/errors.js";
 export type Call2ReturnType = {
   /**
    * ABI-encoded `U[]` holding every element that was served, in input order, with the
-   * {@link Call2ReturnType.missing} indices omitted. `"0x"` stands in for the `undefined` viem's
-   * `call` returns on an empty response.
+   * {@link Call2ReturnType.missing} indices omitted. `undefined` exactly when viem's `call`
+   * would return it — an empty response, which a paged read does not produce.
    */
-  data: Hex;
+  data: Hex | undefined;
   /**
    * Ascending indices into the input array that could not be served — the lens declined them,
    * or a single-element retry ran the frame out of gas. Empty on full success, so callers only
@@ -42,7 +42,7 @@ export async function call2<chain extends Chain | undefined>(
 ): Promise<Call2ReturnType> {
   try {
     const { data } = await call(client, parameters);
-    return { data: data ?? "0x", missing: [] };
+    return { data, missing: [] };
   } catch (error) {
     const partial = findDeploylessPartialResult(error);
     if (!partial) throw error;
