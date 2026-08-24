@@ -495,6 +495,11 @@ const [served] = decodeAbiParameters([{ type: 'uint256[]' }], data)
 // `served` is the complement of `missing`, in input order.
 ```
 
+`(U[] results, uint256[] skipped)` is the lens→transport format only. Both `call` and `call2`
+reassemble the pages and hand back a dense `U[]`, so paging never reaches the caller — which
+also means you decode with `decodeAbiParameters([resultsType], data)`, not
+`decodeFunctionResult` against the two-output fragment.
+
 - **`data`** — ABI-encoded `U[]` of every element that was served, in input order, with
   the `missing` indices omitted. Decoding is left to the caller so the transport's
   byte-level hot path stays intact.

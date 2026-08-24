@@ -4,6 +4,7 @@ import {
   concat,
   custom,
   decodeAbiParameters,
+  decodeFunctionResult,
   deploylessCallViaFactoryBytecode,
   encodeAbiParameters,
   encodeDeployData,
@@ -134,6 +135,27 @@ describe("deployless (paged)", () => {
 
     expect(decodeResults(result)).toEqual([1n, 2n, 3n]);
     expect(requestFn).toHaveBeenCalledOnce();
+  });
+
+  it("hands back a dense U[], not the lens's two-array tuple", async () => {
+    const requestFn = mockPagedLens([]);
+    const transport = createTransport(requestFn);
+
+    const result = await transport.request(createRequest([1, 2].map(addr)));
+
+    // Paging is a lens→transport concern; callers see what an unpaged lens would have returned.
+    expect(() => decodeFunctionResult({ abi: [pageAbi], functionName: "page", data: result as Hex })).toThrow();
+    expect(decodeAbiParameters([{ type: "uint256[]" }], result as Hex)[0]).toEqual([1n, 2n]);
+  });
+
+  it("returns an empty array for empty input without an upstream call", async () => {
+    const requestFn = mockPagedLens([]);
+    const transport = createTransport(requestFn);
+
+    const result = await transport.request(createRequest([]));
+
+    expect(decodeAbiParameters([{ type: "uint256[]" }], result as Hex)[0]).toEqual([]);
+    expect(requestFn).not.toHaveBeenCalled();
   });
 
   it("re-requests the untouched tail until every element is covered", async () => {

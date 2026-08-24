@@ -37,6 +37,11 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  *   extra round trip instead of a bisection, and `batch.gas` only has to be a rough opening
  *   guess. Elements the lens declines surface as a `DeploylessPartialResultError`.
  *
+ *   `(U[], uint256[])` is the lens→transport format only: the transport reassembles the pages
+ *   and hands back a dense `U[]`, exactly as an unpaged lens would, so paging never reaches the
+ *   caller. Decode with `decodeAbiParameters([resultsType], data)` — `decodeFunctionResult`
+ *   against the two-output fragment will fail, since the response is not that tuple.
+ *
  *   A paged lens walks its input in index order, in a single pass, and stops once — having
  *   attempted `i = results.length + skipped.length` elements. `results` covers that prefix minus
  *   `skipped`; `skipped` holds ascending indices, relative to this call's input, that it looked
