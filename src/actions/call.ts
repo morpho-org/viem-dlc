@@ -31,9 +31,10 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  *   or dynamic (string, bytes, nested arrays, dynamic tuples).
  *
  * @param opts.batch Optional batching config. Omit to send all elements in a single
- *   upstream `eth_call`.
+ *   upstream `eth_call`. When set, chunks honor both `batchSize` and `gas`.
  * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk.
- *   Input elements are greedy-packed under this limit and fetched in parallel.
+ *   Input elements are greedy-packed under this limit and fetched in parallel. Omit to
+ *   skip byte-budget enforcement (useful when the gas budget is the only relevant cap).
  * @param opts.batch.exfil Outer wrapper mode. Defaults to `'return'` (viem's stock RETURN-mode
  *   wrapper). Set to `'revert'` to exfiltrate via `REVERT` instead, which lifts the EIP-170
  *   24_576 bytes returndata cap at the cost of relying on the RPC preserving revert data.
@@ -41,6 +42,22 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  *   EIP-3860 limits initcode to 49_152 bytes. For deployless reads, that constrains calldata,
  *   so compression can help squeeze more entities into the request at the cost of extra
  *   pre-request encoding time.
+ * @param opts.batch.gas Polynomial gas-cost model `G(N) = constant + linear·N + quadratic·N²`
+ *   for the lens. Combined with the transport's `gasLimit`, the chunker picks the largest
+ *   per-chunk item count `N` such that `G(N) ≤ gasLimit` and enforces it alongside `batchSize`.
+ *   Omit to skip gas-budget enforcement. No internal safety factor is applied — pad your
+ *   estimate if you want headroom.
+ *
+ *   Each coefficient is a property of the lens, not of any specific RPC's gas cap:
+ *   - `constant`: fixed per-call overhead (selector dispatch, decoder, encoder). Pass 0 if
+ *     negligible.
+ *   - `linear`: asymptotic per-item rate. The dominant term for typical lenses; for many
+ *     lenses this is the only non-zero term.
+ *   - `quadratic`: per-item² cost — typically memory expansion (`memWords² / 512`). Pass 0
+ *     if memory expansion is negligible at the chunk sizes you'll see.
+ *
+ *   Calibrate by measuring `G(N)` at a few values of `N` and fitting; or measure `N_max` at
+ *   one cap via binary search and back out coefficients with knowledge of the lens shape.
  * @param opts.cache Optional cache config. Honored by the `cache` transport only; if omitted,
  *   or when used with `deployless`, `batch` is still honored without caching.
  * @param opts.cache.blobKey Identifies the backing cache blob. Requests with the same

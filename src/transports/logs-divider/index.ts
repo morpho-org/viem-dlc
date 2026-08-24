@@ -14,7 +14,6 @@ import type { LogsDividerConfig } from "./types.js";
 
 export type * from "./schema.js";
 export type * from "./types.js";
-
 export { logsDividerTransportKey };
 
 /**

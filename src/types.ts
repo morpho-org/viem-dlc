@@ -62,13 +62,14 @@ export type RpcSchemaExtension<T extends RpcSchema> = readonly RpcSignatureExten
 /** Extracts members of `Extension` whose `Method` field includes `M` (supports union `Method`s). */
 type MatchExtension<Extension, M> = Extension extends { Method: infer EM } ? (M extends EM ? Extension : never) : never;
 
-type DeriveParameters<P, AdditionalP extends Tuple> = Exclude<P, undefined> extends infer Base // Infer non-optional part of `P`
-  ? [Base] extends [never]
-    ? P // undefined-ish, leave as-is
-    : [Base] extends [Tuple]
-      ? Concat<ElementwiseUnionUnion<Base>, Inits<AdditionalP>> | Extract<P, undefined>
-      : P // not tuple-ish, leave as-is
-  : never;
+type DeriveParameters<P, AdditionalP extends Tuple> =
+  Exclude<P, undefined> extends infer Base // Infer non-optional part of `P`
+    ? [Base] extends [never]
+      ? P // undefined-ish, leave as-is
+      : [Base] extends [Tuple]
+        ? Concat<ElementwiseUnionUnion<Base>, Inits<AdditionalP>> | Extract<P, undefined>
+        : P // not tuple-ish, leave as-is
+    : never;
 
 /**
  * Extends `T[K]["Parameters"]` to include `AdditionalParameters` (if any exist for `T[K]["Method"]`)

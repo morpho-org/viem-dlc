@@ -16,7 +16,6 @@ import type { CacheConfig, HandlerContext, InvalidationStrategy } from "./types.
 
 export type * from "./schema.js";
 export type * from "./types.js";
-
 export { cacheTransportKey };
 
 /**
@@ -111,14 +110,14 @@ export function createSimpleInvalidation(
  */
 export function cache(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  [{ binSize, store, invalidationStrategy }, logsDividerConfig, ...otherConfigs]: [
+  [{ binSize, store, invalidationStrategy, gasLimit }, logsDividerConfig, ...otherConfigs]: [
     CacheConfig,
     Omit<LogsDividerConfig, "alignTo">,
     LogsEnricherConfig,
     LogsSieveConfig,
     RateLimiterConfig,
   ],
-): Transport<typeof cacheTransportKey, { store: Store }, EIP1193RequestFn<CacheSchema>> {
+): Transport<typeof cacheTransportKey, { store: Store; gasLimit: number }, EIP1193RequestFn<CacheSchema>> {
   const facetId = createFacetId(cacheTransportKey);
 
   return (params) => {
@@ -132,19 +131,20 @@ export function cache(
       params,
     );
 
-    const request = async (req: EIP1193Parameters<CacheSchema>) => {
+    const context: HandlerContext = {
+      store,
+      binSize,
+      invalidationStrategy,
+      gasLimit,
+      chainId,
+      requestFn: transport.request,
+      coalesce,
+      facetId,
+    };
+
+    const request = (req: EIP1193Parameters<CacheSchema>) => {
       req = normalize(req);
       // TODO: compare args against allowlist
-
-      const context: HandlerContext = {
-        store,
-        binSize,
-        invalidationStrategy,
-        chainId,
-        requestFn: transport.request,
-        coalesce,
-        facetId,
-      };
 
       switch (req.method) {
         case "eth_call": {
@@ -169,7 +169,7 @@ export function cache(
         retryCount: 0,
         type: cacheTransportKey,
       },
-      { store },
+      { store, gasLimit },
     );
   };
 }

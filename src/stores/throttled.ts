@@ -1,4 +1,3 @@
-import type { MaybePromise } from "viem";
 import { withTimeout } from "viem";
 
 import type { Logger } from "../observability.js";
@@ -30,6 +29,9 @@ export type ThrottledStoreOptions = {
  * A store that rate-limits, concurrency-limits, and coalesces writes to an underlying store.
  *
  * - `get` is passed through without throttling.
+ * - `set` and `delete` record the op and return immediately, so callers are never
+ *   blocked by the rate limiter. {@link ThrottledStore.flush} is the only durability
+ *   barrier; write failures surface through `onWriteError`, never as a rejection.
  * - `set` and `delete` are coalesced per-key: only the latest op is sent upstream.
  * - Writes are admitted by a token-bucket rate limiter with bounded concurrency.
  * - `flush` snapshots current key:version pairs, waits for each to be written
@@ -63,24 +65,24 @@ export class ThrottledStore implements Store {
     return this.store.get(key);
   }
 
-  set(key: string, value: Buffer[]) {
+  set(key: string, value: Buffer[]): void {
     const prev = this.pending.get(key);
     this.pending.set(key, {
       op: { kind: "set", value },
       version: (prev?.version ?? 0) + 1,
       lastUpdatedAt: Date.now(),
     });
-    return this.ensureQueued(key);
+    this.ensureQueued(key);
   }
 
-  delete(key: string) {
+  delete(key: string): void {
     const prev = this.pending.get(key);
     this.pending.set(key, {
       op: { kind: "delete" },
       version: (prev?.version ?? 0) + 1,
       lastUpdatedAt: Date.now(),
     });
-    return this.ensureQueued(key);
+    this.ensureQueued(key);
   }
 
   async flush() {
@@ -93,11 +95,13 @@ export class ThrottledStore implements Store {
     await this.store.flush();
   }
 
-  private ensureQueued(key: string): MaybePromise<void> {
+  private ensureQueued(key: string): void {
     if (this.active.has(key)) return;
     this.active.add(key);
 
-    return this.rateLimiter
+    const queuedAt = Date.now();
+
+    void this.rateLimiter
       .withRateLimit(
         async () => {
           const entry = this.pending.get(key);
@@ -156,8 +160,11 @@ export class ThrottledStore implements Store {
         },
       )
       .catch((err) => {
+        // `RateLimitGateError` is the expected discard path (op went stale, see `gate` above).
+        // Anything else is an admission failure -- report it rather than rejecting a caller
+        // that has already moved on.
         if (err instanceof RateLimitGateError) return;
-        throw err;
+        this.onWriteError?.(key, err, Date.now() - queuedAt);
       })
       .finally(() => {
         this.active.delete(key);

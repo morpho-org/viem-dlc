@@ -55,7 +55,8 @@ emit at `error` level with the error attached via `withError`, so hosts that for
 
 Thin transport wrapper for deployless `eth_call` splitting. It only intercepts calls carrying
 the `policy(...)` sentinel in `stateOverride`, re-packs the marked input array into one or more
-deployless-factory calls under `batchSize`, and forwards everything else unchanged.
+deployless-factory calls under both a byte budget (`batch.batchSize`) and a gas budget
+(`batch.gas` against the transport's `gasLimit`), and forwards everything else unchanged.
 
 ```ts
 import { createPublicClient, encodeFunctionData, http, parseAbiItem } from 'viem'
@@ -68,7 +69,7 @@ const positionsAbi = parseAbiItem(
 )
 
 const client = createPublicClient({
-  transport: deployless(http(rpcUrl)),
+  transport: deployless(http(rpcUrl), { gasLimit: 30_000_000 }),
 })
 
 const result = await call(client, {
@@ -79,7 +80,10 @@ const result = await call(client, {
   stateOverride: [
     policy({
       abi: positionsAbi,
-      batchSize: 1 << 15,
+      batch: {
+        batchSize: 1 << 15,
+        gas: { constant: 50_000, linear: 30_000, quadratic: 0 },
+      },
     }),
   ],
 })
@@ -104,8 +108,9 @@ import { LruStore } from '@morpho-org/viem-dlc/stores'
 const transport = cache(http(rpcUrl), [
   {
     binSize: 10_000,
-    store: new LruStore(100_000_000),
+    store: new LruStore({ maxBytes: 100_000_000 }),
     invalidationStrategy: createSimpleInvalidation(),
+    gasLimit: 30_000_000,
   },
   {
     maxBlockRange: 100_000,
@@ -153,7 +158,7 @@ import { failover } from '@morpho-org/viem-dlc/transports'
 import { cache, createSimpleInvalidation } from '@morpho-org/viem-dlc/transports/cache'
 import { LruStore } from '@morpho-org/viem-dlc/stores'
 
-const store = new LruStore(100_000_000)
+const store = new LruStore({ maxBytes: 100_000_000 })
 const sharedConfig = { binSize: 10_000, store, invalidationStrategy: createSimpleInvalidation() }
 
 const transport = failover([
@@ -311,6 +316,7 @@ interface Store {
 | Store | Import | Description |
 | --- | --- | --- |
 | `LruStore` | `@morpho-org/viem-dlc/stores` | LRU cache with configurable byte-size limit |
+| `TtlStore` | `@morpho-org/viem-dlc/stores` | Wraps any store with an absolute per-entry TTL — bounds how long a warm tier may diverge from a fresher source behind it |
 | `MemoryStore` | `@morpho-org/viem-dlc/stores` | Simple in-memory Map (prefer `LruStore`) |
 | `HierarchicalStore` | `@morpho-org/viem-dlc/stores` | Layered stores — reads fall through, writes fan out |
 | `DebouncedStore` | `@morpho-org/viem-dlc/stores` | Batches writes with debounce + max staleness timeout |
@@ -335,6 +341,20 @@ const store = createOptimizedUpstashStore({
   maxRequestBytes: 1_000_000,
   maxWritesPerSecond: 300,
 })
+```
+
+`TtlStore` wraps any store to cap how long its entries stay warm. Fronting a shared remote with a
+TTL-bounded in-memory tier keeps reads fast while ensuring a cross-instance write is masked for at
+most `ttlMs` — after which the read falls through to the authoritative remote (a plain `LruStore`
+front would pin the stale copy for the whole process lifetime):
+
+```ts
+import { HierarchicalStore, LruStore, TtlStore } from '@morpho-org/viem-dlc/stores'
+
+const store = new HierarchicalStore(
+  [new TtlStore(new LruStore({ maxBytes: 100_000_000 }), { ttlMs: 60_000 }), remote],
+  { populateOnMiss: true },
+)
 ```
 
 ## Actions
@@ -380,7 +400,12 @@ untouched, so tuples, nested arrays, and other complex element types are support
 ```ts
 policy(opts: {
   abi: AbiFunction
-  batchSize?: number
+  batch?: {
+    batchSize?: number
+    exfil?: 'return' | 'revert'
+    compress?: boolean
+    gas?: { constant: number; linear: number; quadratic: number }
+  }
   cache?: {
     blobKey: string
     ttl: number
@@ -391,11 +416,26 @@ policy(opts: {
 
 - **`opts.abi`** — the `AbiFunction` fragment for the callee. Must have exactly one
   input and one output, both dynamic arrays.
-- **`opts.batchSize`** — maximum bytes of the `eth_call` `data` field when fetching
-  chunks. Input elements are greedy-packed under this limit and fetched in parallel.
-  Defaults to no splitting.
+- **`opts.batch`** — optional batching config. Omit to send all elements in a single
+  upstream `eth_call`. When set, chunks honor `batchSize` and `gas` together — either
+  budget can be left unset.
+- **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk.
+  Input elements are greedy-packed under this limit and fetched in parallel. Omit to
+  skip byte-budget enforcement.
+- **`opts.batch.exfil`** — outer wrapper mode. Defaults to `'return'`. Set to `'revert'`
+  to exfiltrate via `REVERT`, lifting the EIP-170 24_576-byte returndata cap at the
+  cost of relying on the RPC preserving revert data.
+- **`opts.batch.compress`** — FastLZ-compress calldata on the wire. Helps fit more
+  elements per chunk under EIP-3860's 49_152-byte initcode cap, at the cost of extra
+  pre-request encoding time.
+- **`opts.batch.gas`** — polynomial gas-cost model
+  `G(N) = constant + linear·N + quadratic·N²` for the lens. Combined with the
+  transport's `gasLimit`, the chunker picks the largest per-chunk `N` such that
+  `G(N) ≤ gasLimit`. No internal safety factor — pad the estimate if you want
+  headroom. `linear` is typically the dominant term; `quadratic` captures memory
+  expansion (`memWords² / 512`); pass `0` for any unused term.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
-  or when used with `deployless(...)`, `batchSize` is still honored without caching.
+  or when used with `deployless(...)`, `batch` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same
   `blobKey` share storage; different `blobKey`s are isolated into different blobs.
 - **`opts.cache.ttl`** — maximum age in milliseconds before a cached entry is
@@ -422,8 +462,11 @@ const positionsAbi = parseAbiItem(
 )
 
 const cachePolicy = policy({
-  batchSize: 1 << 15,
   abi: positionsAbi,
+  batch: {
+    batchSize: 1 << 15,
+    gas: { constant: 50_000, linear: 30_000, quadratic: 0 },
+  },
   cache: {
     blobKey: 'morpho-positions',
     ttl: 300_000,

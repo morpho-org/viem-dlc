@@ -20,17 +20,15 @@ import type { HandlerContext } from "../types.js";
 import type { CachedEthCallEntry } from "./types.js";
 
 export async function handleEthCall(
-  ctx: HandlerContext,
+  { store, coalesce, requestFn, chainId, gasLimit, facetId }: HandlerContext,
   req: EIP1193Parameters<CacheSchema, "eth_call">,
 ): Promise<Hex> {
-  const { store, coalesce, requestFn, chainId } = ctx;
-
   const extracted = extractEthCallPolicy(req.params[2]);
   if (!extracted) {
     return requestFn(req);
   }
 
-  const facet = getObservability()?.facet(ctx.facetId).sub("eth_call");
+  const facet = getObservability()?.facet(facetId).sub("eth_call");
 
   const [txn, ...restOfEthCallParams] = req.params;
   if (txn.data === undefined) {
@@ -75,6 +73,7 @@ export async function handleEthCall(
       elements: inputElements,
       solidity,
       batch: extracted.policy.batch,
+      gasLimit,
       restOfEthCallParams,
       facet,
     });
@@ -161,6 +160,7 @@ export async function handleEthCall(
         elements: misses.map((m) => m.element),
         solidity,
         batch: extracted.policy.batch,
+        gasLimit,
         restOfEthCallParams,
         facet,
       });

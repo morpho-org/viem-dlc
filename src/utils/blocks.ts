@@ -5,7 +5,6 @@ import type { BlockNumberish, BlockRange, EthGetLogsHashlessFilter } from "../ty
 
 import { isTimeoutLikeError } from "./errors.js";
 import { max, min } from "./math.js";
-import { pick } from "./pick.js";
 
 /** Resolves a `BlockNumberish` value to a `bigint`. */
 export function resolveBlockNumber(b: BlockNumberish, latest: bigint): bigint {
@@ -171,7 +170,7 @@ export function classifyBlockRangeError(error: unknown): "range" | "timeout" | n
   return null;
 }
 
-function extractErrorData(e: unknown): { code: number; message: string } | undefined {
+function extractErrorData(e: unknown): { code: number | undefined; message: string } | undefined {
   if (!(e instanceof Error)) return undefined;
 
   if ("code" in e && "message" in e) {
@@ -193,7 +192,9 @@ function extractErrorData(e: unknown): { code: number; message: string } | undef
     case "Error":
       return undefined;
     default:
-      return pick(error, ["code", "message"]);
+      // Anything reaching here failed the `"code" in e` check above, so there is no code to
+      // extract -- only the message is usable for pattern matching.
+      return { code: undefined, message: String(error.message) };
   }
 }
 

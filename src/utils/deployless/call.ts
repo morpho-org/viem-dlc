@@ -15,11 +15,19 @@ import { arrayToCalldata, hexToArray, type ResolvedArrayFunction } from "./codec
 
 type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
+type GasModel = { constant: number; linear: number; quadratic: number };
+
 type FactorisedFactoryCallParams = {
   target: DeploylessTarget;
   elements: readonly Hex[];
   solidity: ResolvedArrayFunction;
-  batch?: { batchSize: number; exfil?: DeploylessExfilMode; compress?: boolean };
+  batch?: {
+    batchSize?: number;
+    exfil?: DeploylessExfilMode;
+    compress?: boolean;
+    gas?: GasModel;
+  };
+  gasLimit?: number;
   restOfEthCallParams: RestOfEthCallParams;
   facet?: Facet;
 };
@@ -27,14 +35,14 @@ type FactorisedFactoryCallParams = {
 type MeasureBytes = (start: number, end: number) => number;
 
 /**
- * Packs `elements` into one or more deployless-factory `eth_call` chunks (respecting
- * `batch.batchSize` bytes on the outgoing `data` field), fetches them in parallel, and
- * returns the per-element output slices aligned to `elements`. When `batch` is undefined,
- * sends all elements in a single upstream call.
+ * Packs `elements` into deployless-factory `eth_call` chunks honoring the byte budget
+ * (`batch.batchSize`) and the gas budget (largest `N` with `batch.gas(N) ≤ gasLimit`),
+ * fetches them in parallel, and returns per-element outputs aligned to `elements`. Either
+ * budget can be unset; with neither, sends all elements in a single upstream call.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  { target, elements, solidity, batch, restOfEthCallParams, facet }: FactorisedFactoryCallParams,
+  { target, elements, solidity, batch, gasLimit, restOfEthCallParams, facet }: FactorisedFactoryCallParams,
 ): Promise<Hex[]> {
   const exfil: DeploylessExfilMode = batch?.exfil ?? "return";
   const compress = batch?.compress ?? false;
@@ -76,7 +84,24 @@ export async function factorisedFactoryCall(
   };
 
   const measureBytes = compress ? measureWrappedBytes : measureUncompressedBytes;
-  const ranges = packByByteBudget(elements.length, batch?.batchSize, measureBytes);
+
+  let maxItemsByGas: number | undefined;
+  if (gasLimit && batch?.gas) {
+    maxItemsByGas = solveMaxItemsByGas(batch.gas, gasLimit);
+    if (maxItemsByGas < 1) {
+      const { constant, linear, quadratic } = batch.gas;
+      throw new Error(
+        `[deployless] gasLimit=${gasLimit} cannot fit a single item under G(N) = ${constant} + ${linear}·N + ${quadratic}·N²`,
+      );
+    }
+  }
+
+  const ranges = packBatches({
+    count: elements.length,
+    maxBytes: batch?.batchSize,
+    maxItems: maxItemsByGas,
+    measureBytes,
+  });
   const outputs = new Array<Hex>(elements.length);
 
   facet?.set({ elements_fetched: elements.length, nominal_batches: ranges.length });
@@ -159,38 +184,65 @@ async function fetchChunkRevert(requestFn: EIP1193RequestFn<PublicRpcSchema>, da
 type BatchRange = readonly [start: number, end: number];
 
 /**
- * Greedy batch packer. First checks whether all remaining elements fit, then binary
- * searches for a fitting end and shrinks defensively if measurement is not perfectly
- * monotonic. Always includes at least one miss per batch, so a single oversized element
- * still makes progress.
- *
- * Returns `[[0, n]]` (a single batch) when splitting is disabled (`maxBytes` unset
- * or non-positive).
+ * Largest non-negative integer `N` such that `constant + linear·N + quadratic·N² ≤ gasLimit`.
+ * Returns 0 when even `N=0` (the constant term alone) overflows the budget. With `quadratic = 0`
+ * and `linear = 0`, the polynomial is constant and any `N` fits → returns `Infinity`.
  */
-function packByByteBudget(count: number, maxBytes: number | undefined, measureBytes: MeasureBytes): BatchRange[] {
+function solveMaxItemsByGas({ constant, linear, quadratic }: GasModel, gasLimit: number): number {
+  const budget = gasLimit - constant;
+  if (budget < 0) return 0;
+  if (quadratic === 0) {
+    if (linear === 0) return Infinity;
+    return Math.floor(budget / linear);
+  }
+  const discriminant = linear * linear + 4 * quadratic * budget;
+  return Math.floor((-linear + Math.sqrt(discriminant)) / (2 * quadratic));
+}
+
+type PackBatchesArgs = {
+  count: number;
+  maxBytes: number | undefined;
+  maxItems: number | undefined;
+  measureBytes: MeasureBytes;
+};
+
+/**
+ * Greedy batch packer enforcing both a byte budget and an item-count budget. For each batch,
+ * the search upper bound is `min(count, start + maxItems)`. Within that window: first checks
+ * whether all remaining elements fit the byte budget, then binary searches for a fitting end
+ * and shrinks defensively if measurement is not perfectly monotonic.
+ *
+ * Always includes at least one element per batch on the byte path, so a single oversized
+ * element still makes progress. Either budget can be omitted (`undefined` or non-positive).
+ */
+function packBatches({ count, maxBytes, maxItems, measureBytes }: PackBatchesArgs): BatchRange[] {
   if (count === 0) return [];
-  if (!maxBytes || maxBytes <= 0) return [[0, count]];
+  const itemCap = maxItems && maxItems > 0 ? maxItems : Infinity;
+  const byteCap = maxBytes && maxBytes > 0 ? maxBytes : Infinity;
 
   const ranges: BatchRange[] = [];
   let start = 0;
   while (start < count) {
-    if (measureBytes(start, count) <= maxBytes) {
-      ranges.push([start, count]);
-      break;
+    const itemCappedEnd = Math.min(count, start + itemCap);
+
+    if (byteCap === Infinity || measureBytes(start, itemCappedEnd) <= byteCap) {
+      ranges.push([start, itemCappedEnd]);
+      start = itemCappedEnd;
+      continue;
     }
 
     let end = start + 1;
-    let hi = count;
+    let hi = itemCappedEnd;
     while (end < hi) {
       const mid = Math.floor((end + hi + 1) / 2);
-      if (measureBytes(start, mid) <= maxBytes) {
+      if (measureBytes(start, mid) <= byteCap) {
         end = mid;
       } else {
         hi = mid - 1;
       }
     }
 
-    while (end > start + 1 && measureBytes(start, end) > maxBytes) {
+    while (end > start + 1 && measureBytes(start, end) > byteCap) {
       end--;
     }
 
