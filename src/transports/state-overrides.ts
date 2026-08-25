@@ -1,7 +1,6 @@
 import type { AbiFunction, Address, RpcStateOverride } from "viem";
 import { fromHex, getAddress, keccak256, toHex } from "viem";
 
-import type { DeploylessExfilMode } from "../utils/deployless/codec.envelope.js";
 import { omit } from "../utils/omit.js";
 
 export const ETH_CALL_POLICY_ADDRESS: Address = getAddress(`0x${keccak256(toHex("viem-dlc-policy")).slice(26)}`);
@@ -10,9 +9,13 @@ const ETH_CALL_POLICY_ADDRESS_LOWER = ETH_CALL_POLICY_ADDRESS.toLowerCase() as A
 
 export type EthCallPolicy = {
   abi: AbiFunction;
+  /**
+   * Whether `abi` describes a paged lens returning `(U[] results, uint256[] skipped)`. See
+   * `policy`'s docs for the contract a paged lens must honor.
+   */
+  paged?: boolean;
   batch?: {
     batchSize?: number;
-    exfil?: DeploylessExfilMode;
     compress?: boolean;
     /**
      * Gas cost model `G(N) = constant + linear·N + quadratic·N²`. The chunker picks the

@@ -6,7 +6,9 @@ import { cyrb64Hash } from "../../../utils/hash.js";
 import {
   arrayToHex,
   calldataToArray,
+  DeploylessPartialResultError,
   factorisedFactoryCall,
+  isDeploylessPartialResultError,
   resolveArrayFunction,
   unwrapDeploylessFactoryCall,
 } from "../../../utils/index.js";
@@ -50,7 +52,7 @@ export async function handleEthCall(
   }
 
   const { target, targetData } = unwrapDeploylessFactoryCall(txn.data);
-  const solidity = resolveArrayFunction(extracted.policy.abi);
+  const solidity = resolveArrayFunction(extracted.policy.abi, extracted.policy.paged);
   const inputElements = calldataToArray(solidity, targetData);
 
   if (inputElements.length === 0) {
@@ -138,23 +140,43 @@ export async function handleEthCall(
     if (misses.length > 0) {
       const fetchedAt = Date.now();
 
-      const outputs = await factorisedFactoryCall(requestFn, {
-        target,
-        elements: misses.map((m) => m.element),
-        solidity,
-        batch: extracted.policy.batch,
-        gasLimit,
-        restOfEthCallParams,
-      });
-
-      const allEntries = misses.map((miss, i) => {
-        const output = outputs[i]!;
-        for (const idx of miss.indices) hits[idx] = output;
-        return { key: miss.entryKey, value: { output, fetchedAt } };
-      });
-
-      ndjson.upsert(allEntries);
-      await ndjson.flush();
+      try {
+        await factorisedFactoryCall(requestFn, {
+          target,
+          elements: misses.map((m) => m.element),
+          solidity,
+          batch: extracted.policy.batch,
+          gasLimit,
+          restOfEthCallParams,
+          // Buffer per chunk, so a later chunk failing doesn't discard the siblings that landed.
+          onResolved: (entries) => {
+            ndjson.upsert(
+              entries.map(({ index, output }) => {
+                const miss = misses[index]!;
+                for (const idx of miss.indices) hits[idx] = output;
+                return { key: miss.entryKey, value: { output, fetchedAt } };
+              }),
+            );
+          },
+        });
+      } catch (e) {
+        // Rebase onto the caller's input: `missing` indexes deduped misses, `data` omits hits.
+        if (isDeploylessPartialResultError(e)) {
+          const missing = e.missing.flatMap((i) => misses[i]!.indices).sort((a, b) => a - b);
+          throw new DeploylessPartialResultError({
+            // Sparse exactly at the missing indices, and `filter` skips holes.
+            data: arrayToHex(
+              solidity.outputLayout,
+              hits.filter((o) => o !== undefined),
+            ),
+            missing,
+            total: inputElements.length,
+          });
+        }
+        throw e;
+      } finally {
+        await ndjson.flush();
+      }
     }
 
     /*//////////////////////////////////////////////////////////////
