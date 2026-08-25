@@ -25,19 +25,26 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  *   `value`, etc.). Those fields are intentionally excluded from cache identity.
  *
  * ABI restrictions:
- * - Must be a `function` fragment with exactly one input and one output.
- * - Both the input and output types must be dynamic arrays (`T[]`).
+ * - Must be a `function` fragment with exactly one input, which must be a dynamic array (`T[]`).
+ * - Must return exactly one dynamic array (`U[]`), or — with `paged` — exactly
+ *   `(U[] results, uint256[] skipped)`.
  * - Element types may be static (uint/int/bool/address/bytesN, tuples, fixed-size arrays)
  *   or dynamic (string, bytes, nested arrays, dynamic tuples).
  *
+ * @param opts.paged Marks `abi` as a *paged* lens: it returns `(U[] results, uint256[] skipped)`
+ *   and may stop before consuming its whole input, letting the transport re-request the
+ *   remainder instead of bisecting. Elements the lens declines surface as a
+ *   `DeploylessPartialResultError`.
+ *
+ *   Two things a caller cannot infer: the response is still a dense `U[]`, so decode it with
+ *   `decodeAbiParameters`, not `decodeFunctionResult` against the two-output fragment; and a
+ *   lens must attempt at least one element, making `([], [])` a protocol violation rather than
+ *   a retryable state. The full lens contract is in the README under "Paged lenses".
  * @param opts.batch Optional batching config. Omit to send all elements in a single
  *   upstream `eth_call`. When set, chunks honor both `batchSize` and `gas`.
  * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk.
  *   Input elements are greedy-packed under this limit and fetched in parallel. Omit to
  *   skip byte-budget enforcement (useful when the gas budget is the only relevant cap).
- * @param opts.batch.exfil Outer wrapper mode. Defaults to `'return'` (viem's stock RETURN-mode
- *   wrapper). Set to `'revert'` to exfiltrate via `REVERT` instead, which lifts the EIP-170
- *   24_576 bytes returndata cap at the cost of relying on the RPC preserving revert data.
  * @param opts.batch.compress Whether to use FastLZ (LZ77) compression on the wire (to RPC).
  *   EIP-3860 limits initcode to 49_152 bytes. For deployless reads, that constrains calldata,
  *   so compression can help squeeze more entities into the request at the cost of extra

@@ -20,7 +20,9 @@ import { deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
 import {
+  FACTORY_BYTECODE_REVERT,
   OK_SENTINEL,
+  OOG_SENTINEL,
   unwrapDeploylessFactoryCall,
   wrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
@@ -62,7 +64,6 @@ function buildDeploylessCall(targetData: Hex): Hex {
 type PolicyOpts = {
   batch?: {
     batchSize?: number;
-    exfil?: "return" | "revert";
     compress?: boolean;
     gas?: { constant: number; linear: number; quadratic: number };
   };
@@ -101,7 +102,7 @@ function decodeSentAddresses(data: Hex): readonly Address[] {
 
 /**
  * Mode-aware mock. Inspects the wrapper prefix on the outgoing `data`:
- *   - viem's RETURN wrapper → resolves with the encoded uint256[].
+ *   - RETURN wrapper → resolves with the encoded uint256[].
  *   - REVERT wrapper        → throws an error with `.data` = OK_SENTINEL || encoded uint256[].
  *
  * Behavioral tests can stay mode-agnostic; both code paths exercise the same logic.
@@ -111,20 +112,16 @@ function mockBalancesOfFn() {
     const data = (args.params[0] as { data: Hex }).data;
     const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
     const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
-    if (data.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())) {
-      return encoded;
-    }
     throw revertWithSentinel(encoded);
   });
 }
 
 /**
- * Full-fidelity mock for any (exfil, compress) combination.
+ * Full-fidelity mock.
  * - Decompresses incoming targetData when compress=true (input-only compression).
  * - Returns raw (uncompressed) output regardless of compress flag.
- * - Returns (return mode) or throws with sentinel (revert mode).
  */
-function mockCompressibleFn(exfil: "return" | "revert", compress: boolean) {
+function mockCompressibleFn(compress: boolean) {
   return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
     const data = (args.params[0] as { data: Hex }).data;
     const { targetData: raw } = unwrapDeploylessFactoryCall(data);
@@ -132,7 +129,6 @@ function mockCompressibleFn(exfil: "return" | "revert", compress: boolean) {
     const [addrs] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
     const outputs = (addrs as readonly Address[]).map((a) => BigInt(a));
     const encoded = encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
-    if (exfil === "return") return encoded;
     throw revertWithSentinel(encoded);
   });
 }
@@ -185,15 +181,14 @@ describe("deployless", () => {
     expect(requestFn.mock.lastCall?.[0]).toEqual({ method: "eth_blockNumber" });
   });
 
-  describe.each(["revert", "return"] as const)("exfil=%s", (exfil) => {
+  describe("batching", () => {
     it("batchSize splits marked deployless calls without exceeding the byte budget", async () => {
-      // Mode-specific budgets — the RETURN wrapper is ~700 bytes, REVERT ~100, so a
-      // budget that meaningfully splits 5×32-byte elements differs sharply between modes.
-      const batchSize = exfil === "revert" ? 520 : 1088;
-      const overshootCap = exfil === "revert" ? 600 : 1200;
+      // Both wrappers are ~130 bytes, so one budget splits 5×32-byte elements in either mode.
+      const batchSize = 520;
+      const overshootCap = 600;
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn);
-      const req = createRequest([addr(1), addr(2), addr(3), addr(4), addr(5)], { batch: { batchSize, exfil } });
+      const req = createRequest([addr(1), addr(2), addr(3), addr(4), addr(5)], { batch: { batchSize } });
 
       const result = await transport.request(req);
 
@@ -210,10 +205,10 @@ describe("deployless", () => {
     });
 
     it("stamps input_elements, nominal_batches, and splits onto the wide event", async () => {
-      const batchSize = exfil === "revert" ? 520 : 1088;
+      const batchSize = 520;
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn);
-      const req = createRequest([addr(1), addr(2), addr(3), addr(4), addr(5)], { batch: { batchSize, exfil } });
+      const req = createRequest([addr(1), addr(2), addr(3), addr(4), addr(5)], { batch: { batchSize } });
 
       const { logger, events } = createStubLogger();
       await withLogging(() => transport.request(req), { logger });
@@ -228,6 +223,10 @@ describe("deployless", () => {
       expect(field("splits_size")).toBe(0);
       expect(field("splits_timeout")).toBe(0);
       expect(field("splits_max_depth")).toBe(0);
+      // Non-paged lens: one wave, no continuations, nothing declined.
+      expect(field("pages_waves")).toBe(1);
+      expect(field("pages_continued")).toBe(0);
+      expect(field("elements_missing")).toBe(0);
 
       // One packed-size sample per batch, none exceeding the budget they were packed under.
       expect(field("batch_bytes.count")).toBe(field("nominal_batches"));
@@ -244,7 +243,7 @@ describe("deployless", () => {
         params: [
           { data: buildDeploylessCall(buildTargetCalldata(balancesOfAbi, [addr(1)])) },
           "0x100" as Hex,
-          { ...policySentinel(balancesOfAbi, { batch: { batchSize: 8192, exfil } }), ...extraOverride },
+          { ...policySentinel(balancesOfAbi, { batch: { batchSize: 8192 } }), ...extraOverride },
           blockOverride,
         ],
       };
@@ -331,10 +330,12 @@ describe("deployless", () => {
     await expect(transport.request(req)).rejects.toThrow(/selector/);
   });
 
-  it("throws when upstream returns the wrong number of outputs (return mode)", async () => {
-    const requestFn = vi.fn().mockResolvedValue(encodeAbiParameters([{ type: "uint256[]" }], [[1n, 2n]]));
+  it("throws when upstream returns the wrong number of outputs", async () => {
+    const requestFn = vi
+      .fn()
+      .mockRejectedValue(revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [[1n, 2n]])));
     const transport = createTransport(requestFn);
-    const req = createRequest([addr(1), addr(2), addr(3)], { batch: { batchSize: 8192, exfil: "return" } });
+    const req = createRequest([addr(1), addr(2), addr(3)], { batch: { batchSize: 8192 } });
 
     await expect(transport.request(req)).rejects.toThrow(/returned 2.*expected 3/);
   });
@@ -346,11 +347,9 @@ describe("deployless", () => {
     const transportWithoutCache = createTransport(requestFnWithoutCache);
     const transportWithCache = createTransport(requestFnWithCache);
 
-    const withoutCache = await transportWithoutCache.request(
-      createRequest(addrs, { batch: { batchSize: 1088, exfil: "revert" } }),
-    );
+    const withoutCache = await transportWithoutCache.request(createRequest(addrs, { batch: { batchSize: 1088 } }));
     const withCache = await transportWithCache.request(
-      createRequest(addrs, { batch: { batchSize: 1088, exfil: "revert" }, withCache: true }),
+      createRequest(addrs, { batch: { batchSize: 1088 }, withCache: true }),
     );
 
     expect(withCache).toEqual(withoutCache);
@@ -360,7 +359,7 @@ describe("deployless", () => {
     );
   });
 
-  describe("revert-mode exfil", () => {
+  describe("revert-mode wrapper", () => {
     it("propagates a real lens revert verbatim (no sentinel)", async () => {
       const lensRevertData = "0xabcd1234" as Hex;
       const requestFn = vi.fn().mockImplementation(async () => {
@@ -388,7 +387,7 @@ describe("deployless", () => {
         throw revertWithSentinel(empty);
       });
       const transport = createTransport(requestFn);
-      const req = createRequest([], { batch: { batchSize: 1088, exfil: "revert" } });
+      const req = createRequest([], { batch: { batchSize: 1088 } });
 
       const result = await transport.request(req);
       const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
@@ -403,40 +402,29 @@ describe("deployless", () => {
       const requestFn = vi.fn().mockRejectedValue(new BaseError("outer", { cause: dataError }));
       const transport = createTransport(requestFn);
 
-      const result = await transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "revert" } }));
+      const result = await transport.request(createRequest([addr(1)], { batch: { batchSize: 8192 } }));
 
       const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
       expect(decoded).toEqual([1n]);
     });
 
-    it("uses RETURN-mode wrapper bytecode upstream when exfil='return'", async () => {
-      const requestFn = mockBalancesOfFn();
-      const transport = createTransport(requestFn);
-      await transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return" } }));
-
-      const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
-      expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(true);
-    });
-
-    it("uses RETURN-mode wrapper bytecode upstream by default (no batch opts)", async () => {
+    it("uses REVERT-mode wrapper bytecode upstream (no batch opts)", async () => {
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn);
       await transport.request(createRequest([addr(1)]));
 
       const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
-      expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(true);
+      expect(sentData.toLowerCase().startsWith(FACTORY_BYTECODE_REVERT)).toBe(true);
     });
   });
 
   describe("compress=true", () => {
-    it.each(["return", "revert"] as const)("round-trips addresses correctly for exfil=%s", async (exfil) => {
+    it("round-trips addresses correctly", async () => {
       const addrs = [addr(1), addr(2), addr(3)];
-      const requestFn = mockCompressibleFn(exfil, true);
+      const requestFn = mockCompressibleFn(true);
       const transport = createTransport(requestFn);
 
-      const result = await transport.request(
-        createRequest(addrs, { batch: { batchSize: 8192, exfil, compress: true } }),
-      );
+      const result = await transport.request(createRequest(addrs, { batch: { batchSize: 8192, compress: true } }));
 
       const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
       expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
@@ -446,9 +434,7 @@ describe("deployless", () => {
       const requestFn = mockCompressibleFn("return", true);
       const transport = createTransport(requestFn);
 
-      await transport.request(
-        createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return", compress: true } }),
-      );
+      await transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, compress: true } }));
 
       const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
       expect(sentData.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(false);
@@ -461,15 +447,13 @@ describe("deployless", () => {
           target: { address: TARGET_TO, factory: FACTORY, factoryData: FACTORY_DATA },
           targetData: buildTargetCalldata(balancesOfAbi, [addr(1)]),
         },
-        { exfil: "return", compress: true },
+        { compress: true },
       );
       const batchSize = (singleWrapped.length - 2) / 2 + 8;
       const requestFn = mockCompressibleFn("return", true);
       const transport = createTransport(requestFn);
 
-      const result = await transport.request(
-        createRequest(addrs, { batch: { batchSize, exfil: "return", compress: true } }),
-      );
+      const result = await transport.request(createRequest(addrs, { batch: { batchSize, compress: true } }));
 
       expect(requestFn.mock.calls.length).toBeGreaterThan(1);
       for (const [arg] of requestFn.mock.calls) {
@@ -495,10 +479,10 @@ describe("deployless", () => {
         }
         const data = (args.params[0] as { data: Hex }).data;
         const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
-        return encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+        throw revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [outputs]));
       });
       const transport = createTransport(requestFn);
-      const req = createRequest(addrs, { batch: { batchSize: 8192, exfil: "return" } });
+      const req = createRequest(addrs, { batch: { batchSize: 8192 } });
 
       const result = await transport.request(req);
 
@@ -507,14 +491,47 @@ describe("deployless", () => {
       expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
     });
 
+    it("bisects to singletons on the wrapper's out-of-gas marker", async () => {
+      // Stands in for a chunk whose lens frame ran out of gas: every multi-element chunk reports
+      // OOG, so the batcher must keep halving until each element is alone.
+      const addrs = [addr(1), addr(2), addr(3), addr(4)];
+      const requestFn = vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
+        const data = (args.params[0] as { data: Hex }).data;
+        const sent = decodeSentAddresses(data);
+        if (sent.length > 1) throw Object.assign(new Error("execution reverted"), { data: OOG_SENTINEL });
+        throw revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [sent.map((a) => BigInt(a))]));
+      });
+      const transport = createTransport(requestFn);
+
+      const result = await transport.request(createRequest(addrs, { batch: { batchSize: 8192 } }));
+
+      // 1 full batch + 2 halves + 4 singletons.
+      expect(requestFn).toHaveBeenCalledTimes(7);
+      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
+      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    });
+
+    it("does not treat lens revert data that merely starts with the marker as out-of-gas", async () => {
+      const lensError = Object.assign(new Error("execution reverted"), {
+        data: `${OOG_SENTINEL}${"00".repeat(32)}` as Hex,
+      });
+      const requestFn = vi.fn().mockRejectedValue(lensError);
+      const transport = createTransport(requestFn);
+
+      await expect(
+        transport.request(createRequest([addr(1), addr(2)], { batch: { batchSize: 8192 } })),
+      ).rejects.toThrow("execution reverted");
+      expect(requestFn).toHaveBeenCalledTimes(1);
+    });
+
     it("rethrows when a single-element batch fails with a batch-size error", async () => {
       const batchSizeError = Object.assign(new Error("request body too large"), { data: "0x" as Hex });
       const requestFn = vi.fn().mockRejectedValue(batchSizeError);
       const transport = createTransport(requestFn);
 
-      await expect(
-        transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, exfil: "return" } })),
-      ).rejects.toThrow("request body too large");
+      await expect(transport.request(createRequest([addr(1)], { batch: { batchSize: 8192 } }))).rejects.toThrow(
+        "request body too large",
+      );
       expect(requestFn).toHaveBeenCalledTimes(1);
     });
 
@@ -524,7 +541,7 @@ describe("deployless", () => {
       const transport = createTransport(requestFn);
 
       await expect(
-        transport.request(createRequest([addr(1), addr(2)], { batch: { batchSize: 8192, exfil: "return" } })),
+        transport.request(createRequest([addr(1), addr(2)], { batch: { batchSize: 8192 } })),
       ).rejects.toThrow("nonce too low");
       expect(requestFn).toHaveBeenCalledTimes(1);
     });
@@ -540,9 +557,7 @@ describe("deployless", () => {
       });
       const transport = createTransport(requestFn);
 
-      await expect(
-        transport.request(createRequest(addrs, { batch: { batchSize: 8192, exfil: "return" } })),
-      ).rejects.toThrow();
+      await expect(transport.request(createRequest(addrs, { batch: { batchSize: 8192 } }))).rejects.toThrow();
       // 1 full-batch attempt + 2 half-batch attempts; halves exhaust the timeout budget so no further bisect.
       expect(requestFn).toHaveBeenCalledTimes(3);
     });
@@ -557,11 +572,11 @@ describe("deployless", () => {
         }
         const data = (args.params[0] as { data: Hex }).data;
         const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
-        return encodeAbiParameters([{ type: "uint256[]" }], [outputs]);
+        throw revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [outputs]));
       });
       const transport = createTransport(requestFn);
 
-      const result = await transport.request(createRequest(addrs, { batch: { batchSize: 8192, exfil: "return" } }));
+      const result = await transport.request(createRequest(addrs, { batch: { batchSize: 8192 } }));
 
       expect(requestFn).toHaveBeenCalledTimes(3); // 1 timed-out + 2 halves
       const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
@@ -576,7 +591,7 @@ describe("deployless", () => {
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn, 30_000_000);
       const req = createRequest(addrs, {
-        batch: { gas: { constant: 0, linear: 12_000_000, quadratic: 0 }, exfil: "return" },
+        batch: { gas: { constant: 0, linear: 12_000_000, quadratic: 0 } },
       });
 
       const result = await transport.request(req);
@@ -594,7 +609,7 @@ describe("deployless", () => {
       const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn, 1_000_000); // tight gasLimit, but no model
-      const req = createRequest(addrs, { batch: { exfil: "return" } });
+      const req = createRequest(addrs, { batch: {} });
 
       await transport.request(req);
 
@@ -607,7 +622,7 @@ describe("deployless", () => {
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn, 1100);
       const req = createRequest(addrs, {
-        batch: { gas: { constant: 1000, linear: 100, quadratic: 0 }, exfil: "return" },
+        batch: { gas: { constant: 1000, linear: 100, quadratic: 0 } },
       });
 
       await transport.request(req);
@@ -625,7 +640,7 @@ describe("deployless", () => {
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn, 100);
       const req = createRequest(addrs, {
-        batch: { gas: { constant: 0, linear: 0, quadratic: 1 }, exfil: "return" },
+        batch: { gas: { constant: 0, linear: 0, quadratic: 1 } },
       });
 
       await transport.request(req);
@@ -641,7 +656,7 @@ describe("deployless", () => {
       const requestFn = vi.fn();
       const transport = createTransport(requestFn, 10_000_000);
       const req = createRequest([addr(1), addr(2)], {
-        batch: { gas: { constant: 0, linear: 11_000_000, quadratic: 0 }, exfil: "return" },
+        batch: { gas: { constant: 0, linear: 11_000_000, quadratic: 0 } },
       });
 
       await expect(transport.request(req)).rejects.toThrow(/cannot fit a single item/);
@@ -654,7 +669,7 @@ describe("deployless", () => {
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn, 30_000_000);
       const req = createRequest(addrs, {
-        batch: { batchSize: 8192, gas: { constant: 0, linear: 10_000_000, quadratic: 0 }, exfil: "return" },
+        batch: { batchSize: 8192, gas: { constant: 0, linear: 10_000_000, quadratic: 0 } },
       });
 
       await transport.request(req);
@@ -672,7 +687,7 @@ describe("deployless", () => {
       const requestFn = mockBalancesOfFn();
       const transport = createTransport(requestFn, 30_000_000);
       const req = createRequest(addrs, {
-        batch: { gas: { constant: 0, linear: 15_000_000, quadratic: 0 }, exfil: "return" },
+        batch: { gas: { constant: 0, linear: 15_000_000, quadratic: 0 } },
       });
 
       await transport.request(req);

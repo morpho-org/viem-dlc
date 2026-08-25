@@ -92,6 +92,13 @@ const result = await call(client, {
 If `policy.cache` is present, `deployless(...)` ignores it and still behaves as split-only mode.
 Use `cache(...)` when you want the same marked calls to populate and read from a backing store.
 
+With observability enabled, batching reports `nominal_batches` and `batch_bytes` (realized
+packing vs. `batchSize`), and `splits_*` for chunks bisected after a size or timeout error.
+Paged lenses are counted separately, since stopping early is normal rather than a failure:
+`pages_continued` (chunks re-requested from where the lens stopped), `pages_waves`, and
+`elements_missing` (elements the lens declined, the same set carried on
+`DeploylessPartialResultError.missing`).
+
 ### `cache`
 
 All-in-one caching transport for `eth_getLogs` and `eth_call`. Internally composes five layers:
@@ -175,8 +182,15 @@ branch A persist in cache and are visible to branch B on fallover, making recove
 
 `failover` only sees errors that escape per-branch halving (`logsDivider` range-halving and
 `deployless` size-bisection run inside each branch first). By default, contract reverts and
-user-rejection errors propagate immediately instead of triggering fallover — pass a custom
-`shouldThrow` to override:
+user-rejection errors propagate immediately instead of triggering fallover, as do errors that
+already carry a usable payload — a paged `DeploylessPartialResultError`. Falling over on one of
+those would swap a real answer for whatever the next branch returns, and lose it outright if
+that branch fails for an unrelated reason. (viem's stock `fallback` does not make this
+distinction, which is one more reason to prefer `failover` for paged reads.)
+
+Payload-carrying errors are handled by `failover` itself, ahead of `shouldThrow`, and are not
+overridable: this library produced them and knows their semantics better than a caller-supplied
+predicate can. `shouldThrow` governs everything else — pass one to override:
 
 ```ts
 import { defaultShouldThrow, failover } from '@morpho-org/viem-dlc/transports'
@@ -400,9 +414,9 @@ untouched, so tuples, nested arrays, and other complex element types are support
 ```ts
 policy(opts: {
   abi: AbiFunction
+  paged?: boolean
   batch?: {
     batchSize?: number
-    exfil?: 'return' | 'revert'
     compress?: boolean
     gas?: { constant: number; linear: number; quadratic: number }
   }
@@ -415,25 +429,34 @@ policy(opts: {
 ```
 
 - **`opts.abi`** — the `AbiFunction` fragment for the callee. Must have exactly one
-  input and one output, both dynamic arrays.
+  input and one output, both dynamic arrays — or, with `paged`, two outputs.
+- **`opts.paged`** — marks `abi` as a *paged* lens returning
+  `(U[] results, uint256[] skipped)` instead of a bare `U[]`. See
+  [Paged lenses](#paged-lenses) below for what that buys and the contract it requires.
 - **`opts.batch`** — optional batching config. Omit to send all elements in a single
   upstream `eth_call`. When set, chunks honor `batchSize` and `gas` together — either
   budget can be left unset.
 - **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk.
   Input elements are greedy-packed under this limit and fetched in parallel. Omit to
   skip byte-budget enforcement.
-- **`opts.batch.exfil`** — outer wrapper mode. Defaults to `'return'`. Set to `'revert'`
-  to exfiltrate via `REVERT`, lifting the EIP-170 24_576-byte returndata cap at the
-  cost of relying on the RPC preserving revert data.
 - **`opts.batch.compress`** — FastLZ-compress calldata on the wire. Helps fit more
   elements per chunk under EIP-3860's 49_152-byte initcode cap, at the cost of extra
   pre-request encoding time.
 - **`opts.batch.gas`** — polynomial gas-cost model
   `G(N) = constant + linear·N + quadratic·N²` for the lens. Combined with the
   transport's `gasLimit`, the chunker picks the largest per-chunk `N` such that
-  `G(N) ≤ gasLimit`. No internal safety factor — pad the estimate if you want
-  headroom. `linear` is typically the dominant term; `quadratic` captures memory
-  expansion (`memWords² / 512`); pass `0` for any unused term.
+  `G(N) ≤ gasLimit`. No internal safety factor, and `gasLimit` is a client-side budget only —
+  it is never sent as a `gas` field, so the node's own cap is what actually stops execution.
+  Overshooting `G(N)` while staying under that cap simply burns more gas than budgeted.
+  When the node's cap *is* hit, a drained lens frame is recovered rather than lost: the
+  wrapper reports it as `OOG_SENTINEL` revert data, which the chunker classifies as a size
+  error and bisects on, down to a single element if need be. Two caveats — the sentinel only
+  covers the lens frame, so running out of gas inside the wrapper itself (FLZ decompression,
+  or memory expansion while copying returndata) falls back to matching the provider's error
+  text; and a lens that burns >98.4% of its frame and *then* reverts with empty data is
+  reported as out-of-gas too, which costs a full bisect to singletons (`2N-1` requests)
+  before the original error resurfaces. `linear` is typically the dominant term; `quadratic`
+  captures memory expansion (`memWords² / 512`); pass `0` for any unused term.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
   or when used with `deployless(...)`, `batch` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same
@@ -486,6 +509,101 @@ Cache keys are derived from `(targetTo, factory, factoryData, selector, inputEle
 so repeat elements collapse into a single blob entry and novel elements are appended to
 the blob on the next fetch. The handler rejects any tx envelope field besides `data`
 (`from`, `gas`, `value`, etc.).
+
+#### Paged lenses
+
+A paged lens may stop before consuming its whole input. It walks its input in index order, in a
+single pass, and stops once — having attempted `i = results.length + skipped.length` elements.
+`results` covers that prefix minus `skipped`; `skipped` holds ascending indices, relative to this
+call's input, that it looked at and declined.
+
+Position is what separates the two outcomes: `[i, N)` was never attempted and is **retried**,
+while an index in `skipped` is **permanent**. So an over-packed chunk costs one extra round trip
+rather than a bisection, and `batch.gas` only has to be a rough opening guess.
+
+```solidity
+function page(T[] input) view returns (U[] results, uint256[] skipped) {
+    for (uint256 i = 0; i < input.length; i++) {
+        if (i > 0 && gasleft() < reserve + estimate) break;    // tail: retryable
+        if (!isValid(input[i])) { skipped.push(i); continue; } // deterministic: permanent
+        results.push(one(input[i]));
+    }
+}
+```
+
+The contract your lens must honor:
+
+- **Index order, single pass.** Otherwise "before `i`" no longer implies "declined".
+- **Attempt at least one element.** `(results=[], skipped=[])` is a protocol violation, not a
+  retryable state — it is what would let a lens stall a range forever, so it throws. A lens that
+  cannot afford element 0 must attempt it and let the frame die; the envelope reports that as an
+  out-of-gas and the transport marks the element unservable. This is what makes termination
+  finite without a retry counter or a gas-escalation ladder.
+- **Skips are deterministic.** A skip means invalid input or a reverting element — something
+  that declines identically next time. Running out of gas is never a skip; when gas runs out, stop.
+- **Values are batching-invariant.** Neither a served value nor a decline may depend on position,
+  batch composition, or `gasleft()`. Only the stopping boundary may.
+
+Per-element gas capping is optional and usually overkill — it matters only when an element may be
+unbounded, where it turns a dead frame into a stop that preserves the prefix. A capping lens must
+leave element 0 uncapped (or retrying a range headed by that element returns `([], [])`), and must
+tell a capped out-of-gas from a plain `revert(0, 0)` — both yield empty returndata — by treating
+"consumed ≈ the cap **and** empty returndata" as gas-driven. Same heuristic, and same imprecision,
+as the envelope's own 63/64 check.
+
+One asymmetry worth knowing: an element reported unservable via out-of-gas is unservable *under
+this node's gas cap*, and a provider with a higher cap could serve it. A skip, by contrast, is a
+property of the element.
+
+### `call2`
+
+Settled counterpart to viem's `call` for paged deployless reads. Where `call` throws if
+any element is unservable, `call2` returns the elements that *were* served alongside the
+indices that were not.
+
+```ts
+import { decodeAbiParameters, parseAbiItem } from 'viem'
+import { call2, policy } from '@morpho-org/viem-dlc/actions'
+
+const pageAbi = parseAbiItem(
+  'function page(address[] input) view returns (uint256[] results, uint256[] skipped)'
+)
+
+const { data, missing } = await call2(client, {
+  factory,
+  factoryData,
+  to,
+  data: encodeFunctionData({ abi: [pageAbi], functionName: 'page', args: [inputs] }),
+  stateOverride: [policy({ abi: pageAbi, paged: true })],
+})
+
+const [served] = decodeAbiParameters([{ type: 'uint256[]' }], data)
+// `served` is the complement of `missing`, in input order.
+```
+
+`(U[] results, uint256[] skipped)` is the lens→transport format only. Both `call` and `call2`
+reassemble the pages and hand back a dense `U[]`, so paging never reaches the caller — which
+also means you decode with `decodeAbiParameters([resultsType], data)`, not
+`decodeFunctionResult` against the two-output fragment.
+
+- **`data`** — ABI-encoded `U[]` of every element that was served, in input order, with
+  the `missing` indices omitted; `undefined` exactly where viem's `call` would return it.
+  Decoding is left to the caller so the transport's byte-level hot path stays intact.
+- **`missing`** — ascending indices into the input array that could not be served: the
+  lens declined them, or a single-element retry ran the frame out of gas. Empty on full
+  success, so there is only one shape to handle.
+
+There is one transport path, always settled internally, surfaced two ways. `call` stays
+strict — it throws a `DeploylessPartialResultError` carrying the same `data`/`missing`,
+which `call2` simply catches. Use `call` when a dense array is a precondition and `call2`
+when partial coverage is acceptable; `call`'s dense contract is why these are two actions
+rather than one that sometimes returns sparse results.
+
+Only unservable *elements* are settled. Transport errors, protocol violations, and
+ordinary lens reverts still throw from both. Results fetched before the failure are
+already committed to the cache either way, and `failover` treats a partial result as an
+answer rather than a branch failure, so it will not re-run the whole request against the
+next provider.
 
 ### `getDeploymentBlockNumber`
 

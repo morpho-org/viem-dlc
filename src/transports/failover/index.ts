@@ -2,15 +2,18 @@ import type { EIP1193RequestFn, RpcSchema, Transport } from "viem";
 
 import { createFacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
-import { serializeError } from "../../utils/errors.js";
+import { isTerminalError, serializeError } from "../../utils/errors.js";
 
 export const failoverTransportKey = "viem-dlc-failover" as const;
 
 export interface FailoverConfig {
   /**
    * Predicate deciding whether an error should propagate immediately rather than
-   * trigger a fallover to the next branch. Defaults to mirroring viem's stock
-   * `fallback`: contract reverts and user-rejection errors are not retried.
+   * trigger a fallover to the next branch. Defaults to {@link defaultShouldThrow}, which
+   * mirrors viem's stock `fallback`: contract reverts and user-rejection errors are not retried.
+   *
+   * Consulted only for errors that are not {@link isTerminalError} — those always propagate,
+   * whatever this returns.
    */
   shouldThrow?: (error: unknown) => boolean;
 }
@@ -52,7 +55,14 @@ export function failover<S extends RpcSchema>(
         branchDurationsMs: number[];
         succeededIndex: number;
         terminatedByShouldThrow: boolean;
-      } = { branchErrors: [], branchDurationsMs: [], succeededIndex: -1, terminatedByShouldThrow: false };
+        terminatedByTerminalError: boolean;
+      } = {
+        branchErrors: [],
+        branchDurationsMs: [],
+        succeededIndex: -1,
+        terminatedByShouldThrow: false,
+        terminatedByTerminalError: false,
+      };
 
       try {
         for (let i = 0; i < requestFns.length; i++) {
@@ -65,6 +75,11 @@ export function failover<S extends RpcSchema>(
           } catch (err) {
             stats.branchDurationsMs.push(performance.now() - t0);
             stats.branchErrors.push(err);
+            // Ahead of `shouldThrow` and not overridable: falling over discards the payload.
+            if (isTerminalError(err)) {
+              stats.terminatedByTerminalError = true;
+              throw err;
+            }
             if (shouldThrow(err)) {
               stats.terminatedByShouldThrow = true;
               throw err;
@@ -82,6 +97,7 @@ export function failover<S extends RpcSchema>(
           facet?.set({
             branch_errors: stats.branchErrors.map(serializeError),
             terminated_by_should_throw: stats.terminatedByShouldThrow,
+            terminated_by_terminal_error: stats.terminatedByTerminalError,
           });
         }
       }
@@ -108,9 +124,12 @@ export function failover<S extends RpcSchema>(
 /**
  * Mirrors viem's stock fallback `shouldThrow`: don't fall over on contract reverts
  * or user-rejection errors. See `node_modules/viem/_esm/clients/transports/fallback.js`.
+ *
+ * Terminal errors are handled by {@link failover} itself and never reach this predicate.
  */
 export function defaultShouldThrow(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
+
   const code = (error as { code?: unknown }).code;
   const message = (error as { message?: unknown }).message;
   if (typeof code !== "number") return false;

@@ -1,6 +1,6 @@
 {
   "name": "@morpho-org/viem-dlc",
-  "version": "0.0.12",
+  "version": "0.0.14",
   "description": "A collection of flexible viem extensions with a focus on intelligent caching.",
   "license": "MIT",
   "keywords": [
@@ -67,7 +67,6 @@
     "build": "tsc",
     "build:RevertEnvelope": "solc --optimize --optimize-runs=1 --strict-assembly --bin src/utils/deployless/RevertEnvelope.yul | awk '/Binary representation:/{getline;n=length($0)/2;sub(/62bbbbbb/,sprintf(\"62%06x\",n));print \"0x\"$0}'",
     "build:RevertEnvelopeCompressed": "solc --optimize --optimize-runs=1 --strict-assembly --bin src/utils/deployless/RevertEnvelopeCompressed.yul | awk '/Binary representation:/{getline;n=length($0)/2;sub(/62bbbbbb/,sprintf(\"62%06x\",n));print \"0x\"$0}'",
-    "build:ReturnEnvelopeCompressed": "solc --optimize --optimize-runs=1 --strict-assembly --bin src/utils/deployless/ReturnEnvelopeCompressed.yul | awk '/Binary representation:/{getline;n=length($0)/2;sub(/62bbbbbb/,sprintf(\"62%06x\",n));print \"0x\"$0}'",
     "typecheck": "tsc --project tsconfig.json --noEmit --incremental",
     "pretest": "pnpm build",
     "test": "vitest run",

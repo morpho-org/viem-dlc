@@ -1,20 +1,17 @@
 /*
- * Outer constructor wrapper for deployless eth_call with FLZ input compression (Yul source).
+ * Outer constructor wrapper for deployless eth_call with FLZ input compression,
+ * REVERT-mode exfiltration (Yul source).
  *
- * Constructor args layout (identical to RevertEnvelope.yul):
- *   [0..32]:   target address
- *   [32..64]:  compressedTargetData offset (= 128 if no funny business)
- *   [64..96]:  factory address
- *   [96..128]: factoryData offset
- *   [128..]:   compressedTargetData length + bytes, factoryData length + bytes
+ * Constructor args: see RevertEnvelope.yul — `targetData` is FLZ-compressed here.
  *
  * Wire protocol (input compressed only):
- *   JS side:        targetData = flzCompress(ABI-encoded calldata)
- *   Solidity side:  decompresses targetData, calls lens, reverts with raw returndata
- *   JS side:        extracts sentinel; no decompression needed
+ *   caller:    targetData = flzCompress(ABI-encoded calldata)
+ *   envelope:  decompresses targetData, calls lens, reverts with OK_SENTINEL || raw returndata
+ *   caller:    strips the sentinel; no decompression needed
  *
  * On lens success:  revert(OK_SENTINEL || returndata)
  * On lens revert:   revert(returndata verbatim)
+ * On lens OOG:      revert(OOG_SENTINEL)
  * On deploy fail:   revert(CounterfactualDeployFailed(bytes("")))
  *
  * Memory layout (monotonically increasing, no aliasing):
@@ -25,11 +22,12 @@
  * FLZ algorithm ported from Solady's LibZip.sol (MIT License, Vectorized).
  *   https://github.com/Vectorized/solady/blob/main/src/utils/LibZip.sol
  *
- * Build: `pnpm build:RevertEnvelopeCompressed`
+ * Build: `pnpm build:RevertEnvelopeCompressed` — prints the hex constant to paste into
+ * codec.envelope.ts.
  */
 object "RevertEnvelopeCompressed" {
     code {
-        // Patch bytecodeLen with PUSH3 placeholder (same technique as RevertEnvelope.yul).
+        // PUSH3 placeholder patched post-compile — see RevertEnvelope.yul.
         let bytecodeLen := verbatim_0i_1o(hex"62BBBBBB")
         let argsLen := sub(codesize(), bytecodeLen)
         codecopy(0x00, bytecodeLen, argsLen)
@@ -39,30 +37,29 @@ object "RevertEnvelopeCompressed" {
         let factory := mload(0x40)
         let fdOff   := mload(0x60)
 
-        // factory.call(factoryData) — deploys lens at `target`.
-        // Require both that the call succeeded AND that target has code afterward.
-        let fdLen := mload(fdOff)
-        let deployed := call(gas(), factory, 0, add(fdOff, 0x20), fdLen, 0, 0)
-        if or(iszero(deployed), iszero(extcodesize(target))) {
-            // bytes4(keccak256("CounterfactualDeployFailed(bytes)")) = 0x101bb98d
-            mstore(0x00, 0x101bb98d00000000000000000000000000000000000000000000000000000000)
-            mstore(0x04, 0x20)
-            mstore(0x24, 0)
-            revert(0x00, 0x44)
+        // Deploy only into an empty `target` — see RevertEnvelope.yul.
+        if iszero(extcodesize(target)) {
+            let fdLen := mload(fdOff)
+            let deployed := call(gas(), factory, 0, add(fdOff, 0x20), fdLen, 0, 0)
+            if or(iszero(deployed), iszero(extcodesize(target))) {
+                // bytes4(keccak256("CounterfactualDeployFailed(bytes)")) = 0x101bb98d
+                mstore(0x00, 0x101bb98d00000000000000000000000000000000000000000000000000000000)
+                mstore(0x04, 0x20)
+                mstore(0x24, 0)
+                revert(0x00, 0x44)
+            }
         }
 
-        // Decompress targetData into a fresh memory region at msize().
         let compTdLen := mload(tdOff)
         let compTdPtr := add(tdOff, 0x20)
         let decompPtr := msize()
         let decompLen := flzDecompress(compTdPtr, compTdLen, decompPtr)
 
-        // Call lens with decompressed targetData.
+        let gasBefore := gas()
         let ok := call(gas(), target, 0, decompPtr, decompLen, 0, 0)
         let rdLen := returndatasize()
 
         if ok {
-            // Write OK_SENTINEL followed by raw returndata and revert.
             // OK_SENTINEL = bytes4(keccak256("ViemDlcOk()")) = 0x1580d19d
             let sentinelPtr := add(decompPtr, decompLen)
             mstore(sentinelPtr, 0x1580d19d00000000000000000000000000000000000000000000000000000000)
@@ -70,19 +67,19 @@ object "RevertEnvelopeCompressed" {
             revert(sentinelPtr, add(0x04, rdLen))
         }
 
-        // Lens revert: pass through verbatim.
+        // Lens frame out of gas — see RevertEnvelope.yul.
+        if and(iszero(rdLen), iszero(gt(gas(), div(gasBefore, 64)))) {
+            // OOG_SENTINEL = bytes4(keccak256("ViemDlcOutOfGas()")) = 0xcc0bd34c
+            mstore(0x00, 0xcc0bd34c00000000000000000000000000000000000000000000000000000000)
+            revert(0x00, 0x04)
+        }
+
         returndatacopy(0x00, 0x00, rdLen)
         revert(0x00, rdLen)
 
-        // ─────────────────────────────────────────────────────────────────────────
-        // FLZ DECOMPRESSOR  (Solady LibZip.sol, MIT)
-        //
-        // flzDecompress(inPtr, inLen, outPtr) -> outLen
-        //   Reads `inLen` bytes of FastLZ-compressed data from memory at `inPtr`,
-        //   writes decompressed bytes to `outPtr`, and returns the decompressed length.
-        //   Uses mstore for 32-byte back-ref copies (stride = min(distance, 32));
-        //   bytes beyond outLen may be garbage but are never returned to caller.
-        // ─────────────────────────────────────────────────────────────────────────
+        /// Reads `inLen` bytes of FastLZ-compressed data at `inPtr`, writes the decompressed bytes
+        /// to `outPtr`, and returns their length. Copies back-refs with 32-byte mstores
+        /// (stride = min(distance, 32)), so bytes past `outLen` may be garbage — never returned.
         function flzDecompress(inPtr, inLen, outPtr) -> outLen {
             let op  := outPtr
             let end := add(inPtr, inLen)
