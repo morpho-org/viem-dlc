@@ -10,15 +10,7 @@ import {
   isOutOfGasRevert,
   wrapDeploylessFactoryCall,
 } from "./codec.envelope.js";
-import {
-  arrayToCalldata,
-  arrayToHex,
-  hexToArray,
-  hexToPage,
-  type Page,
-  type ResolvedArrayFunction,
-} from "./codec.inner.js";
-import { DeploylessPartialResultError } from "./errors.js";
+import { arrayToCalldata, hexToArray, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
 
 type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
@@ -45,6 +37,13 @@ type FactorisedFactoryCallParams = {
 /** An input element's index paired with the raw output bytes fetched for it. */
 export type ResolvedElement = { index: number; output: Hex };
 
+export type FactorisedFactoryCallResult = {
+  /** Per-element outputs aligned to `elements`, sparse exactly at {@link FactorisedFactoryCallResult.missing}. */
+  outputs: readonly (Hex | undefined)[];
+  /** Ascending indices no chunk could serve. Always empty for an unpaged lens. */
+  missing: readonly number[];
+};
+
 type MeasureBytes = (start: number, end: number) => number;
 
 /**
@@ -54,13 +53,13 @@ type MeasureBytes = (start: number, end: number) => number;
  * budget can be unset; with neither, sends all elements in a single upstream call.
  *
  * When `solidity.paged`, chunks that stop early are re-requested from where they stopped rather
- * than bisected, and elements the lens declines surface as a {@link DeploylessPartialResultError}
- * once every servable element has been fetched.
+ * than bisected, and `missing` collects the indices no chunk could serve. `missing` is always
+ * empty for an unpaged lens, which has no way to report a per-element failure.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
   { target, elements, solidity, batch, gasLimit, restOfEthCallParams, onResolved }: FactorisedFactoryCallParams,
-): Promise<Hex[]> {
+): Promise<FactorisedFactoryCallResult> {
   const compress = batch?.compress ?? false;
   const wrap = (els: readonly Hex[]): Hex =>
     wrapDeploylessFactoryCall({ target, targetData: arrayToCalldata(solidity, els) }, { compress });
@@ -200,17 +199,7 @@ export async function factorisedFactoryCall(
     wave = nextWave;
   }
 
-  if (missing.length > 0) {
-    throw new DeploylessPartialResultError({
-      data: arrayToHex(
-        solidity.outputLayout,
-        outputs.filter((o) => o !== undefined),
-      ),
-      missing: missing.sort((a, b) => a - b),
-      total: elements.length,
-    });
-  }
-  return outputs;
+  return { outputs, missing: missing.sort((a, b) => a - b) };
 }
 
 /** `Promise.all`, but every branch settles before the first failure surfaces. */

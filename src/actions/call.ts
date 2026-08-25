@@ -33,13 +33,16 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  *
  * @param opts.paged Marks `abi` as a *paged* lens: it returns `(U[] results, uint256[] skipped)`
  *   and may stop before consuming its whole input, letting the transport re-request the
- *   remainder instead of bisecting. Elements the lens declines surface as a
- *   `DeploylessPartialResultError`.
+ *   remainder instead of bisecting.
  *
- *   Two things a caller cannot infer: the response is still a dense `U[]`, so decode it with
- *   `decodeAbiParameters`, not `decodeFunctionResult` against the two-output fragment; and a
- *   lens must attempt at least one element, making `([], [])` a protocol violation rather than
- *   a retryable state. The full lens contract is in the README under "Paged lenses".
+ *   The chunked calls aggregate into a single page over the caller's whole input, so the
+ *   response keeps the shape `abi` declares and stays readable through `readContract`,
+ *   `decodeFunctionResult`, and the rest of viem. `skipped` names the indices no chunk could
+ *   serve, rebased onto the caller's input — a partial result is a successful response, not a
+ *   throw, so check `skipped` if you need every element. It merges elements the lens declined
+ *   with elements that exhausted the frame even alone; the latter depend on the node's gas cap
+ *   and another provider might serve them. The full lens contract is in the README under
+ *   "Paged lenses".
  * @param opts.batch Optional batching config. Omit to send all elements in a single
  *   upstream `eth_call`. When set, chunks honor both `batchSize` and `gas`.
  * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk.

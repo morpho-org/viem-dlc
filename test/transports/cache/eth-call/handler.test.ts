@@ -25,7 +25,6 @@ import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overri
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
 import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../../../src/utils/deployless/codec.envelope.js";
-import { isDeploylessPartialResultError } from "../../../../src/utils/deployless/errors.js";
 import { flzDecompress } from "../../../../src/utils/deployless/flz.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
 
@@ -517,6 +516,11 @@ describe("handleEthCall", () => {
       };
     }
 
+    function decodePage(result: Hex) {
+      const [results, skipped] = decodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], result);
+      return { results: [...(results as readonly bigint[])], skipped: (skipped as readonly bigint[]).map(Number) };
+    }
+
     /** Declines the given address values; serves every other element in a single page. */
     function mockPagedFn(decline: readonly number[]) {
       return vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
@@ -537,9 +541,9 @@ describe("handleEthCall", () => {
       const store = new MemoryStore();
       const req = pagedRequest([addr(1), addr(2), addr(3)]);
 
-      const error = await handleEthCall(ctx(mockPagedFn([2]), store), req).catch((e) => e);
+      const result = await handleEthCall(ctx(mockPagedFn([2]), store), req);
 
-      expect(isDeploylessPartialResultError(error)).toBe(true);
+      expect(decodePage(result)).toEqual({ results: [1n, 3n], skipped: [1] });
       const blobKey = keychain.blobKey(chainId, req)!;
       const cached = new LazyNdjsonMap<CachedEthCallEntry>(codec, { get: () => store.get(blobKey) ?? [] });
       const keys: string[] = [];
@@ -605,17 +609,15 @@ describe("handleEthCall", () => {
       );
       const requestFn = mockPagedFn([3]);
 
-      const error = await handleEthCall(ctx(requestFn, store), req).catch((e) => e);
+      const result = await handleEthCall(ctx(requestFn, store), req);
 
       expect(decodeSentAddresses((requestFn.mock.calls[0]![0] as EthCallRequest).params[0].data as Hex)).toEqual([
         addr(1),
         addr(3),
         addr(5),
       ]);
-      expect(error.missing).toEqual([2]);
       // Warm values (20, 40) must sit at their original positions among the fetched ones.
-      const [served] = decodeAbiParameters([{ type: "uint256[]" }], error.data);
-      expect(served).toEqual([1n, 20n, 40n, 5n]);
+      expect(decodePage(result)).toEqual({ results: [1n, 20n, 40n, 5n], skipped: [2] });
     });
 
     it("reports missing indices against the caller's input, not the deduped miss list", async () => {
@@ -623,12 +625,10 @@ describe("handleEthCall", () => {
       // addr(2) appears three times but dedupes to one miss; all three indices must be reported.
       const req = pagedRequest([addr(1), addr(2), addr(2), addr(3), addr(2)]);
 
-      const error = await handleEthCall(ctx(mockPagedFn([2]), store), req).catch((e) => e);
+      const result = await handleEthCall(ctx(mockPagedFn([2]), store), req);
 
-      expect(error.missing).toEqual([1, 2, 4]);
-      // `data` is the complement, in original order — cache hits and fetched values alike.
-      const [served] = decodeAbiParameters([{ type: "uint256[]" }], error.data);
-      expect(served).toEqual([1n, 3n]);
+      // `results` is the complement in original order; `skipped` names every original index.
+      expect(decodePage(result)).toEqual({ results: [1n, 3n], skipped: [1, 2, 4] });
     });
   });
 

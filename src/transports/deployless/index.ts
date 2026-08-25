@@ -1,9 +1,9 @@
-import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
+import { createTransport, type EIP1193RequestFn, type Hex, type PublicRpcSchema, type Transport } from "viem";
 
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 import { factorisedFactoryCall } from "../../utils/deployless/call.js";
 import { unwrapDeploylessFactoryCall } from "../../utils/deployless/codec.envelope.js";
-import { arrayToHex, calldataToArray, resolveArrayFunction } from "../../utils/deployless/codec.inner.js";
+import { arrayToHex, calldataToArray, pageToHex, resolveArrayFunction } from "../../utils/deployless/codec.inner.js";
 import { extractEthCallPolicy } from "../state-overrides.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
@@ -90,10 +90,12 @@ async function handleEthCall(
   const inputElements = calldataToArray(solidity, targetData);
 
   if (inputElements.length === 0) {
-    return arrayToHex(solidity.outputLayout, []);
+    return solidity.paged
+      ? pageToHex(solidity.outputLayout, { results: [], skipped: [] })
+      : arrayToHex(solidity.outputLayout, []);
   }
 
-  const outputs = await factorisedFactoryCall(requestFn, {
+  const { outputs, missing } = await factorisedFactoryCall(requestFn, {
     target,
     elements: inputElements,
     solidity,
@@ -101,5 +103,15 @@ async function handleEthCall(
     gasLimit,
     restOfEthCallParams,
   });
-  return arrayToHex(solidity.outputLayout, outputs);
+  // A paged lens declares `(U[] results, uint256[] skipped)`; the chunked calls aggregate into a
+  // single page over the caller's whole input, so the response keeps the shape the ABI promises.
+  if (solidity.paged) {
+    return pageToHex(solidity.outputLayout, { results: definedOnly(outputs), skipped: missing });
+  }
+  return arrayToHex(solidity.outputLayout, outputs as readonly Hex[]);
+}
+
+/** Drops the holes an unservable element leaves, preserving input order. */
+function definedOnly(outputs: readonly (Hex | undefined)[]): Hex[] {
+  return outputs.filter((o) => o !== undefined);
 }
