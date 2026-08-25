@@ -35,7 +35,7 @@ export type TtlStoreOptions = {
  *
  * The stamp is set on `set` and never refreshed on `get`, bounding how long this tier may diverge from
  * a fresher source behind it. The intended shape is an in-memory front atop a {@link HierarchicalStore}
- * (e.g. `new TtlStore(new LruStore(maxBytes), { ttlMs })`): a plain `LruStore` would pin a warm copy for
+ * (e.g. `new TtlStore(new LruStore({ maxBytes: maxBytes }), { ttlMs })`): a plain `LruStore` would pin a warm copy for
  * the whole process lifetime, whereas this expires it so the next read picks up the source of truth.
  *
  * Best-effort and non-throwing, per the `Store` contract, and passes the wrapped store's sync/async

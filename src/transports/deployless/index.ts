@@ -1,5 +1,6 @@
 import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
+import { createFacetId, type FacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 import { factorisedFactoryCall } from "../../utils/deployless/call.js";
 import { unwrapDeploylessFactoryCall } from "../../utils/deployless/codec.envelope.js";
@@ -29,6 +30,8 @@ export function deployless<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
   { gasLimit }: DeploylessConfig,
 ): Transport<typeof deploylessTransportKey, { gasLimit: number }, EIP1193RequestFn<T>> {
+  const facetId = createFacetId(deploylessTransportKey);
+
   return (params) => {
     const requestFn = baseTransportFn(params).request;
 
@@ -37,14 +40,14 @@ export function deployless<T extends Base>(
         return requestFn(args);
       }
 
-      return handleEthCall(requestFn, args as EIP1193Parameters<PublicRpcSchema, "eth_call">, gasLimit);
+      return handleEthCall(requestFn, args as EIP1193Parameters<PublicRpcSchema, "eth_call">, gasLimit, facetId);
     };
 
     return createTransport(
       {
         key: deploylessTransportKey,
         name: "[viem-dlc] deployless",
-        request: request as EIP1193RequestFn,
+        request: observe(request, facetId) as EIP1193RequestFn,
         retryCount: 0,
         type: deploylessTransportKey,
       },
@@ -57,6 +60,7 @@ async function handleEthCall(
   requestFn: EIP1193RequestFn<Base>,
   req: EIP1193Parameters<PublicRpcSchema, "eth_call">,
   gasLimit: number,
+  facetId: FacetId,
 ) {
   const extracted = extractEthCallPolicy(req.params[2]);
   if (!extracted) {
@@ -89,6 +93,9 @@ async function handleEthCall(
   const solidity = resolveArrayFunction(extracted.policy.abi, extracted.policy.paged);
   const inputElements = calldataToArray(solidity, targetData);
 
+  const facet = getObservability()?.facet(facetId).sub("eth_call");
+  facet?.set({ input_elements: inputElements.length });
+
   if (inputElements.length === 0) {
     return arrayToHex(solidity.outputLayout, []);
   }
@@ -100,6 +107,7 @@ async function handleEthCall(
     batch: extracted.policy.batch,
     gasLimit,
     restOfEthCallParams,
+    facet,
   });
   return arrayToHex(solidity.outputLayout, outputs);
 }

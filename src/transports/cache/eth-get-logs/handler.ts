@@ -2,6 +2,7 @@ import { hexToBigInt, type RpcLog, toHex } from "viem";
 
 import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
 import type { LazyEntry } from "../../../internal/ndjson-map.js";
+import { getObservability } from "../../../observability.js";
 import type { BlockRange, EIP1193Parameters } from "../../../types.js";
 import { divideBlockRange, extractRangeFromFilter, isInBlockRange, mergeBlockRanges } from "../../../utils/blocks.js";
 import { tryCatch } from "../../../utils/errors.js";
@@ -41,9 +42,11 @@ function shouldFetchRange(
 }
 
 export async function handleEthGetLogs(
-  { binSize, invalidationStrategy, store, coalesce, requestFn, chainId }: HandlerContext,
+  ctx: HandlerContext,
   req: EIP1193Parameters<CacheSchema, "eth_getLogs">,
 ): Promise<RpcLog[]> {
+  const { binSize, invalidationStrategy, store, coalesce, requestFn, chainId } = ctx;
+  const facet = getObservability()?.facet(ctx.facetId).sub("eth_getLogs");
   const blobKey = keychain.blobKey(chainId, req);
 
   return coalesce(blobKey, req, async (args, collectFollowers) => {
@@ -119,11 +122,15 @@ export async function handleEthGetLogs(
 
     // Start fetching all gaps. `logsDivider` and `rateLimiter` handle splitting, concurrency, and rate limits.
     // viem also provides request deduplication at each layer, and at this point we've already normalized it.
+    let gapsFetchedCount = 0;
+    let fetchMs = 0;
     if (gaps.length > 0) {
       const rangesToFetch = mergeBlockRanges(gaps);
+      gapsFetchedCount = rangesToFetch.length;
 
       const sink = createSink({ chainId, binSize, ndjson });
 
+      const tFetchStart = performance.now();
       try {
         await Promise.all(
           rangesToFetch.map((range) =>
@@ -154,6 +161,8 @@ export async function handleEthGetLogs(
           throw error;
         }
         throw new Error(`${context} ${String(error)}`);
+      } finally {
+        fetchMs = performance.now() - tFetchStart;
       }
     }
 
@@ -166,6 +175,17 @@ export async function handleEthGetLogs(
     // Leader is prepended at index 0; matching followers follow.
     const leader = { slot: -1, args };
     const followers = collectFollowers();
+
+    // TODO(observability): once `coalesce` carries a `meta: { call_id }` per
+    // caller, stamp `served_by` onto followers' facets and record
+    // `follower_call_ids` here. For now the event only describes leader-side work.
+    facet?.set({
+      blob_key: blobKey,
+      gaps_fetched: gapsFetchedCount,
+      n_followers: followers.length,
+      blob_bytes_written: buffers.reduce((s, b) => s + b.byteLength, 0),
+      fetch_ms: fetchMs,
+    });
 
     const leaderFilterJson = JSON.stringify(filter);
     const participants = [leader, ...followers]

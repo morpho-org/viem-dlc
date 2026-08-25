@@ -15,11 +15,13 @@ import {
 } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
+import { withLogging } from "../../src/observability.js";
 import { deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
 import { OK_SENTINEL, OOG_SENTINEL, unwrapDeploylessFactoryCall } from "../../src/utils/deployless/codec.envelope.js";
 import { isDeploylessPartialResultError } from "../../src/utils/deployless/errors.js";
+import { createStubLogger, findDotted } from "../helpers/logger.js";
 
 type EthCallRequest = EIP1193Parameters<import("viem").PublicRpcSchema, "eth_call">;
 
@@ -202,6 +204,26 @@ describe("deployless (paged)", () => {
     const error = await transport.request(createRequest([1, 2, 3, 4].map(addr))).catch((e) => e);
 
     expect(error.missing).toEqual([1, 3]);
+  });
+
+  it("stamps paged continuations and unservable elements onto the wide event", async () => {
+    // Serves 2 per call and declines the element valued 3, so the run both continues and
+    // ends up short: one continuation, two waves, one element the lens refused.
+    const requestFn = mockPagedLens({ pageSize: 2, decline: [3] });
+    const transport = createTransport(requestFn);
+
+    const { logger, events } = createStubLogger();
+    await withLogging(() => transport.request(createRequest([1, 2, 3, 4, 5].map(addr))), { logger }).catch(() => {});
+
+    expect(events).toHaveLength(1);
+    const { context } = events[0]!;
+    const field = (name: string) => findDotted(context, "viem-dlc-deployless", `eth_call.${name}`);
+    expect(context.status).toBe("error");
+    expect(field("elements_missing")).toBe(1);
+    expect(field("pages_continued")).toBe(1);
+    expect(field("pages_waves")).toBe(2);
+    // A lens stopping early is a continuation, not a bisect.
+    expect(field("splits_count")).toBe(0);
   });
 
   it("propagates an ordinary lens revert instead of treating it as unservable", async () => {

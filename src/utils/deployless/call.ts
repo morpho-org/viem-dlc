@@ -1,5 +1,6 @@
 import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema } from "viem";
 
+import type { Facet } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
 import { isTimeoutLikeError } from "../errors.js";
 import type { Tail } from "../tuples.js";
@@ -40,6 +41,7 @@ type FactorisedFactoryCallParams = {
    * awaited — so a caller's results survive a later chunk failing.
    */
   onResolved?: (entries: readonly ResolvedElement[]) => void | Promise<void>;
+  facet?: Facet;
 };
 
 /** An input element's index paired with the raw output bytes fetched for it. */
@@ -59,7 +61,7 @@ type MeasureBytes = (start: number, end: number) => number;
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  { target, elements, solidity, batch, gasLimit, restOfEthCallParams, onResolved }: FactorisedFactoryCallParams,
+  { target, elements, solidity, batch, gasLimit, restOfEthCallParams, onResolved, facet }: FactorisedFactoryCallParams,
 ): Promise<Hex[]> {
   const compress = batch?.compress ?? false;
   const wrap = (els: readonly Hex[]): Hex =>
@@ -120,8 +122,20 @@ export async function factorisedFactoryCall(
   });
   const outputs = new Array<Hex>(elements.length);
 
+  facet?.set({ elements_requested: elements.length, nominal_batches: ranges.length });
+  // Sizes of the *initial* packing, to compare realized utilization against `batchSize`.
+  // Bisected children and paged continuations are not resampled. Guarded rather than
+  // `facet?.stat(...)` so unobserved calls skip re-measuring.
+  if (facet) for (const [start, end] of ranges) facet.stat("batch_bytes", measureBytes(start, end));
+  let fetched = 0;
+  const splits = { count: 0, size: 0, timeout: 0, maxDepth: 0 };
+  // Paged lenses stop early instead of failing, so continuations are counted apart from
+  // `splits_*`: those mean a chunk was too big, these mean the lens served what it could.
+  const pages = { continued: 0, waves: 0 };
+
   const commit = async (entries: readonly ResolvedElement[]) => {
     for (const { index, output } of entries) outputs[index] = output;
+    fetched += entries.length;
     if (entries.length > 0) await onResolved?.(entries);
   };
 
@@ -142,7 +156,9 @@ export async function factorisedFactoryCall(
     nextWave: BatchRange[],
     precomputed?: Hex,
     timeoutSplitsRemaining = 1,
+    depth = 0,
   ): Promise<void> => {
+    if (depth > splits.maxDepth) splits.maxDepth = depth;
     const count = end - start;
     const wrapped = precomputed ?? wrap(elements.slice(start, end));
 
@@ -154,10 +170,12 @@ export async function factorisedFactoryCall(
         const cause = classifyBatchSizeError(e);
         if (cause === "size" || (cause === "timeout" && timeoutSplitsRemaining > 0)) {
           const nextBudget = cause === "timeout" ? timeoutSplitsRemaining - 1 : timeoutSplitsRemaining;
+          splits.count += 1;
+          splits[cause] += 1;
           const mid = start + Math.floor(count / 2);
           return settleAll([
-            fetchRecursive([start, mid], nextWave, undefined, nextBudget),
-            fetchRecursive([mid, end], nextWave, undefined, nextBudget),
+            fetchRecursive([start, mid], nextWave, undefined, nextBudget, depth + 1),
+            fetchRecursive([mid, end], nextWave, undefined, nextBudget, depth + 1),
           ]);
         }
       } else if (solidity.paged && isOutOfGasRevert(e)) {
@@ -187,17 +205,39 @@ export async function factorisedFactoryCall(
     }
     await commit(entries);
 
-    if (attempted < count) nextWave.push(...packRange(start + attempted, end, attempted));
+    if (attempted < count) {
+      pages.continued += 1;
+      nextWave.push(...packRange(start + attempted, end, attempted));
+    }
   };
 
   let wave: BatchRange[] = ranges;
-  while (wave.length > 0) {
-    const nextWave: BatchRange[] = [];
-    const isWholeInput = wave.length === 1 && wave[0]![0] === 0 && wave[0]![1] === elements.length;
-    await settleAll(
-      wave.map((range) => fetchRecursive(range, nextWave, isWholeInput ? getReferenceWrapped() : undefined)),
-    );
-    wave = nextWave;
+  try {
+    while (wave.length > 0) {
+      pages.waves += 1;
+      const nextWave: BatchRange[] = [];
+      const isWholeInput = wave.length === 1 && wave[0]![0] === 0 && wave[0]![1] === elements.length;
+      await settleAll(
+        wave.map((range) => fetchRecursive(range, nextWave, isWholeInput ? getReferenceWrapped() : undefined)),
+      );
+      wave = nextWave;
+    }
+  } finally {
+    facet?.set({
+      elements_fetched: fetched,
+      splits_count: splits.count,
+      splits_size: splits.size,
+      splits_timeout: splits.timeout,
+      splits_max_depth: splits.maxDepth,
+    });
+    // Paged-only, so their presence is what distinguishes a paged run from an ordinary one.
+    if (solidity.paged) {
+      facet?.set({
+        pages_continued: pages.continued,
+        pages_waves: pages.waves,
+        elements_missing: missing.length,
+      });
+    }
   }
 
   if (missing.length > 0) {

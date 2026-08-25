@@ -15,11 +15,13 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { LazyNdjsonMap } from "../../../../src/internal/index.js";
+import { createFacetId, observe, withLogging } from "../../../../src/observability.js";
 import { MemoryStore } from "../../../../src/stores/memory.js";
 import { handleEthCall } from "../../../../src/transports/cache/eth-call/handler.js";
 import type { CachedEthCallEntry } from "../../../../src/transports/cache/eth-call/types.js";
 import { keychain } from "../../../../src/transports/cache/keychain.js";
 import type { CacheSchema } from "../../../../src/transports/cache/schema.js";
+import { cacheTransportKey } from "../../../../src/transports/cache/schema.js";
 import type { HandlerContext } from "../../../../src/transports/cache/types.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
@@ -28,6 +30,7 @@ import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../../../src/utils/
 import { isDeploylessPartialResultError } from "../../../../src/utils/deployless/errors.js";
 import { flzDecompress } from "../../../../src/utils/deployless/flz.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
+import { createStubLogger, findDotted } from "../../../helpers/logger.js";
 
 type EthCallRequest = EIP1193Parameters<CacheSchema, "eth_call">;
 
@@ -110,6 +113,7 @@ function ctx(requestFn: HandlerContext["requestFn"], store = new MemoryStore()):
     binSize: 10_000,
     invalidationStrategy: () => 0,
     gasLimit: 30_000_000,
+    facetId: createFacetId(cacheTransportKey),
   };
 }
 
@@ -545,6 +549,22 @@ describe("handleEthCall", () => {
       const keys: string[] = [];
       await cached.scan((record) => void keys.push(record.key));
       expect(keys).toEqual([1, 3].map((n) => entryKeyFor(pad(toHex(n), { size: 32 }), pageAbi)));
+    });
+
+    it("reports elements_missing against caller inputs, not deduped entries", async () => {
+      // addr(2) appears twice, so one declined cache entry stands for two caller indices.
+      const req = pagedRequest([addr(1), addr(2), addr(3), addr(2)]);
+
+      const { logger, events } = createStubLogger();
+      const context = ctx(mockPagedFn([2]), new MemoryStore());
+      // Same id on the boundary as the handler uses, so both write the bare key.
+      const observed = observe(() => handleEthCall(context, req), context.facetId);
+      const error = await withLogging(() => observed({ method: "eth_call" }).catch((e) => e), { logger });
+
+      expect(isDeploylessPartialResultError(error)).toBe(true);
+      expect(error.missing).toEqual([1, 3]);
+      // The field has to match the error the caller actually receives.
+      expect(findDotted(events[0]!.context, cacheTransportKey, "eth_call.elements_missing")).toBe(error.missing.length);
     });
 
     it("waits for a slow sibling chunk to commit before a failing chunk's error escapes", async () => {

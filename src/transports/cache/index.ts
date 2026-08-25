@@ -1,5 +1,6 @@
 import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
+import { createFacetId, observe } from "../../observability.js";
 import type { EIP1193Parameters, Store } from "../../types.js";
 import { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
 import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
@@ -10,11 +11,12 @@ import type { RateLimiterConfig } from "../rate-limiter/index.js";
 import { handleEthCall } from "./eth-call/handler.js";
 import { handleEthGetLogs } from "./eth-get-logs/handler.js";
 import { normalize } from "./normalization.js";
-import type { CachedMethod, CacheSchema } from "./schema.js";
+import { type CachedMethod, type CacheSchema, cacheTransportKey } from "./schema.js";
 import type { CacheConfig, HandlerContext, InvalidationStrategy } from "./types.js";
 
 export type * from "./schema.js";
 export type * from "./types.js";
+export { cacheTransportKey };
 
 /**
  * @param alphaAge Exponential growth rate w.r.t cache entry age (in time). @default 1/8
@@ -74,8 +76,6 @@ export function createSimpleInvalidation(
   };
 }
 
-export const cacheTransportKey = "viem-dlc-cache" as const;
-
 /**
  * Creates an all-in-one caching transport for eth_getLogs calls.
  *
@@ -100,7 +100,7 @@ export const cacheTransportKey = "viem-dlc-cache" as const;
  * const transport = cache(
  *   http(rpcUrl),
  *   [
- *     { binSize: 10_000, store: new LruStore(), invalidationStrategy: createSimpleInvalidation() },
+ *     { binSize: 10_000, store: new LruStore({ maxBytes: 1 << 30 }), invalidationStrategy: createSimpleInvalidation() },
  *     { maxBlockRange: 100_000 },
  *     { maxRequestsPerSecond: 10, maxConcurrentRequests: 5 }
  *   ]
@@ -118,6 +118,8 @@ export function cache(
     RateLimiterConfig,
   ],
 ): Transport<typeof cacheTransportKey, { store: Store; gasLimit: number }, EIP1193RequestFn<CacheSchema>> {
+  const facetId = createFacetId(cacheTransportKey);
+
   return (params) => {
     if (params.chain === undefined) {
       throw new Error("You must pass a chain to the cache transport.");
@@ -137,6 +139,7 @@ export function cache(
       chainId,
       requestFn: transport.request,
       coalesce,
+      facetId,
     };
 
     const request = (req: EIP1193Parameters<CacheSchema>) => {
@@ -162,7 +165,7 @@ export function cache(
       {
         key: cacheTransportKey,
         name: "[viem-dlc] cache",
-        request: request as EIP1193RequestFn,
+        request: observe(request, facetId) as EIP1193RequestFn,
         retryCount: 0,
         type: cacheTransportKey,
       },

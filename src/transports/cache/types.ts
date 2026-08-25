@@ -1,5 +1,6 @@
 import type { EIP1193RequestFn } from "viem";
 
+import type { FacetId } from "../../observability.js";
 import type { Store } from "../../types.js";
 import type { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
 import type { LogsDividerSchema } from "../logs-divider/schema.js";
@@ -36,4 +37,6 @@ export type HandlerContext = CacheConfig & {
   chainId: number;
   requestFn: EIP1193RequestFn<LogsDividerSchema>;
   coalesce: ReturnType<typeof createCoalescingMutex>["coalesce"];
+  /** Owning transport's facet identity; see {@link FacetId}. */
+  facetId: FacetId;
 };

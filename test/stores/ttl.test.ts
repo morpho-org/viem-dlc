@@ -41,33 +41,33 @@ afterEach(() => {
 describe("TtlStore", () => {
   it("throws if ttlMs is not a finite number >= 1", () => {
     const msg = "[TtlStore] ttlMs must be a finite number >= 1";
-    expect(() => new TtlStore(new LruStore(1024), { ttlMs: 0 })).toThrow(msg);
-    expect(() => new TtlStore(new LruStore(1024), { ttlMs: -1 })).toThrow(msg);
-    expect(() => new TtlStore(new LruStore(1024), { ttlMs: Number.NaN })).toThrow(msg);
-    expect(() => new TtlStore(new LruStore(1024), { ttlMs: Number.POSITIVE_INFINITY })).toThrow(msg);
+    expect(() => new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 0 })).toThrow(msg);
+    expect(() => new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: -1 })).toThrow(msg);
+    expect(() => new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: Number.NaN })).toThrow(msg);
+    expect(() => new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: Number.POSITIVE_INFINITY })).toThrow(msg);
   });
 
   it("returns null for missing keys", () => {
-    const store = new TtlStore(new LruStore(1024), { ttlMs: 1000 });
+    const store = new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1000 });
     expect(store.get("missing")).toBeNull();
   });
 
   it("serves a value within ttlMs", () => {
-    const store = new TtlStore(new LruStore(1024), { ttlMs: 1000 });
+    const store = new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1000 });
     store.set("k", bytes("v"));
     vi.advanceTimersByTime(999);
     expect(store.get("k")).toEqual(bytes("v"));
   });
 
   it("misses once past ttlMs", () => {
-    const store = new TtlStore(new LruStore(1024), { ttlMs: 1000 });
+    const store = new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1000 });
     store.set("k", bytes("v"));
     vi.advanceTimersByTime(1001);
     expect(store.get("k")).toBeNull();
   });
 
   it("serves at exactly the ttlMs deadline and expires only strictly past it", () => {
-    const store = new TtlStore(new LruStore(1024), { ttlMs: 1000 });
+    const store = new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1000 });
     store.set("k", bytes("v"));
     vi.advanceTimersByTime(1000); // age === ttlMs → still fresh
     expect(store.get("k")).toEqual(bytes("v"));
@@ -76,7 +76,7 @@ describe("TtlStore", () => {
   });
 
   it("never refreshes the ttl on get (absolute expiry from set)", () => {
-    const store = new TtlStore(new LruStore(1024), { ttlMs: 1000 });
+    const store = new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1000 });
     store.set("k", bytes("v"));
     // A read just before expiry must not extend the entry's life.
     vi.advanceTimersByTime(999);
@@ -86,7 +86,7 @@ describe("TtlStore", () => {
   });
 
   it("re-stamps the ttl on set", () => {
-    const store = new TtlStore(new LruStore(1024), { ttlMs: 1000 });
+    const store = new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1000 });
     store.set("k", bytes("v1"));
     vi.advanceTimersByTime(600);
     store.set("k", bytes("v2")); // resets the clock
@@ -97,7 +97,7 @@ describe("TtlStore", () => {
   it("reports a miss past ttlMs without deleting from the wrapped store", () => {
     // Expiry must NOT issue a delete: with an async store it could race a concurrent write and
     // clobber a fresh value. Spy is attached after `set` (LruStore.set self-calls delete internally).
-    const inner = new LruStore(1024);
+    const inner = new LruStore({ maxBytes: 1024 });
     const store = new TtlStore(inner, { ttlMs: 1000 });
     store.set("k", bytes("v"));
     const deleteSpy = vi.spyOn(inner, "delete");
@@ -107,7 +107,7 @@ describe("TtlStore", () => {
   });
 
   it("returns value buffers by reference over a framing-preserving store (no copy)", () => {
-    const store = new TtlStore(new LruStore(1024), { ttlMs: 1000 });
+    const store = new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1000 });
     const a = Buffer.from("ab");
     const b = Buffer.from("cd");
     store.set("k", [a, b]);
@@ -126,7 +126,7 @@ describe("TtlStore", () => {
   });
 
   it("treats an entry too short to carry the header as a miss", () => {
-    const inner = new LruStore(1024);
+    const inner = new LruStore({ maxBytes: 1024 });
     inner.set("k", [Buffer.from("short")]); // 5 bytes < header — could not have been written by TtlStore
     const store = new TtlStore(inner, { ttlMs: 1000 });
     expect(store.get("k")).toBeNull();
@@ -136,7 +136,7 @@ describe("TtlStore", () => {
     // A value written to the wrapped store by something other than TtlStore (a pre-existing entry, or
     // another consumer sharing the store). Long enough to look header-sized, but lacks the magic — so
     // it must NOT be served as a stamped value with its leading bytes stripped.
-    const inner = new LruStore(1024);
+    const inner = new LruStore({ maxBytes: 1024 });
     const foreign = Buffer.from("a plain value that was never written through the TtlStore wrapper");
     inner.set("k", [foreign]);
     const store = new TtlStore(inner, { ttlMs: 1000 });
@@ -144,7 +144,7 @@ describe("TtlStore", () => {
   });
 
   it("delete removes the entry and flush does not throw", () => {
-    const store = new TtlStore(new LruStore(1024), { ttlMs: 1000 });
+    const store = new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1000 });
     store.set("k", bytes("v"));
     store.delete("k");
     expect(store.get("k")).toBeNull();
@@ -153,7 +153,7 @@ describe("TtlStore", () => {
 
   it("delegates byte-cap eviction to a wrapped LruStore (the header counts toward the cap)", () => {
     // Each stored entry is a 12-byte header + 3-byte payload = 15 bytes; a cap of 18 holds one, not two.
-    const store = new TtlStore(new LruStore(12 + 3 + 3), { ttlMs: 1_000_000 });
+    const store = new TtlStore(new LruStore({ maxBytes: 12 + 3 + 3 }), { ttlMs: 1_000_000 });
     store.set("a", bytes("xxx")); // 15 bytes
     store.set("b", bytes("yyy")); // 15 more → total 30 > 18, evicts 'a'
     expect(store.get("a")).toBeNull();
@@ -189,7 +189,7 @@ describe("TtlStore", () => {
   });
 
   it("passes through the wrapped store's synchronous nature", () => {
-    const store = new TtlStore(new LruStore(1024), { ttlMs: 1000 });
+    const store = new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1000 });
     expect(store.set("k", bytes("v"))).toBeUndefined();
     const getResult = store.get("k");
     expect(getResult).not.toBeInstanceOf(Promise);
@@ -214,7 +214,7 @@ describe("TtlStore fronting a shared remote (HierarchicalStore)", () => {
 
   it("masks a fresher remote write within ttlMs, then serves it after the cap", async () => {
     const remote = makeRemote();
-    const store = new HierarchicalStore([new TtlStore(new LruStore(1024), { ttlMs: 1000 }), remote], {
+    const store = new HierarchicalStore([new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1000 }), remote], {
       populateOnMiss: true,
     });
 

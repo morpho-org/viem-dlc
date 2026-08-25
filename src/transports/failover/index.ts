@@ -1,7 +1,8 @@
 import type { EIP1193RequestFn, RpcSchema, Transport } from "viem";
 
+import { createFacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
-import { isTerminalError } from "../../utils/errors.js";
+import { isTerminalError, serializeError } from "../../utils/errors.js";
 
 export const failoverTransportKey = "viem-dlc-failover" as const;
 
@@ -25,8 +26,10 @@ export interface FailoverConfig {
  *
  * Each request tries `transports[0].request` first; on an error that is not
  * classified as "should throw," tries `transports[1].request`, and so on. If
- * every branch fails, the last error is rethrown. Halving for range/size errors
- * should be handled inside each branch — `failover` only sees errors that escape.
+ * every branch fails, the last error is rethrown. Errors carrying a partial payload are
+ * terminal and propagate immediately, ahead of and not overridable by `shouldThrow`, since
+ * falling over would discard what was already fetched. Halving for range/size errors should
+ * be handled inside each branch — `failover` only sees errors that escape.
  *
  * @example
  * const transport = failover([
@@ -42,22 +45,67 @@ export function failover<S extends RpcSchema>(
     throw new Error("[failover] requires at least one transport");
   }
 
+  const facetId = createFacetId(failoverTransportKey);
+
   return (params) => {
     const requestFns = transports.map((t) => t(params).request);
 
     const request = async (args: EIP1193Parameters<S>) => {
-      let lastErr: unknown;
-      for (const requestFn of requestFns) {
-        try {
-          return await requestFn(args);
-        } catch (err) {
-          // Ahead of `shouldThrow` and not overridable: falling over discards the payload.
-          if (isTerminalError(err) || shouldThrow(err)) throw err;
-          lastErr = err;
+      const facet = getObservability()?.facet(facetId);
+      const stats: {
+        branchErrors: unknown[];
+        branchDurationsMs: number[];
+        succeededIndex: number;
+        terminatedByShouldThrow: boolean;
+        terminatedByTerminalError: boolean;
+      } = {
+        branchErrors: [],
+        branchDurationsMs: [],
+        succeededIndex: -1,
+        terminatedByShouldThrow: false,
+        terminatedByTerminalError: false,
+      };
+
+      try {
+        for (let i = 0; i < requestFns.length; i++) {
+          const t0 = performance.now();
+          try {
+            const result = await requestFns[i]!(args);
+            stats.branchDurationsMs.push(performance.now() - t0);
+            stats.succeededIndex = i;
+            return result;
+          } catch (err) {
+            stats.branchDurationsMs.push(performance.now() - t0);
+            stats.branchErrors.push(err);
+            // Ahead of `shouldThrow` and not overridable: falling over discards the payload.
+            if (isTerminalError(err)) {
+              stats.terminatedByTerminalError = true;
+              throw err;
+            }
+            if (shouldThrow(err)) {
+              stats.terminatedByShouldThrow = true;
+              throw err;
+            }
+          }
+        }
+        throw stats.branchErrors.at(-1);
+      } finally {
+        facet?.set({
+          branches_attempted: stats.branchErrors.length + (stats.succeededIndex >= 0 ? 1 : 0),
+          succeeded_index: stats.succeededIndex,
+          branch_durations_ms: stats.branchDurationsMs,
+        });
+        if (stats.branchErrors.length > 0) {
+          facet?.set({
+            branch_errors: stats.branchErrors.map(serializeError),
+            terminated_by_should_throw: stats.terminatedByShouldThrow,
+            terminated_by_terminal_error: stats.terminatedByTerminalError,
+          });
         }
       }
-      throw lastErr;
     };
+
+    const observed = observe(request, facetId) as EIP1193RequestFn;
 
     // Bypass `createTransport` so we don't add a redundant `buildRequest` layer.
     // Failover doesn't classify errors, retry, or dedupe — wrapping here would only
@@ -67,10 +115,10 @@ export function failover<S extends RpcSchema>(
         key: failoverTransportKey,
         name: "[viem-dlc] failover",
         type: failoverTransportKey,
-        request: request as EIP1193RequestFn,
+        request: observed,
         retryCount: 0,
       },
-      request: request as EIP1193RequestFn,
+      request: observed,
     };
   };
 }

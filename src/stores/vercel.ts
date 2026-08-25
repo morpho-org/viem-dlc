@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 
 import { del, get, put } from "@vercel/blob";
 
+import type { Logger } from "../observability.js";
 import type { Store } from "../types.js";
 import { createInFlightBarrier } from "../utils/in-flight.js";
 
@@ -46,6 +47,8 @@ export type VercelStoreOptions = {
    * eventual consistency in exchange for fewer Simple Operations.
    */
   useCdnCache?: boolean;
+  /** Optional logger for non-request-bound emissions (e.g. background I/O errors). */
+  logger?: Logger;
 };
 
 /**
@@ -99,7 +102,9 @@ export class VercelStore implements Store {
       options.cacheControlMaxAge !== undefined &&
       (!Number.isFinite(options.cacheControlMaxAge) || options.cacheControlMaxAge < 60)
     ) {
-      throw new Error(`[VercelStore] cacheControlMaxAge must be >= 60 seconds (got ${options.cacheControlMaxAge})`);
+      const err = new Error(`cacheControlMaxAge must be >= 60 seconds (got ${options.cacheControlMaxAge})`);
+      options.logger?.withMetadata({ class: VercelStore.name, method: "constructor" }).withError(err).error();
+      throw err;
     }
 
     this.options = options;
@@ -145,7 +150,10 @@ export class VercelStore implements Store {
     try {
       return await this._get(key);
     } catch (err) {
-      console.warn(`[VercelStore] Failed to get key "${key}":`, err);
+      this.options.logger
+        ?.withMetadata({ class: VercelStore.name, method: "get", key })
+        .withError(err)
+        .warn("get failed");
       return null;
     }
   }
@@ -168,7 +176,10 @@ export class VercelStore implements Store {
     try {
       await this.inFlight.track(this._set(key, value));
     } catch (err) {
-      console.warn(`[VercelStore] Failed to set key "${key}":`, err);
+      this.options.logger
+        ?.withMetadata({ class: VercelStore.name, method: "set", key })
+        .withError(err)
+        .warn("set failed");
     }
   }
 
@@ -176,7 +187,10 @@ export class VercelStore implements Store {
     try {
       await this.inFlight.track(Promise.resolve(del(this.resolvePathname(key), this.tokenOption)));
     } catch (err) {
-      console.warn(`[VercelStore] Failed to delete key "${key}":`, err);
+      this.options.logger
+        ?.withMetadata({ class: VercelStore.name, method: "delete", key })
+        .withError(err)
+        .warn("delete failed");
     }
   }
 
@@ -184,7 +198,10 @@ export class VercelStore implements Store {
     try {
       await this.inFlight.flush();
     } catch (err) {
-      console.warn("[VercelStore] Failed to flush:", err);
+      this.options.logger
+        ?.withMetadata({ class: VercelStore.name, method: "flush" })
+        .withError(err)
+        .warn("flush failed");
     }
   }
 }
@@ -204,14 +221,15 @@ export function createOptimizedVercelStore(options: VercelStoreOptions = {}) {
   // and shields the remote tier from network/operation cost on hot keys.
   return new HierarchicalStore(
     [
-      new LruStore(1 << 30), // 1 GB
+      new LruStore({ maxBytes: 1 << 30, logger: options.logger }), // 1 GB
       new ThrottledStore(remote, {
         maxStalenessMs: 60_000, // defend against serverless freeze/thaw cycles
         maxWritesBurst,
         maxWritesPerSecond,
         maxConcurrent: Infinity,
+        logger: options.logger,
       }),
     ],
-    { populateOnMiss: true },
+    { populateOnMiss: true, logger: options.logger },
   );
 }

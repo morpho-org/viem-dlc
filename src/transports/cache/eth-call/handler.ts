@@ -1,6 +1,7 @@
 import type { Hex } from "viem";
 
 import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
+import { getObservability } from "../../../observability.js";
 import type { EIP1193Parameters } from "../../../types.js";
 import { cyrb64Hash } from "../../../utils/hash.js";
 import {
@@ -21,13 +22,15 @@ import type { HandlerContext } from "../types.js";
 import type { CachedEthCallEntry } from "./types.js";
 
 export async function handleEthCall(
-  { store, coalesce, requestFn, chainId, gasLimit }: HandlerContext,
+  { store, coalesce, requestFn, chainId, gasLimit, facetId }: HandlerContext,
   req: EIP1193Parameters<CacheSchema, "eth_call">,
 ): Promise<Hex> {
   const extracted = extractEthCallPolicy(req.params[2]);
   if (!extracted) {
     return requestFn(req);
   }
+
+  const facet = getObservability()?.facet(facetId).sub("eth_call");
 
   const [txn, ...restOfEthCallParams] = req.params;
   if (txn.data === undefined) {
@@ -55,6 +58,8 @@ export async function handleEthCall(
   const solidity = resolveArrayFunction(extracted.policy.abi, extracted.policy.paged);
   const inputElements = calldataToArray(solidity, targetData);
 
+  facet?.set({ input_elements: inputElements.length });
+
   if (inputElements.length === 0) {
     return arrayToHex(solidity.outputLayout, []);
   }
@@ -72,10 +77,12 @@ export async function handleEthCall(
       batch: extracted.policy.batch,
       gasLimit,
       restOfEthCallParams,
+      facet,
     });
     return arrayToHex(solidity.outputLayout, outputs);
   }
 
+  facet?.set({ blob_key: blobKey, ttl_ms: ttl, delta_ms: delta });
   return coalesce(blobKey, req, async (_leaderReq, collectFollowers) => {
     /*//////////////////////////////////////////////////////////////
                                LEADER OPS
@@ -97,9 +104,13 @@ export async function handleEthCall(
         keyToInfo.set(ek, { indices: [i], element });
       }
     });
+    facet?.set({ input_elements_unique: keyToInfo.size });
 
     // Open blob lazily — read once, buffer writes, flush when done.
+    const t0 = performance.now();
     let buffers = (await store.get(blobKey)) ?? [];
+    const t1 = performance.now();
+
     const ndjson = new LazyNdjsonMap<CachedEthCallEntry>(
       { toJson: stringify, fromJson: parse },
       {
@@ -116,6 +127,7 @@ export async function handleEthCall(
     const misses: { entryKey: string; indices: number[]; element: Hex }[] = [];
     const now = Date.now();
 
+    const t2 = performance.now();
     await ndjson.scan((record) => {
       const match = keyToInfo.get(record.key);
       if (!match) return;
@@ -131,10 +143,15 @@ export async function handleEthCall(
 
       if (keyToInfo.size === 0) return false;
     });
+    const t3 = performance.now();
 
     for (const [entryKey, info] of keyToInfo) {
       misses.push({ entryKey, ...info });
     }
+
+    // `factorisedFactoryCall` overwrites both when it runs; these cover the zero-misses
+    // (full cache hit) case, where it doesn't run at all.
+    facet?.set({ elements_requested: misses.length, elements_fetched: 0 });
 
     // Fetch misses
     if (misses.length > 0) {
@@ -148,6 +165,7 @@ export async function handleEthCall(
           batch: extracted.policy.batch,
           gasLimit,
           restOfEthCallParams,
+          facet,
           // Buffer per chunk, so a later chunk failing doesn't discard the siblings that landed.
           onResolved: (entries) => {
             ndjson.upsert(
@@ -163,6 +181,9 @@ export async function handleEthCall(
         // Rebase onto the caller's input: `missing` indexes deduped misses, `data` omits hits.
         if (isDeploylessPartialResultError(e)) {
           const missing = e.missing.flatMap((i) => misses[i]!.indices).sort((a, b) => a - b);
+          // Deduping means one unservable entry can stand for several caller inputs; restamp
+          // so the field matches the `missing` carried by the error we actually throw.
+          facet?.set({ elements_missing: missing.length });
           throw new DeploylessPartialResultError({
             // Sparse exactly at the missing indices, and `filter` skips holes.
             data: arrayToHex(
@@ -175,7 +196,9 @@ export async function handleEthCall(
         }
         throw e;
       } finally {
+        const t4 = performance.now();
         await ndjson.flush();
+        facet?.set({ fetch_cache_ms: t1 - t0, read_cache_ms: t3 - t2, flush_cache_ms: performance.now() - t4 });
       }
     }
 
@@ -188,6 +211,7 @@ export async function handleEthCall(
     const leaderHash = cyrb64Hash(JSON.stringify(req.params));
     const collected = collectFollowers();
     const matching = collected.filter((f) => cyrb64Hash(JSON.stringify(f.args.params)) === leaderHash);
+    facet?.set({ n_followers: matching.length });
 
     return {
       leader: { action: "resolve", result },

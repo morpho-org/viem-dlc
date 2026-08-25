@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "crypto";
 
 import { Redis, type RedisConfigNodejs } from "@upstash/redis";
 
+import type { Logger } from "../observability.js";
 import type { Store } from "../types.js";
 import { createInFlightBarrier } from "../utils/in-flight.js";
 import { shardString } from "../utils/strings.js";
@@ -15,6 +16,8 @@ export type UpstashStoreOptions = {
   maxRequestBytes: number;
   ttl?: number;
   redis?: Omit<RedisConfigNodejs, "automaticDeserialization">;
+  /** Optional logger for non-request-bound emissions (e.g. background I/O errors). */
+  logger?: Logger;
 };
 
 class WriteId {
@@ -69,13 +72,17 @@ export class UpstashStore implements Store {
 
   constructor(options: UpstashStoreOptions) {
     if (!Number.isSafeInteger(options.maxRequestBytes) || options.maxRequestBytes! <= WriteId.LENGTH) {
-      throw new Error(
-        `[UpstashStore] maxRequestBytes must be a safe integer > ${WriteId.LENGTH} (got ${options.maxRequestBytes})`,
+      const err = new Error(
+        `maxRequestBytes must be a safe integer > ${WriteId.LENGTH} (got ${options.maxRequestBytes})`,
       );
+      options.logger?.withMetadata({ class: UpstashStore.name, method: "constructor" }).withError(err).error();
+      throw err;
     }
 
     if (options.ttl !== undefined && (!Number.isSafeInteger(options.ttl) || options.ttl! <= 0)) {
-      throw new Error(`[UpstashStore] ttl must be a positive safe integer (got ${options.ttl})`);
+      const err = new Error(`ttl must be a positive safe integer (got ${options.ttl})`);
+      options.logger?.withMetadata({ class: UpstashStore.name, method: "constructor" }).withError(err).error();
+      throw err;
     }
 
     this.options = options;
@@ -103,6 +110,9 @@ export class UpstashStore implements Store {
 
       // If shard is null, array must've been shortened after our initial read (non-atomic inconsistency).
       if (shardWithId === null) {
+        this.options.logger
+          ?.withMetadata({ class: UpstashStore.name, method: "_get", key })
+          .info("non-atomic inconsistency: skewed length");
         return { value: null, motivatesRetry: true };
       }
 
@@ -110,11 +120,16 @@ export class UpstashStore implements Store {
 
       // If writeId doesn't match, array must've been overwritten after our initial read (non-atomic inconsistency).
       if (writeId !== writeId0) {
+        this.options.logger
+          ?.withMetadata({ class: UpstashStore.name, method: "_get", key })
+          .info("non-atomic inconsistency: skewed shard");
         return { value: null, motivatesRetry: true };
       }
 
       result += shard; // appending like this lets V8 engine defer memory copy until `result` is consumed
     }
+
+    this.options.logger?.metadataOnly({ class: UpstashStore.name, method: "_get", key, len });
 
     return { value: [Buffer.from(result, "base64")], motivatesRetry: false };
   }
@@ -132,6 +147,7 @@ export class UpstashStore implements Store {
       }
     }
 
+    this.options?.logger?.withMetadata({ class: UpstashStore.name, method: "get", key }).warn("exhausted retries");
     return null;
   }
 
@@ -178,7 +194,10 @@ export class UpstashStore implements Store {
     try {
       await this.inFlight.track(this._set(key, value));
     } catch (err) {
-      console.warn(`[UpstashStore] Failed to set key "${key}":`, err);
+      this.options.logger
+        ?.withMetadata({ class: UpstashStore.name, method: "set", key })
+        .withError(err)
+        .warn("set failed");
     }
   }
 
@@ -186,7 +205,10 @@ export class UpstashStore implements Store {
     try {
       await this.inFlight.track(this.redis.unlink(key));
     } catch (err) {
-      console.warn(`[UpstashStore] Failed to delete key "${key}":`, err);
+      this.options.logger
+        ?.withMetadata({ class: UpstashStore.name, method: "delete", key })
+        .withError(err)
+        .warn("delete failed");
     }
   }
 
@@ -194,7 +216,10 @@ export class UpstashStore implements Store {
     try {
       await this.inFlight.flush();
     } catch (err) {
-      console.warn("[UpstashStore] Failed to flush:", err);
+      this.options.logger
+        ?.withMetadata({ class: UpstashStore.name, method: "flush" })
+        .withError(err)
+        .warn("flush failed");
     }
   }
 }
@@ -210,14 +235,15 @@ export function createOptimizedUpstashStore(options: UpstashStoreOptions) {
   // We coalesce writes per key and rate-limit remote persistence.
   return new HierarchicalStore(
     [
-      new LruStore(1 << 30), // 1 GB
+      new LruStore({ maxBytes: 1 << 30, logger: options.logger }), // 1 GB
       new ThrottledStore(remote, {
         maxStalenessMs: 60_000, // defend against serverless freeze/thaw cycles
         maxWritesBurst,
         maxWritesPerSecond,
         maxConcurrent: Infinity,
+        logger: options.logger,
       }),
     ],
-    { populateOnMiss: true },
+    { populateOnMiss: true, logger: options.logger },
   );
 }
