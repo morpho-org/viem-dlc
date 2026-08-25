@@ -99,7 +99,7 @@ Paged lenses get their own fields, since stopping early is normal rather than a 
 and only paged calls emit them, so their presence marks a paged run: `pages_continued`
 (responses that stopped early, each of which may be repacked into several requests),
 `pages_waves`, and `elements_missing` (elements the lens declined, plus any single element
-that exhausted the frame — the same count carried on `DeploylessPartialResultError.missing`).
+that exhausted the frame — the same count the response's `skipped` array carries).
 
 ### `cache`
 
@@ -184,15 +184,8 @@ branch A persist in cache and are visible to branch B on fallover, making recove
 
 `failover` only sees errors that escape per-branch halving (`logsDivider` range-halving and
 `deployless` size-bisection run inside each branch first). By default, contract reverts and
-user-rejection errors propagate immediately instead of triggering fallover, as do errors that
-already carry a usable payload — a paged `DeploylessPartialResultError`. Falling over on one of
-those would swap a real answer for whatever the next branch returns, and lose it outright if
-that branch fails for an unrelated reason. (viem's stock `fallback` does not make this
-distinction, which is one more reason to prefer `failover` for paged reads.)
-
-Payload-carrying errors are handled by `failover` itself, ahead of `shouldThrow`, and are not
-overridable: this library produced them and knows their semantics better than a caller-supplied
-predicate can. `shouldThrow` governs everything else — pass one to override:
+user-rejection errors propagate immediately instead of triggering fallover — pass a custom
+`shouldThrow` to override:
 
 ```ts
 import { defaultShouldThrow, failover } from '@morpho-org/viem-dlc/transports'
@@ -553,59 +546,30 @@ tell a capped out-of-gas from a plain `revert(0, 0)` — both yield empty return
 "consumed ≈ the cap **and** empty returndata" as gas-driven. Same heuristic, and same imprecision,
 as the envelope's own 63/64 check.
 
-One asymmetry worth knowing: an element reported unservable via out-of-gas is unservable *under
-this node's gas cap*, and a provider with a higher cap could serve it. A skip, by contrast, is a
-property of the element.
-
-### `call2`
-
-Settled counterpart to viem's `call` for paged deployless reads. Where `call` throws if
-any element is unservable, `call2` returns the elements that *were* served alongside the
-indices that were not.
+**What the caller sees.** The chunked calls aggregate into a single page over the whole input, so
+the response keeps the shape the abi declares — `readContract`, `decodeFunctionResult`, and
+contract instances all work unchanged:
 
 ```ts
-import { decodeAbiParameters, parseAbiItem } from 'viem'
-import { call2, policy } from '@morpho-org/viem-dlc/actions'
-
-const pageAbi = parseAbiItem(
-  'function page(address[] input) view returns (uint256[] results, uint256[] skipped)'
-)
-
-const { data, missing } = await call2(client, {
+const [results, skipped] = await readContract(client, {
+  abi: [pageAbi],
+  functionName: 'page',
+  args: [inputs],
   factory,
   factoryData,
-  to,
-  data: encodeFunctionData({ abi: [pageAbi], functionName: 'page', args: [inputs] }),
+  address: to,
   stateOverride: [policy({ abi: pageAbi, paged: true })],
 })
-
-const [served] = decodeAbiParameters([{ type: 'uint256[]' }], data)
-// `served` is the complement of `missing`, in input order.
 ```
 
-`(U[] results, uint256[] skipped)` is the lens→transport format only. Both `call` and `call2`
-reassemble the pages and hand back a dense `U[]`, so paging never reaches the caller — which
-also means you decode with `decodeAbiParameters([resultsType], data)`, not
-`decodeFunctionResult` against the two-output fragment.
+`skipped` is rebased onto the caller's input, and expands across deduplicated inputs, so its
+indices always address the array you passed. A partial result is a **successful response**, not a
+throw — check `skipped` if you need every element, and raise your own error if a gap is
+unacceptable.
 
-- **`data`** — ABI-encoded `U[]` of every element that was served, in input order, with
-  the `missing` indices omitted; `undefined` exactly where viem's `call` would return it.
-  Decoding is left to the caller so the transport's byte-level hot path stays intact.
-- **`missing`** — ascending indices into the input array that could not be served: the
-  lens declined them, or a single-element retry ran the frame out of gas. Empty on full
-  success, so there is only one shape to handle.
-
-There is one transport path, always settled internally, surfaced two ways. `call` stays
-strict — it throws a `DeploylessPartialResultError` carrying the same `data`/`missing`,
-which `call2` simply catches. Use `call` when a dense array is a precondition and `call2`
-when partial coverage is acceptable; `call`'s dense contract is why these are two actions
-rather than one that sometimes returns sparse results.
-
-Only unservable *elements* are settled. Transport errors, protocol violations, and
-ordinary lens reverts still throw from both. Results fetched before the failure are
-already committed to the cache either way, and `failover` treats a partial result as an
-answer rather than a branch failure, so it will not re-run the whole request against the
-next provider.
+Two things `skipped` deliberately merges: elements the lens declined, and elements that exhausted
+the frame even when retried alone. The second depends on the node's `eth_call` gas cap, so a
+provider with a higher cap might serve them, whereas a decline is a property of the element.
 
 ### `getDeploymentBlockNumber`
 

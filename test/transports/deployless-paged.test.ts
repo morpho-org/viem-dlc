@@ -2,6 +2,7 @@ import type { Address, Hex } from "viem";
 import {
   type AbiFunction,
   concat,
+  createPublicClient,
   custom,
   decodeAbiParameters,
   decodeFunctionResult,
@@ -13,14 +14,15 @@ import {
   toFunctionSelector,
   toHex,
 } from "viem";
+import { readContract } from "viem/actions";
 import { describe, expect, it, vi } from "vitest";
 
+import { policy } from "../../src/actions/call.js";
 import { withLogging } from "../../src/observability.js";
 import { deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
 import { OK_SENTINEL, OOG_SENTINEL, unwrapDeploylessFactoryCall } from "../../src/utils/deployless/codec.envelope.js";
-import { isDeploylessPartialResultError } from "../../src/utils/deployless/errors.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 
 type EthCallRequest = EIP1193Parameters<import("viem").PublicRpcSchema, "eth_call">;
@@ -121,6 +123,12 @@ function decodeResults(result: unknown): bigint[] {
   return [...(values as readonly bigint[])];
 }
 
+/** Decodes the `(U[] results, uint256[] skipped)` tuple a paged policy responds with. */
+function decodePage(result: unknown): { results: bigint[]; skipped: number[] } {
+  const [results, skipped] = decodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], result as Hex);
+  return { results: [...(results as readonly bigint[])], skipped: (skipped as readonly bigint[]).map(Number) };
+}
+
 /** Every element index each upstream call was asked about, one entry per call. */
 function requestedIndices(requestFn: ReturnType<typeof vi.fn>): number[][] {
   return requestFn.mock.calls.map((call) =>
@@ -139,24 +147,23 @@ describe("deployless (paged)", () => {
     expect(requestFn).toHaveBeenCalledOnce();
   });
 
-  it("hands back a dense U[], not the lens's two-array tuple", async () => {
-    const requestFn = mockPagedLens([]);
+  it("responds in the shape the lens abi declares, so viem can decode it", async () => {
+    const requestFn = mockPagedLens({});
     const transport = createTransport(requestFn);
 
     const result = await transport.request(createRequest([1, 2].map(addr)));
 
-    // Paging is a lens→transport concern; callers see what an unpaged lens would have returned.
-    expect(() => decodeFunctionResult({ abi: [pageAbi], functionName: "page", data: result as Hex })).toThrow();
-    expect(decodeAbiParameters([{ type: "uint256[]" }], result as Hex)[0]).toEqual([1n, 2n]);
+    // The chunked calls aggregate into one page over the caller's whole input.
+    expect(decodeFunctionResult({ abi: [pageAbi], functionName: "page", data: result as Hex })).toEqual([[1n, 2n], []]);
   });
 
-  it("returns an empty array for empty input without an upstream call", async () => {
-    const requestFn = mockPagedLens([]);
+  it("returns an empty page for empty input without an upstream call", async () => {
+    const requestFn = mockPagedLens({});
     const transport = createTransport(requestFn);
 
     const result = await transport.request(createRequest([]));
 
-    expect(decodeAbiParameters([{ type: "uint256[]" }], result as Hex)[0]).toEqual([]);
+    expect(decodePage(result)).toEqual({ results: [], skipped: [] });
     expect(requestFn).not.toHaveBeenCalled();
   });
 
@@ -176,11 +183,9 @@ describe("deployless (paged)", () => {
     const requestFn = mockPagedLens({ pageSize: 3, decline: [2] });
     const transport = createTransport(requestFn);
 
-    const error = await transport.request(createRequest([1, 2, 3, 4].map(addr))).catch((e) => e);
+    const page = decodePage(await transport.request(createRequest([1, 2, 3, 4].map(addr))));
 
-    expect(isDeploylessPartialResultError(error)).toBe(true);
-    expect(error.missing).toEqual([1]);
-    expect(decodeResults(error.data)).toEqual([1n, 3n, 4n]);
+    expect(page).toEqual({ results: [1n, 3n, 4n], skipped: [1] });
     const asked = requestedIndices(requestFn).flat();
     expect(asked.filter((v) => v === 2)).toHaveLength(1);
     expect(asked).toContain(4);
@@ -190,20 +195,18 @@ describe("deployless (paged)", () => {
     const requestFn = mockPagedLens({ fatal: [3] });
     const transport = createTransport(requestFn);
 
-    const error = await transport.request(createRequest([1, 2, 3, 4].map(addr))).catch((e) => e);
+    const page = decodePage(await transport.request(createRequest([1, 2, 3, 4].map(addr))));
 
-    expect(isDeploylessPartialResultError(error)).toBe(true);
-    expect(error.missing).toEqual([2]);
-    expect(decodeResults(error.data)).toEqual([1n, 2n, 4n]);
+    expect(page).toEqual({ results: [1n, 2n, 4n], skipped: [2] });
   });
 
   it("reports every unservable element, in ascending order", async () => {
     const requestFn = mockPagedLens({ decline: [2], fatal: [4] });
     const transport = createTransport(requestFn);
 
-    const error = await transport.request(createRequest([1, 2, 3, 4].map(addr))).catch((e) => e);
+    const page = decodePage(await transport.request(createRequest([1, 2, 3, 4].map(addr))));
 
-    expect(error.missing).toEqual([1, 3]);
+    expect(page).toEqual({ results: [1n, 3n], skipped: [1, 3] });
   });
 
   it("stamps paged continuations and unservable elements onto the wide event", async () => {
@@ -213,12 +216,14 @@ describe("deployless (paged)", () => {
     const transport = createTransport(requestFn);
 
     const { logger, events } = createStubLogger();
-    await withLogging(() => transport.request(createRequest([1, 2, 3, 4, 5].map(addr))), { logger }).catch(() => {});
+    const result = await withLogging(() => transport.request(createRequest([1, 2, 3, 4, 5].map(addr))), { logger });
 
     expect(events).toHaveLength(1);
     const { context } = events[0]!;
     const field = (name: string) => findDotted(context, "viem-dlc-deployless", `eth_call.${name}`);
-    expect(context.status).toBe("error");
+    // An unservable element is reported in `skipped`, not raised — the request still succeeds.
+    expect(context.status).toBe("ok");
+    expect(decodePage(result).skipped).toEqual([2]);
     expect(field("elements_missing")).toBe(1);
     expect(field("pages_continued")).toBe(1);
     expect(field("pages_waves")).toBe(2);
@@ -247,7 +252,28 @@ describe("deployless (paged)", () => {
       const error = await transport.request(createRequest([addr(1), addr(2)])).catch((e) => e);
 
       expect(error.message).toMatch(expected);
-      expect(isDeploylessPartialResultError(error)).toBe(false);
     });
+  });
+});
+
+describe("viem interop", () => {
+  it("is readable through readContract, which decodes against the lens abi", async () => {
+    const requestFn = mockPagedLens({ decline: [2] });
+    const client = createPublicClient({
+      transport: deployless(custom({ request: requestFn as never }), { gasLimit: 30_000_000 }),
+    });
+
+    const [results, skipped] = await readContract(client, {
+      abi: [pageAbi],
+      functionName: "page",
+      args: [[1, 2, 3].map(addr)],
+      factory: FACTORY,
+      factoryData: FACTORY_DATA,
+      address: TARGET_TO,
+      stateOverride: [policy({ abi: pageAbi, paged: true })],
+    } as never);
+
+    expect(results).toEqual([1n, 3n]);
+    expect(skipped).toEqual([1n]);
   });
 });

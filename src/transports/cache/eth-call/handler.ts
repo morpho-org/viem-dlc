@@ -7,9 +7,9 @@ import { cyrb64Hash } from "../../../utils/hash.js";
 import {
   arrayToHex,
   calldataToArray,
-  DeploylessPartialResultError,
   factorisedFactoryCall,
-  isDeploylessPartialResultError,
+  pageToHex,
+  type ResolvedArrayFunction,
   resolveArrayFunction,
   unwrapDeploylessFactoryCall,
 } from "../../../utils/index.js";
@@ -61,7 +61,7 @@ export async function handleEthCall(
   facet?.set({ input_elements: inputElements.length });
 
   if (inputElements.length === 0) {
-    return arrayToHex(solidity.outputLayout, []);
+    return encodeResponse(solidity, [], []);
   }
 
   const blobKey = keychain.blobKey(chainId, req);
@@ -70,7 +70,7 @@ export async function handleEthCall(
   // No TTL → caching disabled. Still honor `batch` by splitting the call, but skip
   // all cache reads, writes, coalescing, and dedup.
   if (!blobKey || ttl === undefined) {
-    const outputs = await factorisedFactoryCall(requestFn, {
+    const { outputs, missing } = await factorisedFactoryCall(requestFn, {
       target,
       elements: inputElements,
       solidity,
@@ -79,7 +79,7 @@ export async function handleEthCall(
       restOfEthCallParams,
       facet,
     });
-    return arrayToHex(solidity.outputLayout, outputs);
+    return encodeResponse(solidity, outputs, missing);
   }
 
   facet?.set({ blob_key: blobKey, ttl_ms: ttl, delta_ms: delta });
@@ -124,6 +124,7 @@ export async function handleEthCall(
     );
 
     const hits = new Array<Hex>(inputElements.length);
+    const unservable: number[] = [];
     const misses: { entryKey: string; indices: number[]; element: Hex }[] = [];
     const now = Date.now();
 
@@ -158,7 +159,7 @@ export async function handleEthCall(
       const fetchedAt = Date.now();
 
       try {
-        await factorisedFactoryCall(requestFn, {
+        const { missing } = await factorisedFactoryCall(requestFn, {
           target,
           elements: misses.map((m) => m.element),
           solidity,
@@ -177,24 +178,11 @@ export async function handleEthCall(
             );
           },
         });
-      } catch (e) {
-        // Rebase onto the caller's input: `missing` indexes deduped misses, `data` omits hits.
-        if (isDeploylessPartialResultError(e)) {
-          const missing = e.missing.flatMap((i) => misses[i]!.indices).sort((a, b) => a - b);
-          // Deduping means one unservable entry can stand for several caller inputs; restamp
-          // so the field matches the `missing` carried by the error we actually throw.
-          facet?.set({ elements_missing: missing.length });
-          throw new DeploylessPartialResultError({
-            // Sparse exactly at the missing indices, and `filter` skips holes.
-            data: arrayToHex(
-              solidity.outputLayout,
-              hits.filter((o) => o !== undefined),
-            ),
-            missing,
-            total: inputElements.length,
-          });
-        }
-        throw e;
+        // `missing` indexes deduped misses; callers expect indices into their own input array.
+        for (const i of missing) unservable.push(...misses[i]!.indices);
+        // Deduping means one unservable entry can stand for several caller inputs; restamp so
+        // the field matches the `skipped` array the response actually carries.
+        facet?.set({ elements_missing: unservable.length });
       } finally {
         const t4 = performance.now();
         await ndjson.flush();
@@ -206,7 +194,11 @@ export async function handleEthCall(
                                 FAN OUT
     //////////////////////////////////////////////////////////////*/
 
-    const result = arrayToHex(solidity.outputLayout, hits);
+    const result = encodeResponse(
+      solidity,
+      hits,
+      unservable.sort((a, b) => a - b),
+    );
 
     const leaderHash = cyrb64Hash(JSON.stringify(req.params));
     const collected = collectFollowers();
@@ -218,4 +210,20 @@ export async function handleEthCall(
       followers: matching.map((f) => ({ slot: f.slot, action: "resolve" as const, result })),
     };
   });
+}
+
+/**
+ * Encodes the aggregated response in the shape the policy's abi declares: a bare `U[]`, or for a
+ * paged lens the `(U[] results, uint256[] skipped)` tuple, with `outputs` sparse at every skipped
+ * index. `skipped` must already be expressed against the caller's input array.
+ */
+function encodeResponse(
+  solidity: ResolvedArrayFunction,
+  outputs: readonly (Hex | undefined)[],
+  skipped: readonly number[],
+): Hex {
+  const results = outputs.filter((o) => o !== undefined);
+  return solidity.paged
+    ? pageToHex(solidity.outputLayout, { results, skipped })
+    : arrayToHex(solidity.outputLayout, results);
 }
