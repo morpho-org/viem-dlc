@@ -217,16 +217,18 @@ describe("deployless", () => {
       const { context } = events[0]!;
       const field = (name: string) => findDotted(context, "viem-dlc-deployless", `eth_call.${name}`);
       expect(field("input_elements")).toBe(5);
+      expect(field("elements_requested")).toBe(5);
       expect(field("elements_fetched")).toBe(5);
       expect(field("nominal_batches")).toBeGreaterThan(1);
       expect(field("splits_count")).toBe(0);
       expect(field("splits_size")).toBe(0);
       expect(field("splits_timeout")).toBe(0);
       expect(field("splits_max_depth")).toBe(0);
-      // Non-paged lens: one wave, no continuations, nothing declined.
-      expect(field("pages_waves")).toBe(1);
-      expect(field("pages_continued")).toBe(0);
-      expect(field("elements_missing")).toBe(0);
+      // Non-paged lens: the paged-only fields are absent, which is how a consumer tells
+      // a paged run from an ordinary one.
+      expect(field("pages_waves")).toBeUndefined();
+      expect(field("pages_continued")).toBeUndefined();
+      expect(field("elements_missing")).toBeUndefined();
 
       // One packed-size sample per batch, none exceeding the budget they were packed under.
       expect(field("batch_bytes.count")).toBe(field("nominal_batches"));

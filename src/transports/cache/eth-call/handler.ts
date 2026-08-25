@@ -149,9 +149,9 @@ export async function handleEthCall(
       misses.push({ entryKey, ...info });
     }
 
-    // `factorisedFactoryCall` stamps the same value when it runs; this records the
-    // zero-misses (full cache hit) case, where it doesn't.
-    facet?.set({ elements_fetched: misses.length });
+    // `factorisedFactoryCall` overwrites both when it runs; these cover the zero-misses
+    // (full cache hit) case, where it doesn't run at all.
+    facet?.set({ elements_requested: misses.length, elements_fetched: 0 });
 
     // Fetch misses
     if (misses.length > 0) {
@@ -181,6 +181,9 @@ export async function handleEthCall(
         // Rebase onto the caller's input: `missing` indexes deduped misses, `data` omits hits.
         if (isDeploylessPartialResultError(e)) {
           const missing = e.missing.flatMap((i) => misses[i]!.indices).sort((a, b) => a - b);
+          // Deduping means one unservable entry can stand for several caller inputs; restamp
+          // so the field matches the `missing` carried by the error we actually throw.
+          facet?.set({ elements_missing: missing.length });
           throw new DeploylessPartialResultError({
             // Sparse exactly at the missing indices, and `filter` skips holes.
             data: arrayToHex(
@@ -195,7 +198,7 @@ export async function handleEthCall(
       } finally {
         const t4 = performance.now();
         await ndjson.flush();
-        facet?.set({ fetch_cache_ms: t1 - t0, read_cache_ms: t3 - t2, write_cache_ms: performance.now() - t4 });
+        facet?.set({ fetch_cache_ms: t1 - t0, read_cache_ms: t3 - t2, flush_cache_ms: performance.now() - t4 });
       }
     }
 

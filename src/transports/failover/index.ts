@@ -26,8 +26,10 @@ export interface FailoverConfig {
  *
  * Each request tries `transports[0].request` first; on an error that is not
  * classified as "should throw," tries `transports[1].request`, and so on. If
- * every branch fails, the last error is rethrown. Halving for range/size errors
- * should be handled inside each branch — `failover` only sees errors that escape.
+ * every branch fails, the last error is rethrown. Errors carrying a partial payload are
+ * terminal and propagate immediately, ahead of and not overridable by `shouldThrow`, since
+ * falling over would discard what was already fetched. Halving for range/size errors should
+ * be handled inside each branch — `failover` only sees errors that escape.
  *
  * @example
  * const transport = failover([

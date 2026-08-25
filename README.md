@@ -92,12 +92,14 @@ const result = await call(client, {
 If `policy.cache` is present, `deployless(...)` ignores it and still behaves as split-only mode.
 Use `cache(...)` when you want the same marked calls to populate and read from a backing store.
 
-With observability enabled, batching reports `nominal_batches` and `batch_bytes` (realized
-packing vs. `batchSize`), and `splits_*` for chunks bisected after a size or timeout error.
-Paged lenses are counted separately, since stopping early is normal rather than a failure:
-`pages_continued` (chunks re-requested from where the lens stopped), `pages_waves`, and
-`elements_missing` (elements the lens declined, the same set carried on
-`DeploylessPartialResultError.missing`).
+With observability enabled, batching reports `elements_requested` / `elements_fetched`,
+`nominal_batches`, `batch_bytes` (sizes of the initial packing, so bisected and continued
+chunks are not resampled), and `splits_*` for chunks bisected after a size or timeout error.
+Paged lenses get their own fields, since stopping early is normal rather than a failure —
+and only paged calls emit them, so their presence marks a paged run: `pages_continued`
+(responses that stopped early, each of which may be repacked into several requests),
+`pages_waves`, and `elements_missing` (elements the lens declined, plus any single element
+that exhausted the frame — the same count carried on `DeploylessPartialResultError.missing`).
 
 ### `cache`
 

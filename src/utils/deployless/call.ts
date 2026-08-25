@@ -122,10 +122,12 @@ export async function factorisedFactoryCall(
   });
   const outputs = new Array<Hex>(elements.length);
 
-  facet?.set({ elements_fetched: elements.length, nominal_batches: ranges.length });
-  // Packed size of each batch, to compare realized utilization against `batchSize`.
-  // Guarded rather than `facet?.stat(...)` so unobserved calls skip re-measuring.
+  facet?.set({ elements_requested: elements.length, nominal_batches: ranges.length });
+  // Sizes of the *initial* packing, to compare realized utilization against `batchSize`.
+  // Bisected children and paged continuations are not resampled. Guarded rather than
+  // `facet?.stat(...)` so unobserved calls skip re-measuring.
   if (facet) for (const [start, end] of ranges) facet.stat("batch_bytes", measureBytes(start, end));
+  let fetched = 0;
   const splits = { count: 0, size: 0, timeout: 0, maxDepth: 0 };
   // Paged lenses stop early instead of failing, so continuations are counted apart from
   // `splits_*`: those mean a chunk was too big, these mean the lens served what it could.
@@ -133,6 +135,7 @@ export async function factorisedFactoryCall(
 
   const commit = async (entries: readonly ResolvedElement[]) => {
     for (const { index, output } of entries) outputs[index] = output;
+    fetched += entries.length;
     if (entries.length > 0) await onResolved?.(entries);
   };
 
@@ -221,14 +224,20 @@ export async function factorisedFactoryCall(
     }
   } finally {
     facet?.set({
+      elements_fetched: fetched,
       splits_count: splits.count,
       splits_size: splits.size,
       splits_timeout: splits.timeout,
       splits_max_depth: splits.maxDepth,
-      pages_continued: pages.continued,
-      pages_waves: pages.waves,
-      elements_missing: missing.length,
     });
+    // Paged-only, so their presence is what distinguishes a paged run from an ordinary one.
+    if (solidity.paged) {
+      facet?.set({
+        pages_continued: pages.continued,
+        pages_waves: pages.waves,
+        elements_missing: missing.length,
+      });
+    }
   }
 
   if (missing.length > 0) {
