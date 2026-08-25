@@ -541,7 +541,7 @@ describe("handleEthCall", () => {
       });
     }
 
-    it("caches the elements it did fetch even though the call ends up failing", async () => {
+    it("caches the elements it fetched even when the response skips an element", async () => {
       const store = new MemoryStore();
       const req = pagedRequest([addr(1), addr(2), addr(3)]);
 
@@ -613,7 +613,7 @@ describe("handleEthCall", () => {
       expect(keys).toEqual([3, 4].map((n) => entryKeyFor(pad(toHex(n), { size: 32 }), pageAbi)));
     });
 
-    it("orders `data` correctly when warm hits, fresh misses, and skips interleave", async () => {
+    it("orders the response correctly when warm hits, fresh misses, and skips interleave", async () => {
       const store = new MemoryStore();
       const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
       const req = pagedRequest(addrs);
