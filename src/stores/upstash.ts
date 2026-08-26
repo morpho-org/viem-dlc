@@ -1,226 +1,438 @@
 /// <reference types="node" />
-import { randomBytes, randomUUID } from "crypto";
+import { randomUUID } from "crypto";
 
 import { Redis, type RedisConfigNodejs } from "@upstash/redis";
 
 import type { Logger } from "../observability.js";
 import type { Store } from "../types.js";
 import { createInFlightBarrier } from "../utils/in-flight.js";
-import { shardString } from "../utils/strings.js";
 
 import { HierarchicalStore } from "./hierarchical.js";
 import { LruStore } from "./lru.js";
 import { ThrottledStore } from "./throttled.js";
+import {
+  appendCommand,
+  type Command,
+  type CommandResult,
+  decodeContinuationShard,
+  decodeHeadShard,
+  encodeShards,
+  isNoScript,
+  measureCommand,
+  measurePipeline,
+  PUBLISH_SCRIPT,
+  PUBLISH_SHA,
+  packPipelines,
+  planShards,
+  SCRIPT_OUTCOMES,
+  type ScriptResult,
+  type ShardHead,
+  type Slot,
+  toSlot,
+  WRITE_DIRECT_SCRIPT,
+  WRITE_DIRECT_SHA,
+} from "./upstash.internal.js";
 
 export type UpstashStoreOptions = {
+  /**
+   * Bound on the exact serialized body of every HTTP request the store issues. A request that cannot
+   * be split under it (a single shard plus its key and framing) is sent anyway and fails as a logged
+   * per-key error, so keep this comfortably above `shardBytes`.
+   */
   maxRequestBytes: number;
+  /**
+   * Provisions HTTP responses: each read request asks for at most `floor(maxResponseBytes / shardBytes)`
+   * list elements. JSON framing is not modeled, so set this below the provider's limit with headroom.
+   * Default: 10 MiB.
+   */
+  maxResponseBytes?: number;
+  /** Bound on each stored list element, header included. Default: 64 KiB. */
+  shardBytes?: number;
+  /** Seconds. Omit for persistent values. */
   ttl?: number;
   redis?: Omit<RedisConfigNodejs, "automaticDeserialization">;
   /** Optional logger for non-request-bound emissions (e.g. background I/O errors). */
   logger?: Logger;
 };
 
-class WriteId {
-  static readonly BYTES_OF_RANDOMNESS = 8;
-  static readonly LENGTH = 1 + WriteId.BYTES_OF_RANDOMNESS * 2; // hex chars + separator
-  static readonly SEPARATOR = "|";
+/*//////////////////////////////////////////////////////////////
+                              LIMITS
+//////////////////////////////////////////////////////////////*/
 
-  readonly id: string;
+const DEFAULT_SHARD_BYTES = 64 * 1024;
+const DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+/** Writer-liveness bound on staging keys; refreshed on every push. */
+const STAGING_TTL_SEC = 60;
+const READ_ATTEMPTS = 2;
 
-  constructor() {
-    this.id = randomBytes(WriteId.BYTES_OF_RANDOMNESS).toString("hex");
-  }
+/*//////////////////////////////////////////////////////////////
+                               STORE
+//////////////////////////////////////////////////////////////*/
 
-  pack(shard: string): string {
-    return `${this.id}${WriteId.SEPARATOR}${shard}`;
-  }
-
-  static unpack(shardWithId: string): [string, string] {
-    const re = new RegExp(`^[0-9A-Fa-f]{${WriteId.LENGTH - 1}}\\${WriteId.SEPARATOR}`);
-    if (!re.test(shardWithId)) {
-      return ["0".repeat(WriteId.LENGTH - 1), shardWithId]; // legacy
-    }
-    const sepIdx = shardWithId.indexOf(WriteId.SEPARATOR);
-    return [shardWithId.slice(0, sepIdx), shardWithId.slice(sepIdx + 1)];
-  }
-}
-
-/** Lua script: Returns {length, firstShardOrNil} to avoid 1 roundtrip. */
-const SMART_READ_SCRIPT = `
-local len = redis.call('LLEN', KEYS[1])
-if len == 0 then
-  return {0, nil}
-else
-  return {len, redis.call('LINDEX', KEYS[1], 0)}
-end
-`;
+type StagedWrite = { batches: Command[][]; publish: Command };
 
 /**
  * A store that uses Upstash Redis for robust storage and retrieval of large, blob-like data.
  *
- * - Stores all strings as arrays, sharding into multiple indices when they grow too large
- * - Robust under concurrency -- writes are atomic, and reads fail safely if non-atomicity is detected
- * - Respects\* `maxRequestBytes` for HTTP requests and responses
+ * Every value is a Redis LIST of ≤ `shardBytes` self-indexed shards (`ShardHead`). Small
+ * values are written atomically by `WRITE_DIRECT_SCRIPT`, many per HTTP request; large
+ * values stage at a per-writer `tmp:<key>:<uuid>` list (60 s TTL, refreshed per push) and go
+ * live through `PUBLISH_SCRIPT`. Readers verify wid-uniformity and index contiguity, so a
+ * reader observes either the old value or one complete new one — never a splice.
  *
- * \* _Measures values only. Does not include Redis commands, headers, and Upstash specifics,
- *    so you should configure `maxRequestBytes` with some headroom (~1kb)_
+ * Reads and writes are best-effort and never throw; a torn read retries, then reports a miss.
  */
 export class UpstashStore implements Store {
   private readonly options: UpstashStoreOptions;
   private readonly redis: Redis;
   private readonly inFlight = createInFlightBarrier();
+  private readonly shardBytes: number;
+  private readonly maxRequestBytes: number;
+  /** List elements provisioned per read request; also the stage-2 page length. */
+  private readonly elementsPerResponse: number;
 
   constructor(options: UpstashStoreOptions) {
-    if (!Number.isSafeInteger(options.maxRequestBytes) || options.maxRequestBytes! <= WriteId.LENGTH) {
-      const err = new Error(
-        `maxRequestBytes must be a safe integer > ${WriteId.LENGTH} (got ${options.maxRequestBytes})`,
-      );
+    const fail = (message: string): never => {
+      const err = new Error(`[UpstashStore] ${message}`);
       options.logger?.withMetadata({ class: UpstashStore.name, method: "constructor" }).withError(err).error();
       throw err;
-    }
+    };
 
-    if (options.ttl !== undefined && (!Number.isSafeInteger(options.ttl) || options.ttl! <= 0)) {
-      const err = new Error(`ttl must be a positive safe integer (got ${options.ttl})`);
-      options.logger?.withMetadata({ class: UpstashStore.name, method: "constructor" }).withError(err).error();
-      throw err;
+    const shardBytes = options.shardBytes ?? DEFAULT_SHARD_BYTES;
+    const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+    const elementsPerResponse = Math.floor(maxResponseBytes / shardBytes);
+
+    if (!Number.isSafeInteger(shardBytes) || planShards(0, shardBytes) === null) {
+      fail(`shardBytes must be a safe integer large enough to hold a shard header (got ${options.shardBytes})`);
+    }
+    if (!Number.isSafeInteger(options.maxRequestBytes) || options.maxRequestBytes <= 0) {
+      fail(`maxRequestBytes must be a positive safe integer (got ${options.maxRequestBytes})`);
+    }
+    if (!Number.isSafeInteger(maxResponseBytes) || elementsPerResponse < 1) {
+      fail(`maxResponseBytes must be a safe integer >= shardBytes (got ${options.maxResponseBytes})`);
+    }
+    if (options.ttl !== undefined && (!Number.isSafeInteger(options.ttl) || options.ttl <= 0)) {
+      fail(`ttl must be a positive safe integer (got ${options.ttl})`);
     }
 
     this.options = options;
-    this.redis = options.redis
-      ? new Redis({ ...options.redis, automaticDeserialization: false, responseEncoding: false })
-      : Redis.fromEnv({ automaticDeserialization: false, responseEncoding: false });
+    this.shardBytes = shardBytes;
+    this.maxRequestBytes = options.maxRequestBytes;
+    this.elementsPerResponse = elementsPerResponse;
+
+    const clientOptions = {
+      automaticDeserialization: false,
+      responseEncoding: false,
+      enableAutoPipelining: false,
+    } as const;
+    this.redis = options.redis ? new Redis({ ...options.redis, ...clientOptions }) : Redis.fromEnv(clientOptions);
   }
 
-  private async _get(key: string): Promise<{ value: Buffer[] | null; motivatesRetry: boolean }> {
-    // Read array length and first shard in one request. If length is 0, shard is null.
-    const [len, shard0WithId] = await this.redis.evalRo<[], [number, string | null]>(SMART_READ_SCRIPT, [key], []);
-
-    // If length is 0 / shard is null (always co-occur but both are here for type checker), key doesn't exist.
-    if (len === 0 || shard0WithId === null) {
-      return { value: null, motivatesRetry: false };
-    }
-
-    const [writeId0, shard0] = WriteId.unpack(shard0WithId);
-
-    // Fetch remaining shards individually. This is necessary since shards are near request/response size limit.
-    let result = shard0;
-    for (let i = 1; i < len; i++) {
-      // NOTE: We don't `Promise.all` these because we expect values to be large enough to be bandwidth-constrained.
-      const shardWithId = (await this.redis.lindex(key, i)) as string | null;
-
-      // If shard is null, array must've been shortened after our initial read (non-atomic inconsistency).
-      if (shardWithId === null) {
-        this.options.logger
-          ?.withMetadata({ class: UpstashStore.name, method: "_get", key })
-          .info("non-atomic inconsistency: skewed length");
-        return { value: null, motivatesRetry: true };
-      }
-
-      const [writeId, shard] = WriteId.unpack(shardWithId);
-
-      // If writeId doesn't match, array must've been overwritten after our initial read (non-atomic inconsistency).
-      if (writeId !== writeId0) {
-        this.options.logger
-          ?.withMetadata({ class: UpstashStore.name, method: "_get", key })
-          .info("non-atomic inconsistency: skewed shard");
-        return { value: null, motivatesRetry: true };
-      }
-
-      result += shard; // appending like this lets V8 engine defer memory copy until `result` is consumed
-    }
-
-    this.options.logger?.metadataOnly({ class: UpstashStore.name, method: "_get", key, len });
-
-    return { value: [Buffer.from(result, "base64")], motivatesRetry: false };
+  private log(method: string, metadata: Record<string, unknown> = {}) {
+    return this.options.logger?.withMetadata({ class: UpstashStore.name, method, ...metadata });
   }
 
-  async get(key: string, maxRetries = 2): Promise<Buffer[] | null> {
-    // Allow retries in cases of network error or non-atomic inconsistency.
-    for (let i = 0; i < maxRetries; i++) {
+  /*//////////////////////////////////////////////////////////////
+                              TRANSPORT
+  //////////////////////////////////////////////////////////////*/
+
+  /** One HTTP request. Per-command errors are returned in their slot, never thrown. */
+  private async execPipeline(commands: Command[], { atomic = false } = {}): Promise<CommandResult[]> {
+    const pipeline = atomic ? this.redis.multi() : this.redis.pipeline();
+    for (const command of commands) appendCommand(pipeline, command);
+    return (await pipeline.exec({ keepErrors: true })) as CommandResult[];
+  }
+
+  /** Runs `EVALSHA` commands for `script`, reloading it once and reissuing only the `NOSCRIPT` slots. */
+  private async execScript(commands: Command[], script: string): Promise<CommandResult[]> {
+    const results = await this.execPipeline(commands);
+    const missing = results.flatMap((r, i) => (isNoScript(r.error) ? [i] : []));
+    if (missing.length === 0) return results;
+
+    await this.redis.scriptLoad(script);
+    const reissued = await this.execPipeline(missing.map((i) => commands[i]!));
+    missing.forEach((i, j) => {
+      results[i] = reissued[j]!;
+    });
+    return results;
+  }
+
+  /*//////////////////////////////////////////////////////////////
+                                 READ
+  //////////////////////////////////////////////////////////////*/
+
+  async mget(keys: readonly string[]): Promise<(Buffer[] | null)[]> {
+    const values = new Map<string, Buffer[] | null>();
+
+    let pending = [...new Set(keys)];
+    for (let attempt = 0; attempt < READ_ATTEMPTS && pending.length > 0; attempt++) {
       try {
-        const { value, motivatesRetry } = await this._get(key);
-        if (!motivatesRetry) {
-          return value;
+        pending = await this._mget(pending, values);
+      } catch (err) {
+        this.log("mget", { attempt })?.withError(err).warn("read failed");
+        pending = pending.filter((key) => !values.has(key));
+      }
+    }
+
+    for (const key of pending) {
+      this.log("mget", { key })?.warn("exhausted retries");
+    }
+
+    return keys.map((key) => values.get(key) ?? null);
+  }
+
+  /**
+   * One read attempt. Resolved keys land in `values`; keys whose list changed underneath
+   * (or whose request failed) are returned for retry.
+   */
+  private async _mget(keys: string[], values: Map<string, Buffer[] | null>): Promise<string[]> {
+    const retry = new Set<string>();
+
+    type PartialRead = { head: ShardHead; payloads: string[] };
+    const partialReads = new Map<string, PartialRead>();
+
+    const headSlots = keys.map((key) => toSlot(["lrange", key, 0, 0], key, 1));
+    for (const pipeline of packPipelines(headSlots, this.maxRequestBytes, this.elementsPerResponse)) {
+      const results = await this.execPipeline(pipeline.map((slot) => slot.command));
+
+      pipeline.forEach(({ tag: key }, i) => {
+        const { result, error } = results[i]!;
+        if (error !== undefined) {
+          this.log("mget", { key, error })?.warn("lrange failed");
+          retry.add(key);
+          return;
         }
-      } catch {
-        /* empty */
+
+        const elements = result as string[];
+        if (elements.length === 0) {
+          values.set(key, null);
+          return;
+        }
+
+        const head = decodeHeadShard(elements[0]!);
+        if (head === null) {
+          this.log("mget", { key })?.info("unrecognized head; treating as miss");
+          values.set(key, null);
+        } else if (head.k === 1) {
+          values.set(key, [Buffer.from(head.payload, "base64")]);
+        } else {
+          partialReads.set(key, { head, payloads: [head.payload] });
+        }
+      });
+    }
+
+    type Page = { key: string; from: number; to: number };
+    const pageSlots: Slot<Page>[] = [];
+    for (const [key, { head }] of partialReads) {
+      for (let from = 1; from < head.k; from += this.elementsPerResponse) {
+        const to = Math.min(head.k - 1, from + this.elementsPerResponse - 1);
+        pageSlots.push(toSlot(["lrange", key, from, to], { key, from, to }, to - from + 1));
       }
     }
 
-    this.options?.logger?.withMetadata({ class: UpstashStore.name, method: "get", key }).warn("exhausted retries");
-    return null;
+    for (const pipeline of packPipelines(pageSlots, this.maxRequestBytes, this.elementsPerResponse)) {
+      const results = await this.execPipeline(pipeline.map((slot) => slot.command));
+
+      pipeline.forEach(({ tag: { key, from, to } }, i) => {
+        if (retry.has(key)) return;
+
+        const { result, error } = results[i]!;
+        const { head, payloads } = partialReads.get(key)!;
+        const elements = error === undefined ? (result as string[]) : [];
+
+        let intact = elements.length === to - from + 1;
+        for (let j = 0; intact && j < elements.length; j++) {
+          const payload = decodeContinuationShard(elements[j]!, head, from + j);
+          if (payload === null) intact = false;
+          else payloads.push(payload);
+        }
+
+        if (!intact) {
+          this.log("mget", { key, from, to, error })?.info("torn read; list replaced mid-read");
+          retry.add(key);
+        }
+      });
+    }
+
+    for (const [key, { payloads }] of partialReads) {
+      if (!retry.has(key)) values.set(key, [Buffer.from(payloads.join(""), "base64")]);
+    }
+
+    return [...retry];
   }
 
-  private async _set(key: string, value: Buffer[]) {
-    // Split `value` into shard(s), each no bigger than `maxRequestBytes - WriteId.LENGTH`.
-    const str = Buffer.concat(value).toString("base64");
-    const shards = shardString(str, this.options.maxRequestBytes - WriteId.LENGTH);
-    const hasMultipleChunks = shards.length > 1;
+  /*//////////////////////////////////////////////////////////////
+                                WRITE
+  //////////////////////////////////////////////////////////////*/
 
-    // Write directly to `key` if there's only one shard, otherwise build tmp value for atomicity.
-    const opKey = hasMultipleChunks ? `tmp:${key}:${randomUUID()}` : key;
-    const writeId = new WriteId();
+  async mset(entries: readonly (readonly [key: string, value: Buffer[]])[]): Promise<void> {
+    if (entries.length === 0) return;
+    try {
+      await this.inFlight.track(this._mset(new Map(entries)));
+    } catch (err) {
+      this.log("mset")?.withError(err).warn("mset failed");
+    }
+  }
 
-    // Begin multi tx (atomic). A single shard is completed in 1 tx (skip if block); N shards need N+1 txs.
-    let tx = this.redis.multi();
-    tx.unlink(opKey);
-    tx.rpush(opKey, writeId.pack(shards[0]!));
+  /** Routes each entry to the direct or staged path by the exact size of its `WRITE_DIRECT` request. */
+  private async _mset(entries: Map<string, Buffer[]>) {
+    const deadlineArg = this.options.ttl === undefined ? "" : String(Date.now() + this.options.ttl * 1000);
 
-    if (hasMultipleChunks) {
-      // Set safety TTL on tmp key (auto-cleanup if process crashes)
-      tx.expire(opKey, 60);
-      await tx.exec();
+    const directSlots: Slot<string>[] = [];
+    const stagedWrites: (readonly [keys: string[], write: Promise<void>])[] = [];
 
-      // Push remaining shards individually. This is necessary since shards are near request/response size limit.
-      for (let i = 1; i < shards.length; i++) {
-        await this.redis.rpush(opKey, writeId.pack(shards[i]!));
+    for (const [key, value] of entries) {
+      const shards = encodeShards(value, this.shardBytes);
+      if (shards === null) {
+        this.log("mset", { key })?.warn("value exceeds record cap; dropped");
+        continue;
       }
 
-      // Begin new multi tx
-      tx = this.redis.multi();
-      tx.rename(opKey, key);
+      const slot = toSlot(["evalsha", WRITE_DIRECT_SHA, 1, key, deadlineArg, ...shards], key);
+      if (measurePipeline([slot.requestBytes]) <= this.maxRequestBytes) {
+        directSlots.push(slot);
+      } else {
+        stagedWrites.push([[key], this.writeStaged(key, value, shards, deadlineArg)]);
+      }
     }
 
-    if (this.options.ttl) {
-      tx.expire(key, this.options.ttl);
-    } else {
-      tx.persist(key);
-    }
-
-    await tx.exec();
+    const pipelines = packPipelines(directSlots, this.maxRequestBytes);
+    const writes = [
+      ...pipelines.map((p) => [p.map((slot) => slot.tag), this.writeDirect(p)] as const),
+      ...stagedWrites,
+    ];
+    const outcomes = await Promise.allSettled(writes.map(([, promise]) => promise));
+    outcomes.forEach((outcome, i) => {
+      if (outcome.status === "rejected") {
+        this.log("mset", { keys: writes[i]![0] })?.withError(outcome.reason).warn("write failed");
+      }
+    });
   }
 
-  async set(key: string, value: Buffer[]) {
+  private async writeDirect(slots: Slot<string>[]) {
+    const results = await this.execScript(
+      slots.map((slot) => slot.command),
+      WRITE_DIRECT_SCRIPT,
+    );
+    slots.forEach(({ tag: key }, i) => {
+      this.logScriptResult(key, results[i]!);
+    });
+  }
+
+  private async writeStaged(key: string, value: Buffer[], shards: string[], deadlineArg: string) {
+    let staged = this.planStagedWrite(key, shards, deadlineArg);
+
+    // Before PUBLISH is issued, failed staging may restart once under a fresh wid and staging key.
     try {
-      await this.inFlight.track(this._set(key, value));
+      await this.stage(staged.batches);
     } catch (err) {
-      this.options.logger
-        ?.withMetadata({ class: UpstashStore.name, method: "set", key })
-        .withError(err)
-        .warn("set failed");
+      this.log("mset", { key })?.withError(err).info("staging failed; restarting with a fresh staging key");
+      staged = this.planStagedWrite(key, encodeShards(value, this.shardBytes)!, deadlineArg);
+      await this.stage(staged.batches);
+    }
+
+    // Once PUBLISH is issued, only the same publish may be retried — never a restage.
+    let results: CommandResult[];
+    try {
+      results = await this.execScript([staged.publish], PUBLISH_SCRIPT);
+    } catch (err) {
+      this.log("mset", { key })?.withError(err).info("publish transport failure; retrying same publish");
+      results = await this.execScript([staged.publish], PUBLISH_SCRIPT);
+    }
+    this.logScriptResult(key, results[0]!);
+  }
+
+  /** Splits `shards` into request-sized `MULTI` batches (`RPUSH` + `EXPIRE`) against a fresh staging key, plus `PUBLISH`. */
+  private planStagedWrite(key: string, shards: string[], deadlineArg: string): StagedWrite {
+    const stagingKey = `tmp:${key}:${randomUUID()}`;
+    const expire: Command = ["expire", stagingKey, STAGING_TTL_SEC];
+    const measureBatch = (push: Command) => measurePipeline([measureCommand(push), measureCommand(expire)]);
+
+    const batches: Command[][] = [];
+    let push: Command = ["rpush", stagingKey];
+    for (const shard of shards) {
+      const grown = [...push, shard];
+      const isEmpty = push.length === 2;
+      if (!isEmpty && measureBatch(grown) > this.maxRequestBytes) {
+        batches.push([push, expire]);
+        push = ["rpush", stagingKey, shard];
+      } else {
+        push = grown;
+      }
+    }
+    batches.push([push, expire]);
+
+    const publish: Command = ["evalsha", PUBLISH_SHA, 2, stagingKey, key, shards[0]!, shards.length, deadlineArg];
+    return { batches, publish };
+  }
+
+  private async stage(batches: Command[][]) {
+    for (const batch of batches) {
+      const results = await this.execPipeline(batch, { atomic: true });
+      const failed = results.find((r) => r.error !== undefined);
+      if (failed) throw new Error(failed.error);
     }
   }
 
-  async delete(key: string) {
+  private logScriptResult(key: string, { result, error }: CommandResult) {
+    const log = this.log("mset", { key, result, error });
+    if (error !== undefined) return log?.warn("script failed");
+    const outcome = SCRIPT_OUTCOMES[result as ScriptResult];
+    if (outcome === undefined) return log?.error("unexpected script result (bug)");
+    if (outcome !== null) log?.[outcome[0]](outcome[1]);
+  }
+
+  /*//////////////////////////////////////////////////////////////
+                                DELETE
+  //////////////////////////////////////////////////////////////*/
+
+  async mdelete(keys: readonly string[]): Promise<void> {
+    if (keys.length === 0) return;
     try {
-      await this.inFlight.track(this.redis.unlink(key));
+      await this.inFlight.track(this._mdelete([...new Set(keys)]));
     } catch (err) {
-      this.options.logger
-        ?.withMetadata({ class: UpstashStore.name, method: "delete", key })
-        .withError(err)
-        .warn("delete failed");
+      this.log("mdelete")?.withError(err).warn("mdelete failed");
     }
+  }
+
+  private async _mdelete(keys: string[]) {
+    const slots = keys.map((key) => toSlot(["unlink", key], key));
+    await Promise.all(
+      packPipelines(slots, this.maxRequestBytes).map(async (pipeline) => {
+        const results = await this.execPipeline(pipeline.map((slot) => slot.command));
+        pipeline.forEach(({ tag: key }, i) => {
+          const { error } = results[i]!;
+          if (error !== undefined) this.log("mdelete", { key, error })?.warn("unlink failed");
+        });
+      }),
+    );
   }
 
   async flush() {
     try {
       await this.inFlight.flush();
     } catch (err) {
-      this.options.logger
-        ?.withMetadata({ class: UpstashStore.name, method: "flush" })
-        .withError(err)
-        .warn("flush failed");
+      this.log("flush")?.withError(err).warn("flush failed");
     }
+  }
+
+  /*//////////////////////////////////////////////////////////////
+                          SINGULAR ADAPTERS
+  //////////////////////////////////////////////////////////////*/
+
+  /** @deprecated Use {@link UpstashStore.mget}. */
+  get(key: string): Promise<Buffer[] | null> {
+    return this.mget([key]).then((values) => values[0]!);
+  }
+
+  /** @deprecated Use {@link UpstashStore.mset}. */
+  set(key: string, value: Buffer[]): Promise<void> {
+    return this.mset([[key, value]]);
+  }
+
+  /** @deprecated Use {@link UpstashStore.mdelete}. */
+  delete(key: string): Promise<void> {
+    return this.mdelete([key]);
   }
 }
 
