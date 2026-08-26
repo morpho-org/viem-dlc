@@ -60,6 +60,10 @@ function assertKeyspace(callerKeys: Set<string>) {
 const isPublish = (req: FakeRequest) =>
   req.body.some((c) => Array.isArray(c) && c[0] === "evalsha" && c[1] === PUBLISH_SHA);
 const isStaging = (req: FakeRequest) => req.path === "multi-exec";
+const isHeadRead = (req: FakeRequest) => {
+  const cmd = req.body[0] as (string | number)[];
+  return cmd[0] === "lrange" && cmd[2] === 0;
+};
 
 beforeEach(() => {
   fake = new FakeUpstash();
@@ -113,6 +117,7 @@ describe("scripts", () => {
             if (staging) fake.keys.set("tmp:k:u", { list: [...staging], expireAt: fake.nowMs + 60_000 });
             if (live) fake.keys.set("k", { list: [...live], expireAt: null });
             const before = fake.keys.get("k")?.list;
+            const stagingBefore = fake.keys.get("tmp:k:u")?.list;
 
             const code = publish(deadline());
 
@@ -128,6 +133,7 @@ describe("scripts", () => {
               expect(fake.keys.get("k")?.list).toEqual(before);
             }
             if (code === 0) expect(fake.keys.has("tmp:k:u")).toBe(false);
+            if (code !== 0 && code !== 1) expect(fake.keys.get("tmp:k:u")?.list).toEqual(stagingBefore);
           });
         }
       }
@@ -217,6 +223,23 @@ describe("UpstashStore", () => {
       assertBudgets();
     });
 
+    it("splits direct writes across requests only when the exact body would exceed maxRequestBytes", async () => {
+      const store = createStore();
+      const entries = Array.from({ length: 20 }, (_, i) => [`k${i}`, [randomBytes(S / 2)] as Buffer[]] as const);
+      await store.mset(entries);
+
+      const pipelines = fake.requests;
+      expect(pipelines.length).toBeGreaterThan(1);
+      for (let i = 0; i < pipelines.length; i++) {
+        expect(pipelines[i]!.requestBytes).toBeLessThanOrEqual(MAX_REQUEST);
+        // Next-fit is tight: the first command of the following request would not have fit here.
+        const next = pipelines[i + 1]?.body[0];
+        if (next) expect(pipelines[i]!.requestBytes + 1 + utf8(next)).toBeGreaterThan(MAX_REQUEST);
+      }
+      expect(pipelines.flatMap((p) => p.body).length).toBe(20);
+      expect((await store.mget(entries.map(([k]) => k))).map(concat)).toEqual(entries.map(([, v]) => v[0]));
+    });
+
     it("handles empty values, misses, duplicates, and positional alignment", async () => {
       const store = createStore();
       await store.mset([
@@ -244,9 +267,11 @@ describe("UpstashStore", () => {
       const after = Date.now();
 
       expect(fake.requests.length).toBeGreaterThan(1);
-      const ttl = fake.ttlOf("k")!;
-      expect(ttl).toBeGreaterThanOrEqual(before + 30_000);
-      expect(ttl).toBeLessThanOrEqual(after + 30_000);
+      expect(new Set(fake.requests.map((r) => JSON.stringify(r.body))).size).toBe(1);
+      const deadline = Number((fake.requests[0]!.body as string[][])[0]![4]);
+      expect(deadline).toBeGreaterThanOrEqual(before + 30_000);
+      expect(deadline).toBeLessThanOrEqual(after + 30_000);
+      expect(fake.ttlOf("k")).toBe(deadline);
       expect(fake.keys.get("k")!.list).toHaveLength(1);
     });
 
@@ -304,7 +329,13 @@ describe("UpstashStore", () => {
       const value = randomBytes(20 * S);
       fake.flushScripts();
       await store.mset([["big", [value]]]);
-      expect(fake.requests.some((r) => r.body[0] === "script" && r.body[2] === PUBLISH_SCRIPT)).toBe(true);
+      expect(fake.requests.filter((r) => r.body[0] === "script").map((r) => r.body[2])).toEqual([PUBLISH_SCRIPT]);
+      const publishes = fake.requests.filter(isPublish);
+      expect(publishes.map((r) => r.results![0]!.error?.startsWith("NOSCRIPT") ?? r.results![0]!.result)).toEqual([
+        true,
+        1,
+      ]);
+      expect(new Set(fake.requests.filter(isStaging).map((r) => (r.body as string[][])[0]![1])).size).toBe(1);
       expect(concat((await store.mget(["big"]))[0]!)).toEqual(value);
     });
   });
@@ -357,12 +388,11 @@ describe("UpstashStore", () => {
       const value = randomBytes(10 * S);
       await store.mset([["big", [value]]]);
 
-      // Every staging batch landed twice, so LLEN != k and PUBLISH must refuse (-1): the write is dropped, not spliced.
-      const publish = fake.requests.filter(isPublish);
-      expect(publish.length).toBeGreaterThan(0);
-      const got = concat((await store.mget(["big"]))[0]!);
-      expect(got === null || got.equals(old) || got.equals(value)).toBe(true);
-      expect(got).toEqual(old);
+      // Every staging batch landed twice, so LLEN != k and PUBLISH refuses (-2: foreign live value): dropped, not spliced.
+      const publishes = fake.requests.filter(isPublish);
+      expect(publishes.length).toBeGreaterThan(0);
+      expect(publishes.map((r) => r.results![0]!.result)).toEqual(publishes.map(() => -2));
+      expect(concat((await store.mget(["big"]))[0]!)).toEqual(old);
       assertKeyspace(new Set(["big"]));
     });
 
@@ -387,6 +417,7 @@ describe("UpstashStore", () => {
       const before = [...fake.keys.get("big")!.list];
       fake.onRequest = (req) => (isStaging(req) ? "network-before" : undefined);
       await store.mset([["big", [randomBytes(10 * S)]]]);
+      expect(new Set(fake.requests.filter(isStaging).map((r) => (r.body as string[][])[0]![1])).size).toBe(2);
       expect(fake.requests.filter(isPublish)).toHaveLength(0);
       expect(fake.keys.get("big")!.list).toEqual(before);
     });
@@ -467,7 +498,8 @@ describe("UpstashStore", () => {
       fake.keys.set("k", { list: recombined, expireAt: null });
 
       expect((await store.mget(["k"]))[0]).toBeNull();
-      expect(fake.requests.filter((r) => (r.body as string[][])[0]![0] === "lrange").length).toBeGreaterThan(2);
+      expect(fake.requests.filter(isHeadRead)).toHaveLength(2);
+      expect(fake.keys.get("k")!.list).toEqual(recombined);
     });
 
     it("retries a torn read and returns the replacement", async () => {
@@ -500,6 +532,7 @@ describe("UpstashStore", () => {
         return undefined;
       };
       expect((await store.mget(["k"]))[0]).toBeNull();
+      expect(fake.requests.filter(isHeadRead)).toHaveLength(2);
     });
 
     it("treats a shrunken list (short stage-2 page) as torn and retries", async () => {
@@ -538,7 +571,9 @@ describe("UpstashStore", () => {
       await store.mset([["k", bytes("v")]]);
       let failures = 0;
       fake.onRequest = () => (failures++ < 4 ? "network-before" : undefined);
+      fake.requests.length = 0;
       expect(concat((await store.mget(["k"]))[0]!)).toEqual(Buffer.from("v"));
+      expect(fake.requests).toHaveLength(5); // 4 client retries exhaust attempt 1; attempt 2 succeeds
     });
   });
 
@@ -564,9 +599,12 @@ describe("UpstashStore", () => {
 
     it("flush waits for in-flight writes", async () => {
       const store = createStore();
-      void store.mset([["k", [randomBytes(10 * S)]]]);
+      const value = randomBytes(10 * S);
+      void store.mset([["k", [value]]]);
       await store.flush();
-      expect(fake.keys.get("k")).toBeDefined();
+      expect(fake.requests.filter(isPublish)).toHaveLength(1);
+      expect([...fake.keys.keys()]).toEqual(["k"]);
+      expect(concat((await store.mget(["k"]))[0]!)).toEqual(value);
     });
 
     it("never throws on transport failure", async () => {
@@ -576,7 +614,11 @@ describe("UpstashStore", () => {
       await expect(store.mset([["k", bytes("v")]])).resolves.toBeUndefined();
       await expect(store.mdelete(["k"])).resolves.toBeUndefined();
       await expect(store.mget(["k"])).resolves.toEqual([null]);
-      expect(events.length).toBeGreaterThan(0);
+      const names = events.map((e) => e.name);
+      expect(names).toContain("write failed");
+      expect(names).toContain("mdelete failed");
+      expect(names).toContain("exhausted retries");
+      expect(events.filter((e) => e.name === "write failed").every((e) => e.error instanceof Error)).toBe(true);
     });
   });
 
@@ -633,12 +675,21 @@ describe("UpstashStore", () => {
 });
 
 describe("request measurement", () => {
-  it("measures serialized bodies exactly as the client sends them", async () => {
-    const store = createStore();
+  it("routes direct vs staged on the exact serialized body size", async () => {
     const key = 'ключ/🔑 "quoted"';
-    await store.mset([[key, bytes("v")]]);
-    const req = fake.requests[0]!;
-    expect(req.requestBytes).toBe(utf8(req.body));
-    expect(concat((await store.mget([key]))[0]!)).toEqual(Buffer.from("v"));
+    const value = randomBytes(S);
+    await createStore().mset([[key, [value]]]);
+    const exact = fake.requests[0]!.requestBytes;
+    expect(fake.requests[0]!.path).toBe("pipeline");
+    expect(exact).toBe(utf8(fake.requests[0]!.body));
+
+    fake.requests.length = 0;
+    await createStore({ maxRequestBytes: exact }).mset([[key, [value]]]);
+    expect(fake.requests.map((r) => r.path)).toEqual(["pipeline"]);
+
+    fake.requests.length = 0;
+    await createStore({ maxRequestBytes: exact - 1 }).mset([[key, [value]]]);
+    expect(fake.requests.map((r) => r.path)).toEqual(["multi-exec", "multi-exec", "pipeline"]);
+    expect(concat((await createStore().mget([key]))[0]!)).toEqual(value);
   });
 });
