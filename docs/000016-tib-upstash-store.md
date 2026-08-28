@@ -4,7 +4,7 @@ version: 0.0.16
 landed:
   - 7031079
 related:
-  - 000015-tib-plural-store-contract.md
+  - 000016-tib-plural-store-contract.md
 ---
 
 # TIB — `UpstashStore`: single-format LIST rewrite
@@ -234,7 +234,8 @@ framing and provider envelope are deliberately not modeled: they are determinist
 headroom" rather than derived from it.
 
 - **Stage 1:** dedupe; pipeline one `LRANGE key 0 0` per key, at most `elementsPerResponse` per
-  request. Empty ⇒ miss. Parse the shard-0 header; `k == 1` completes the common case in this single round trip.
+  request. Empty ⇒ miss. Parse the shard-0 header; `k == 1` completes the common case in this
+  single round trip.
   No `LLEN` cross-check: every *published* list satisfies `LLEN == k` by construction —
   `WRITE_DIRECT` writes exactly k elements in one atomic command, and `PUBLISH` verifies
   `LLEN == k` before `RENAME`. Nothing else mutates a live list's elements (both write routes are
@@ -244,8 +245,9 @@ headroom" rather than derived from it.
   genuine shard 0 — so the read-side integrity signal is the header's `k` plus the stage-2 wid and
   index-contiguity checks below.
 - **Stage 2** (multi-shard keys only): paged `LRANGE key i j` with `elementsPerResponse` elements
-  per page, pages of several keys packed under the same element cap, sequential; every shard's wid must match shard 0's **and its index must continue the
-  contiguous `0..k-1` run** (`D`, the index field width, comes from shard 0's `k`), and each page
+  per page, pages of several keys packed under the same element cap, sequential; every shard's wid
+  must match shard 0's **and its index must continue the contiguous `0..k-1` run** (`D`, the index
+  field width, comes from shard 0's `k`), and each page
   must have the expected shape — an index gap or repeat (the signature of delayed batch replays
   recombining after a staging expiry), a wid mismatch, or a short/empty page (e.g. a mid-read
   replacement by a smaller value) ⇒ the list was atomically replaced ⇒ retryable miss with bounded
@@ -273,8 +275,14 @@ at `upstash.ts:195/206/217`).
   `UpstashStoreOptions` (add `shardBytes?`, default 64 KiB, and `maxResponseBytes?`, default 10 MB)
   and `createOptimizedUpstashStore` (lines 227-249; its rate constants and timeouts are deferred,
   owner-owned — see below). Delete `WriteId` (lines 23-46) and `SMART_READ_SCRIPT` (lines 49-56).
+- **`maxRequestBytes` changes meaning** — breaking for existing callers. Today it budgets only the
+  *value* (the constructor accepts anything `> WriteId.LENGTH`, which cannot carry a single
+  `EVALSHA`); here it bounds the **exact serialized request body**, and `shardBytes` takes over as
+  the element bound. Safe only because the storage format changes wholesale, so no already-written
+  element is orphaned by the redefinition. Document both in the option TSDoc; a value tuned against
+  the old meaning is now too small by roughly one key plus framing.
 - **Singular adapters:** `Store` (`src/types.ts:160-165`) is still singular until
-  [the plural-store contract](./000015-tib-plural-store-contract.md) lands — implement
+  [the plural-store contract](./000016-tib-plural-store-contract.md) lands — implement
   `get`/`set`/`delete` as deprecated one-liners over the plural methods
   (`get(k) { return this.mget([k]).then((r) => r[0]); }`).
 - **New `test/stores/upstash.test.ts`** (+ helper): a scripted fake of the command subset
@@ -352,7 +360,7 @@ Probed 2026-08-25–26 on the deployment in `.env`; re-check if the plan or tier
   size class. Documented headroom is the mitigation; request bodies need none because their
   serialized bytes are measured exactly.
 - **Batching reaches callers only after [the plural-store
-  contract](./000015-tib-plural-store-contract.md):** until then
+  contract](./000016-tib-plural-store-contract.md):** until then
   `HierarchicalStore` (`src/stores/hierarchical.ts:18-33`) and `ThrottledStore` dispatch per key,
   so plural batching benefits direct `UpstashStore` users immediately and
   `createOptimizedUpstashStore` users once the contract migration lands.
@@ -395,6 +403,27 @@ The wins split: **reads** get ~3× cheaper in commands because Lua leaves the re
 
 ## Derivation
 
+### Declined: every layout that is not one LIST at the caller's key
+
+Generation-scoped chunk keys (`<key>:<wid>:<i>`), hash-chained continuations, and a two-tier
+manifest key pointing at chunk keys were each explored and each lost to the list. One disqualifier
+covers all three: they name the pieces, and a named piece can outlive whatever points at it. A
+crash between writing chunks and publishing the manifest — or between publishing a new manifest and
+unlinking the old chunks — strands keys that no caller can reach and no TTL will collect, which is
+exactly the recovery invariant this design exists to protect. Keeping the pieces as *elements* of
+one key means the only two key classes are the caller's own and `tmp:<key>:<uuid>`, and the latter
+always carries a refreshed 60 s TTL. Paging, atomic replacement, and self-healing all fall out of
+that choice rather than being engineered on top of it.
+
+### Declined: a per-value digest
+
+An earlier revision carried a `cyrb64` digest in shard 0 to detect cross-generation tears.
+Per-element indexing subsumed it: within one wid, index ⇒ bytes is a function, so contiguity over
+`0..k-1` is a *structural* proof where the digest was only a probabilistic one — and it costs
+`D + 1` bytes per element against O(bytes) of read-time hashing. The digest went.
+`src/utils/hash.ts` stays: `eth-call/handler.ts:203` still uses `cyrb64Hash` for leader matching,
+so "the store no longer depends on `cyrb64`" is not an instruction to delete the util.
+
 ### Declined: `BUSY` writer lease
 
 Declined, not deferred. Per-writer uuid staging removes writer-writer staging interference
@@ -402,6 +431,34 @@ entirely; what remains is last-Redis-execution-wins at the live key, which the c
 `ThrottledStore` already serializes writers per key in-process (`pending`/`active`,
 `src/stores/throttled.ts:48-50`), and versioned caller keys make cross-process same-key writes
 rare. A lease would add a new key class and liveness edge cases for zero correctness gain.
+
+### Kept under the subtraction pass
+
+Once the design was correct, a pass asked what could be dropped. One thing could (a claim that
+`RPUSH` return lengths were retained as a write-path metric — nothing consumed them). Three could
+not, and the reasons are the guardrail against the next attempt:
+
+- **The `TIME`/DOA check before any mutation.** Redis Lua gives isolation, *not* rollback: a script
+  that errors midway leaves its earlier mutations applied. Validating the deadline against server
+  time before the first write is what keeps a bad deadline from being a partial write.
+- **Read retry on skew.** It reads like belt-and-braces, but a list replaced mid-read is normal
+  operation rather than a fault, and turning one into a miss costs a re-fetch of up to 30 MB.
+- **The live-key fallback (codes `2`/`-2`).** A wash on complexity; kept because it distinguishes an
+  already-published replay from a foreign value, which the caller acts on differently.
+
+The framing that makes the rest of the design legible: **exact shard-0 equality and `LLEN == k` are
+availability guards, not integrity guards.** They stop a routine single-fault write from replacing a
+good value with a persistent miss. Integrity is the index's job, read-side. Neither subsumes the
+other, which is why proving content read-side does not make the publication checks redundant.
+
+### Combined faults, not single faults
+
+Twice during this design a mechanism was removed on reasoning that enumerated one fault at a time,
+and twice it was wrong; the second attempt produced a *served hit with wrong bytes*, strictly worse
+than the miss it set out to fix. The rule that fell out: any proposal to drop a write-path check
+must be tested against faults in combination — several delayed instances of one batch landing
+*after* a staging expiry — not against each fault alone. Verification #2 pins the specific
+counterexample; this is the general form of it.
 
 ### Deferred (owner-owned)
 

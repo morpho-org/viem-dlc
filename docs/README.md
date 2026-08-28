@@ -34,7 +34,7 @@ version: 0.0.16
 landed:
   - 7031079
 related:
-  - 000015-tib-plural-store-contract.md
+  - 000016-tib-plural-store-contract.md
 ---
 ```
 
@@ -77,5 +77,5 @@ else, it is Derivation.
 | Document | Landed | |
 |---|---|---|
 | [Paged lenses, partial results, and dropping RETURN mode](./000012-tib-paged-lenses-partial-results.md) | `07e49df`, `0df02a9` | Lenses report how far they got instead of being bisected into; RETURN-mode exfiltration removed. |
-| [Make `Store` a plural (mget/mset) contract](./000015-tib-plural-store-contract.md) | — | `Store` defined solely as `mget`/`mset`/`mdelete`, with batching real all the way down to Upstash. |
+| [Make `Store` a plural (mget/mset) contract](./000016-tib-plural-store-contract.md) | — | `Store` defined solely as `mget`/`mset`/`mdelete`, with batching real all the way down to Upstash. |
 | [`UpstashStore`: single-format LIST rewrite](./000016-tib-upstash-store.md) | `7031079` | Every value a LIST of self-indexed shards; large writes stage per-writer and publish through a verifying script. |
