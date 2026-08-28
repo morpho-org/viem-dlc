@@ -37,8 +37,8 @@ costs 200 gas/byte on top (~4.9M gas for a full-size response). REVERT mode has 
 Batch chunk sizing is driven by a caller-supplied polynomial `G(N)`. When a chunk overshoots,
 the current remedy is bisection — and bisection is the wrong primitive for this workload. It
 costs `~2·log₂N` requests across `log₂N` sequential waves, pays the offending item's full gas
-burn at every level, and then **still fails the whole request**: `call.ts:135` rethrows once a
-chunk is down to one element, and `handler.ts:150-155` only commits cache entries after the
+burn at every level, and then **still fails the whole request**: `call.ts:134` rethrows once a
+chunk is down to one element, and `handler.ts:150-157` only commits cache entries after the
 entire factorised call succeeds, so every good result the recursion fetched is discarded.
 
 ## Design
@@ -54,15 +54,15 @@ EIP-170 argument applies to both, and collapsing the axis is where the branch sa
 - Delete `ReturnEnvelope.yul`, `ReturnEnvelopeCompressed.yul`, their two constants in
   `codec.envelope.ts`, and their `build:*` scripts in `package.json`.
 - Drop `exfil` from `EthCallPolicy.batch` (`state-overrides.ts:15`) and from the `batch` type in
-  `call.ts:26`. Breaking, but pre-1.0.
-- `call.ts:106` — delete the `fetchChunk` indirection and `fetchChunkReturn`; `fetchChunkRevert`
+  `call.ts:25`. Breaking, but pre-1.0.
+- `call.ts:105` — delete the `fetchChunk` indirection and `fetchChunkReturn`; `fetchChunkRevert`
   becomes the only path.
-- `wrapDeploylessFactoryCall` (`codec.envelope.ts:159`) picks on `compress` alone.
-- `isRevertExpected` (`codec.envelope.ts:186`) now matches every wrapper we emit — simplify its
+- `wrapDeploylessFactoryCall` (`codec.envelope.ts:125`) picks on `compress` alone.
+- `isRevertExpected` (`codec.envelope.ts:154`) now matches every wrapper we emit — simplify its
   body and doc, but **keep it**: four transports call it to suppress retries of intentional
   success reverts (`rate-limiter/index.ts:53`, `logs-divider/index.ts:80`, `logs-sieve`,
   `logs-enricher`).
-- Update the size-classifier doc at `call.ts:248` — the "Return data size (RETURN mode)" line
+- Update the size-classifier doc at `call.ts:250` — the "Return data size (RETURN mode)" line
   goes, but keep the `/code.*size/` match, which also catches EIP-3860 initcode failures.
 - Update the README `batch` surface and the `exfil` param doc at `actions/call.ts:38`.
 
@@ -73,12 +73,12 @@ breaks the documented entry point in `README.md:39`. Only outbound RETURN suppor
 
 `compress` stays — it earns its keep against EIP-3860's initcode cap.
 
-**Do not** document REVERT mode as universally supported. `codec.envelope.ts:135` already warns
+**Do not** document REVERT mode as universally supported. `codec.envelope.ts:94-97` already warns
 that providers may truncate revert data; deleting the alternative does not make that untrue.
 
 Tests: `deployless.test.ts` and `handler.test.ts` are heavily parameterised on `exfil`; collapse
 the `describe.each`/`it.each` to REVERT-only and delete the RETURN-specific assertions
-(`deployless.test.ts:386`, `:395`, `:420-445`).
+(`deployless.test.ts:385`, `:394`, `:418-428`, `:430-451`).
 
 **Note:** `ReturnEnvelope.yul` is currently untracked. Commit the branch before deleting if you
 want it recoverable.
@@ -183,7 +183,7 @@ Violations throw immediately as protocol errors — never retried as gas failure
 Semantic violations — out-of-order execution, wrong-order values, gas failures mislabelled as
 skips — are undetectable from the tuple and remain trusted-lens obligations.
 
-#### Client loop (`factorisedFactoryCall`, `call.ts:44`)
+#### Client loop (`factorisedFactoryCall`, `call.ts:41`)
 
 1. Partition with `G(N)` as today, deliberately over-packed, and fire all ranges in parallel —
    unchanged happy path, one wave.
