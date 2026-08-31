@@ -7,15 +7,19 @@ import { deepTransform } from "./utils/objects.js";
  * refers to `Logger`, not `import("loglayer").LogLayer`, so consumers who don't use
  * it needn't install it to typecheck.
  */
-export interface Logger {
+export interface Logger extends LogBuilder {
   child(): Logger;
   withContext(context: Record<string, unknown>): Logger;
-  withMetadata(metadata: Record<string, unknown>): Logger;
-  withError(error: unknown): Logger;
+  metadataOnly(metadata: Record<string, unknown>): void;
+}
+
+/** What `withMetadata`/`withError` chain into — mirrors `loglayer`'s `ILogBuilder`. */
+export interface LogBuilder {
+  withMetadata(metadata: Record<string, unknown>): LogBuilder;
+  withError(error: unknown): LogBuilder;
   info(message?: string): void;
   warn(message?: string): void;
   error(message?: string): void;
-  metadataOnly(metadata: Record<string, unknown>): void;
 }
 
 /**
