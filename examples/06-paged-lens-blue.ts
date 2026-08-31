@@ -172,10 +172,11 @@ const [results, skipped] = await readContract(client, {
       paged: true,
       // eth_estimateGas on Robinhood Chain fits ~853k + 36k·N for this lens (the constant is mostly
       // the counterfactual deploy); padded ~25%. An over-packed chunk costs one more round trip, not
-      // a bisection, so the model only needs to be a sane opening guess. The byte cap binds before
-      // gas here: ~704 borrowers fit in one call (49,152-byte initcode cap at 64 B/element), which
-      // would use only ~26M of the ~50M gas budget.
-      batch: { batchSize: MAX_INITCODE_SIZE, gas: { constant: 900_000, linear: 45_000, quadratic: 0 } },
+      // a bisection, so the model only needs to be a sane opening guess. Uncompressed, the 49,152-byte
+      // initcode cap binds first (~704 borrowers/call at 64 B each); `compress` shrinks the ABI-padded
+      // input ~9× on the wire, so gas binds instead — ~1,700 fully served in one call at this cap,
+      // with a hard wrapper-phase OOG (not a paged stop) just past it, which the padding keeps clear of.
+      batch: { batchSize: MAX_INITCODE_SIZE, compress: true, gas: { constant: 900_000, linear: 45_000, quadratic: 0 } },
     }),
   ],
 });
