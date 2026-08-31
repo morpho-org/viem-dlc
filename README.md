@@ -12,6 +12,10 @@ pnpm add @morpho-org/viem-dlc
 
 Also available on the [GitHub Package Registry](https://npm.pkg.github.com).
 
+## Examples
+
+Runnable, feature-by-feature examples live in [`examples/`](./examples/README.md).
+
 ## Observability (optional)
 
 This library can emit structured events through a logger you provide. The expected
@@ -347,9 +351,11 @@ interface Store {
 | `TtlStore` | `@morpho-org/viem-dlc/stores` | Wraps any store with an absolute per-entry TTL — bounds how long a warm tier may diverge from a fresher source behind it |
 | `MemoryStore` | `@morpho-org/viem-dlc/stores` | Simple in-memory Map (prefer `LruStore`) |
 | `HierarchicalStore` | `@morpho-org/viem-dlc/stores` | Layered stores — reads fall through, writes fan out |
-| `DebouncedStore` | `@morpho-org/viem-dlc/stores` | Batches writes with debounce + max staleness timeout |
+| `ThrottledStore` | `@morpho-org/viem-dlc/stores` | Rate-limits writes, coalescing bursts per key under a max staleness timeout |
 | `CompressedStore` | `@morpho-org/viem-dlc/stores` | Transparent zstd compression (Node/Bun only) |
+| `NodeFsStore` | `@morpho-org/viem-dlc/stores` | One file per key on the local filesystem, atomic writes (Node/Bun only) |
 | `UpstashStore` | `@morpho-org/viem-dlc/stores/upstash` | Upstash Redis with automatic value sharding and atomic writes |
+| `VercelStore` | `@morpho-org/viem-dlc/stores/vercel` | Vercel Blob; `createOptimizedVercelStore` returns the same pre-composed stack as Upstash's |
 
 ### Composing stores
 
@@ -358,7 +364,7 @@ Stores are designed to be layered. For example, `createOptimizedUpstashStore` (e
 
 ```
 LruStore (fast, in-process)
-  └─ DebouncedStore (coalesces writes)
+  └─ ThrottledStore (coalesces writes)
        └─ UpstashStore (durable, remote)
 ```
 
