@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "paths": {
+      "@morpho-org/viem-dlc": ["../src/index.ts"],
+      "@morpho-org/viem-dlc/stores/upstash": ["../src/stores/upstash.ts"],
+      "@morpho-org/viem-dlc/stores/vercel": ["../src/stores/vercel.ts"],
+      "@morpho-org/viem-dlc/*": ["../src/*/index.ts"]
+    },
+    "plugins": [{ "name": "soltag/plugin" }]
+  },
+  "include": ["./**/*.ts", "./.soltag/types.d.ts"]
+}
