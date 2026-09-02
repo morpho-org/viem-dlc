@@ -199,9 +199,12 @@ export async function factorisedFactoryCall(
         });
       }
       if (isCounterfactualDeployFailedRevert(e)) {
-        throw new Error("[deployless] counterfactual deploy failed: the lens constructor reverted or left no code", {
-          cause: e,
-        });
+        throw new Error(
+          "[deployless] counterfactual deploy failed: target occupied, constructor reverted, or no code left",
+          {
+            cause: e,
+          },
+        );
       }
       const cause = classifyChunkError(e);
       if (cause !== null && cause !== "timeout" && count > 1) {

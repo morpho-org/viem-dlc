@@ -407,7 +407,7 @@ const logs = await getLogs2(client, {
 
 Reads a [paginated lens](#paginated-lenses): the lens's per-item function, called once per element
 of `args` through the `deployless` or `cache` transport. Takes the same deployless-factory
-descriptor as viem's `readContract` — spread `lens.with(...)` from soltag — plus the `policy`
+descriptor as viem's `readContract` (`abi`, `address`, `factory`, `factoryData`) plus the `policy`
 options; returns `{ results, skipped }`, with `results` typed from the per-item function's return
 type and `skipped` the indices into `args` that were not served.
 
@@ -429,13 +429,12 @@ that ran out of gas even when retried alone. Check it if you need every element.
 
 ### `eth_call` `policy`
 
-The lower-level marker `readLens` attaches for you. Creates a `stateOverride` entry that tells the
-`deployless` or `cache` transport how to handle a deployless `eth_call` encoded against the
-array-shaped fragment `f(T[]) returns (U[] results, uint256[] skipped)` — which never exists
-on-chain; derive it from the per-item function with `paginatedAbi`. Useful when you want plain
-`readContract`/`call` instead of `readLens`. The transports decode the outer arrays structurally;
-with `cache`, element bytes round-trip through the cache untouched, so tuples, nested arrays, and
-other complex element types are supported.
+The lower-level marker `readLens` attaches for you: a `stateOverride` entry that tells the
+`deployless` or `cache` transport to treat a deployless `eth_call` as a paginated lens read. The
+call is encoded against the array-shaped fragment `f(T[]) returns (U[] results, uint256[] skipped)`,
+which never exists on-chain; `paginatedAbi` derives it from the per-item function. Use it when you
+want plain `readContract`/`call` instead of `readLens`. Element bytes round-trip through the cache
+untouched, so tuples, nested arrays, and other complex element types are supported.
 
 ```ts
 policy(opts: {
@@ -454,31 +453,24 @@ policy(opts: {
 })
 ```
 
-- **`opts.abi`** — the array-shaped fragment: exactly one dynamic-array input and the two outputs
-  `(U[] results, uint256[] skipped)`. Always produce it with `paginatedAbi` from the per-item
-  fragment in the contract's real ABI (`getAbiItem({ abi: lens.abi, name })`): the transport derives
-  the per-item selector back from it, and a fragment the lens does not implement fails as a page
-  that skips every element.
-- **`opts.maxItemBytes`** / **`opts.maxResultBytes`** — required when the input element `T` or
-  the result element `U` is a dynamic type (`string`, `bytes`, nested arrays, dynamic tuples): the
-  most padded ABI tail bytes (length word plus padded data, heads excluded) one element may
-  occupy. They size the response slab and are checked against every element: an input past
-  `maxItemBytes` is declined client-side with no request made and lands in `skipped`; a result
-  past `maxResultBytes` is a protocol error, whether it arrives fresh or from the cache. Static
-  element types need nothing.
+- **`opts.abi`** — the array-shaped fragment from `paginatedAbi`. Build it from the per-item
+  fragment in the contract's real ABI: the transport derives the per-item selector from it, and a
+  selector the lens does not implement fails as a page that skips every element.
+- **`opts.maxItemBytes`** / **`opts.maxResultBytes`** — upper bounds on one input / result
+  element's ABI-encoded tail (length word plus padded data), required when `T` / `U` is dynamic.
+  An input past `maxItemBytes` is declined client-side and lands in `skipped`; a result past
+  `maxResultBytes` is a protocol error, fresh or cached.
 - **`opts.batch`** — optional batching config. Omit to send all elements in a single upstream
-  `eth_call` (still subject to the allocation budget below).
-- **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk. Input
-  elements are greedy-packed under this limit and fetched in parallel; `MAX_INITCODE_SIZE`
-  (EIP-3860's 49 152 bytes) is the usual value, since deployless calldata rides inside initcode.
-  Independently of it, every chunk is packed under a fixed allocation budget (`MAX_ALLOC_BYTES`,
-  1 MiB of decompressed input plus response slab, derived from the ABI strides or the declared
-  bounds) that keeps the envelope's memory expansion well inside the smallest node cap the
-  package supports (10M gas). Neither budget is ever tuned per lens, chain, or provider.
-- **`opts.batch.compress`** — FastLZ-compress calldata on the wire. When inputs are compressible,
-  this trades pre-request encoding time and on-chain decompression gas for batching efficiency:
-  the initcode cap applies to the compressed payload, so more elements fit per chunk and the
-  envelope pages instead. An over-packed chunk costs one more round trip, never a bisection.
+  `eth_call`, still under the allocation budget below.
+- **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk; elements
+  are greedy-packed under it and fetched in parallel. `MAX_INITCODE_SIZE` (EIP-3860's 49 152
+  bytes) is the usual value. Independently, every chunk fits a fixed 1 MiB allocation budget
+  (input plus response slab, from the ABI strides or the declared bounds) that keeps envelope
+  memory cheap on any node cap the package supports. Neither budget is tuned per lens, chain, or
+  provider.
+- **`opts.batch.compress`** — FastLZ-compress calldata on the wire, so more elements fit per
+  chunk at the cost of encoding time and decompression gas. An over-packed chunk pages and costs
+  one more round trip, never a bisection.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
   or when used with `deployless(...)`, `batch` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same

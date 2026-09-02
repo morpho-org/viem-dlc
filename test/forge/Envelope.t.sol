@@ -63,6 +63,13 @@ contract EnvelopeTest {
         require(bytes4(ret) == MALFORMED && ret.length == 0x44 && idx == 1 && size == 0x40, "MalformedResult(1, 0x40)");
     }
 
+    function test_occupiedTargetFails() public {
+        (bool ok,) = address(factory).call(abi.encodePacked(Env.SALT, type(StaticLens).creationCode));
+        require(ok, "predeploy");
+        bytes memory ret = staticPage(new uint256[](1), new uint256[](1));
+        require(bytes4(ret) == DEPLOY_FAILED && ret.length == 0x44, "CounterfactualDeployFailed");
+    }
+
     function test_deployOutOfGas() public {
         bytes memory td = abi.encodeWithSelector(bytes4(0), uint256(0x20), uint256(1), uint256(0));
         uint256 cfg = Env.config(HungryLens.item.selector, false, 32, false, 32);

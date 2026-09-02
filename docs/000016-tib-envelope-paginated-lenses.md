@@ -15,7 +15,7 @@ polynomial `G(N)` exists to keep chunks below that cliff. Meanwhile the lens's o
 This TIB removes both — and the loop that hosted them — by moving pagination into the
 envelope: the initcode this package already ships calls the lens's **per-item function** once
 per element in its own EVM frame, deposits each result densely into a preallocated response
-slab, and reports an element gas could not resolve **in-band** as a sign-tagged entry in the
+slab, and reports an element that couldn't be resolved due to gas **in-band** as a sign-tagged entry in the
 `skipped` array **on the wire only**. The client consumes the tag (retrying once as a
 singleton), and the caller-facing response stays byte-for-byte TIB 000012's
 `(results, skipped)`. A lens is now one ordinary `view` function `f(T) returns (U)`; the
@@ -68,17 +68,15 @@ is never bisected into a phantom gas failure.
 
 ## Context
 
-The evidence that the model's real job is cliff-avoidance, not chunk-tuning, is written in the
-Blue example itself (as it stood before this TIB, `examples/06-paged-lens-blue.ts:179` on the
-`examples-and-bench` branch): the comment above the gas polynomial documents "a hard
-wrapper-phase OOG (not a paged stop) just past" the lens's capacity, "which the padding keeps
-clear of." That cliff is the `new Health[](inputs.length)` allocation plus envelope work, all
-scaling with sent N. Below it the model is merely an opening guess (TIB 000012's framing);
-above it, a mis-modelled chunk gets zero progress and a bisection storm — the exact failure
-pagination was built to eliminate. Compression sharpens the exposure: it moves the binding
-constraint from bytes to gas, which is why both paginated examples carry hand-measured
-polynomials (`06:179`, `07:158`) and both lenses carry hand-measured constants (`06:91-92`,
-`07:74-75`).
+The model's real job is cliff-avoidance, not chunk-tuning. Everything a lens frame does before
+its first per-element gas check scales with the *sent* count: the envelope's calldata copy and
+decompression, the ABI decoder's bounds checks, the `new U[](n)` result allocation, and the
+quadratic memory-expansion term under all of it. A chunk past that cliff dies with zero
+progress, and because the death is a bare out-of-gas the client cannot tell it from any other
+failure: bisection is the only recovery, and a bisection storm is the exact failure pagination
+was built to eliminate. Below the cliff the polynomial merely picks an opening chunk size (TIB
+000012's framing). Compression sharpens the exposure by moving the binding constraint from
+bytes to gas, so a compressed lens needs the polynomial to be *right*, not merely conservative.
 
 The number the model is solved against is itself unreliable. Production calibration
 (the downstream consumer's calibration tooling) shows what "setting `gasLimit` correctly"
@@ -97,8 +95,8 @@ The fleet this serves is uniform. A survey of the downstream consumer (2026-09-0
 contracts with eleven array entrypoints, every one a plain per-element loop: no shared work
 before or after the loop, no in-call memoization, no cross-element dependency, all shared state
 already carried as constructor immutables. Exactly one call site constructs a `policy` — the
-batch-lens helper — and its eleven callers pass a soltag contract, a function
-name, and an input array. Nothing in the fleet needs a lens-side loop, and nothing outside one
+batch-lens helper — and its eleven callers pass a compiled contract (ABI plus deployless
+descriptor), a function name, and an input array. Nothing in the fleet needs a lens-side loop, and nothing outside one
 helper touches the array-shaped fragment.
 
 TIB 000012's thesis was "stop predicting and let work report how far it got." It applied that
@@ -148,10 +146,10 @@ no memory — and it is a capable one: immutables for value types, and storage w
 constructor is not `view`) for tables the per-item function then reads at 100 gas a slot once
 warm. EIP-2929 warmth is per transaction, so the first element to touch a market's storage warms
 it for every later element in the chunk; the per-frame design loses none of the caching a
-single-frame loop would get. For a counterfactual target the constructor runs once per chunk,
-in the prologue — so its cost must stay bounded and modest, since halving shrinks the chunk but
-not the constructor. A target that is already deployed has already run its constructor, and its
-resident state must be what the lens expects.
+single-frame loop would get. The constructor runs once per chunk, in the prologue — so its cost
+must stay bounded and modest, since halving shrinks the chunk but not the constructor. A target
+that already has code is refused: the envelope cannot check resident code against
+`factoryData`, so the only lens it trusts is the one it watched the factory deploy.
 
 **Per-item reverts are not surfaced.** A revert reason is discarded and the element is skipped,
 whether the revert was the author's `require` or a broken oracle three calls down. This is the
@@ -282,10 +280,6 @@ batching-invariant) cannot be enforced by any shape — a per-item function can 
 `gasleft()` or make gas-sensitive downstream calls — and remain documented obligations, stated
 on `readLens` and the `policy` TSDoc.
 
-**Optional, purely an optimization:** `if (gasleft() < maxObservedItemCost) break` skips the
-likely-futile last attempt of a chunk. That is a runtime measurement of this frame's own
-items, never an estimate, and has no correctness role.
-
 ### The response encoding: one tag, wire-only
 
 A `skipped` entry `i` means the lens looked and declined — permanent. An entry `~i` (bitwise
@@ -326,7 +320,7 @@ one place a wrong fragment would fail *silently*: a per-item selector the lens d
 implement makes every call revert and every element a plain skip. There is one provenance guard
 and one diagnostic: `paginatedAbi(itemFragment)` is the only supported way to produce the
 array-shaped fragment, and it takes the per-item fragment from the contract's real ABI, so
-`getAbiItem({ abi: lens.abi, name: "healthOf" })` type-checks the name against soltag's types;
+`getAbiItem({ abi: lens.abi, name: "healthOf" })` type-checks the name against the contract's typed ABI;
 and a page whose every element was skipped stamps `pages_all_skipped`, which makes a missing
 selector visible but cannot distinguish it from a legitimate all-decline page or a shared
 downstream failure.
@@ -481,7 +475,7 @@ the working tree already and carry over unchanged.
 `memoryguard(0x80)` and the constructor args copied to the returned base; the page loop lives in
 `paginate` / `stage` / `malformed` Yul functions with a five-word memory frame (floor, scratch
 pointer, elements pointer, elements end, config) so the loop body keeps under the stack limit
-without a manual stash. Envelope initcode grew from 187 / 363 bytes to 952 / 1,146. Foundry
+without a manual stash. Envelope initcode grew from 187 / 363 bytes to 956 / 1,150. Foundry
 (scratch project, against a local EVM): static and dynamic layouts, interleaved skips with a
 mid-page death, a head death, `MalformedResult`, deploy OOG → `OOG_SENTINEL`, and a grant sweep
 of the uncompressed envelope with no failure above the first success; the compressed envelope on
@@ -509,7 +503,6 @@ specified; `pages_all_skipped` stamps.
 - `src/utils/deployless/call.ts` — outcome table as above; `pages_all_skipped`.
 - `src/actions/read-lens.ts` — new; exported from `actions`.
 - `contracts/PagedLens.sol` and the `./contracts/*.sol` export — deleted.
-- `examples/04-07` — bare per-item functions, `readLens`, no `solFile`.
 - `README.md`, `src/actions/call.ts` TSDoc — "paginated lens", the two-fragment story,
   `readLens`, constructor guidance, the revert-reason tradeoff.
 - Tests — envelope-level Foundry sweeps (scratch project, results recorded here); vitest
@@ -548,7 +541,7 @@ successful response, same ABI, same merge); and the handler's rebasing machinery
   `codec.envelope.ts` drift): a page with interleaved skips deposits densely; a stopped dynamic page
   decodes byte-exactly by offsets; gas sweeps of both envelopes with no failure above the first
   success; malformed paths, including a dynamic result shorter than its head word; oversize
-  input declines; deploy OOG.
+  input declines; deploy OOG; a target with resident code is refused.
 - Dynamic types: an oversized input element is declined client-side with **no RPC made** (and
   stamped `elements_declined_oversize`); a response element exceeding its declared bound →
   protocol error naming its source, enforced for fresh responses *and* cache hits written
@@ -569,8 +562,9 @@ successful response, same ABI, same merge); and the handler's rebasing machinery
   chains.
 - **Provider revert-data truncation** (carried from TIB 000012, amplified here): the response
   rides in revert data, and slab-sized payloads give a truncating provider more to truncate.
-  Used-prefix returns keep typical payloads small; a truncated response fails codec
-  validation loudly rather than decoding partially.
+  Used-prefix returns keep typical payloads small, and `skipped` is the slab's tail, so any
+  truncation cuts it: the decoder rejects a `skipped` offset past the payload, or a `skipped`
+  length the bytes cannot hold, before it reads a single result.
 - **Doomed burn at full forward.** A genuinely unbounded element burns ~63/64 of the frame's
   remaining gas per attempt (at most twice: in-chunk, then as a singleton) with zero yield —
   node compute and timeout exposure, not money. A lower forwarding ratio would bound the
@@ -605,12 +599,11 @@ successful response, same ABI, same merge); and the handler's rebasing machinery
 - **Terminality is route-sampled.** A singleton tag is terminal on the route that served it;
   under non-deterministic caps a different route might have served the element. Accepted as a
   truly pathological corner and visible in `elements_unresolved`.
-- **`MAX_ALLOC_BYTES` sizing.** Not EVM-universal in the strict sense: its safe value is
-  derived against the documented minimum supported node cap (~10M) and the envelope's memory
-  state. Too high re-admits a prologue cliff on stingier caps; too low wastes compression's
-  packing win. Probe-set with margin; production-measured caps run 50M-1B+ against a ~1-2M
-  worst-case prologue, and an upstream silently clamped below the floor degrades to
-  text-matched halving or a visible transport error.
+- **`MAX_ALLOC_BYTES` sizing.** A memory-cost bound, not a cliff dodge: 1 MiB of envelope
+  memory costs ~2.2M gas of expansion (`3w + w²/512` at `w = 32,768` words), about a fifth of
+  the 10M minimum cap and noise above it. Too low only costs round trips; a cap clamped below
+  the floor still degrades to halving (on the deploy-OOG marker or the provider's out-of-gas
+  text) rather than a silent loss.
 - **Yul stack depth.** The loop carried ~20 live values as a Solidity library and needed a
   memory stash to compile under the legacy codegen; standalone Yul has the same 16-slot reach.
   `memoryguard` enables the optimizer's stack-to-memory mover only when its memory-region
@@ -639,7 +632,7 @@ wire form, the client codec, and every cache key untouched. The per-item fragmen
 chain needs and what the author actually wrote, so it is the source and the array-shaped one is
 derived — never the reverse, because a derived per-item fragment is only as right as the string
 it was derived from, whereas `getAbiItem` against the contract's real ABI is checked by the
-compiler. `readLens` exists so that, for the fleet's actual call pattern (a soltag contract, a
+compiler. `readLens` exists so that, for the fleet's actual call pattern (a compiled contract, a
 function name, an input array), neither fragment is ever written by hand.
 
 **Why any revert is a skip.** The envelope sees `ok = 0` and some returndata; it can distinguish
@@ -790,7 +783,7 @@ Declined:
   layout, the death heuristic, the `mcopy` relocation — as a Yul port; what it cost (an import,
   a wrapper stub, hand-counted strides, a shipped `.sol` with a resolution risk, and a
   "lens not using the library" corpse class) does not.
-- **Keeping an empty array-function declaration in Solidity** so soltag's ABI stays the single
+- **Keeping an empty array-function declaration in Solidity** so the compiler's ABI stays the single
   source of viem types: honest but odd (a function that returns empty arrays if called), and
   unnecessary once the fleet's one call site already synthesizes the fragment it needs.
 - **Inferring static strides at runtime** in the library (input stride from calldata, output
