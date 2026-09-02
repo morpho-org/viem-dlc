@@ -321,13 +321,13 @@ describe("handleEthCall", () => {
   });
 
   it("throws when the policy abi is not a paginated lens", async () => {
-    const unpaginatedAbi = parseAbiItem("function balancesOf(address[] a) view returns (uint256[])") as AbiFunction;
+    const unarrayifiedAbi = parseAbiItem("function balancesOf(address[] a) view returns (uint256[])") as AbiFunction;
     const req: EthCallRequest = {
       method: "eth_call",
       params: [
         { data: buildDeploylessCall(buildTargetCalldata(pageAbi, [addr(1)])) },
         "latest",
-        cachePolicySentinel(unpaginatedAbi),
+        cachePolicySentinel(unarrayifiedAbi),
       ],
     };
     await expect(handleEthCall(ctx(vi.fn()), req)).rejects.toThrow(

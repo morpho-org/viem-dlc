@@ -15,7 +15,7 @@ import { decodeFunctionResult, encodeFunctionData } from "viem";
 import { call } from "viem/actions";
 
 import type { EthCallPolicy } from "../transports/state-overrides.js";
-import { paginatedAbi } from "../utils/deployless/codec.inner.js";
+import { arrayifiedAbi } from "../utils/deployless/codec.inner.js";
 
 import { policy } from "./call.js";
 
@@ -70,7 +70,7 @@ export type ReadLensReturnType<abi extends Abi, functionName extends LensFunctio
  * Reads a paginated lens: calls the per-item function `functionName` once per element of `args`
  * through the `deployless` or `cache` transport, which packs the elements into chunks, pages,
  * retries what gas could not resolve, and aggregates. The array-shaped fragment the wire carries
- * ({@link paginatedAbi}) is derived here from the contract's real ABI, so it never has to be
+ * ({@link arrayifiedAbi}) is derived here from the contract's real ABI, so it never has to be
  * written by hand and the per-item selector cannot drift from what the lens implements.
  *
  * A partial result is a successful response — check `skipped` if you need every element.
@@ -104,7 +104,7 @@ export async function readLens(
   if (item.stateMutability !== "view" && item.stateMutability !== "pure") {
     throw new Error(`readLens: ${functionName} must be view or pure`);
   }
-  const fragment = paginatedAbi(item);
+  const fragment = arrayifiedAbi(item);
   const paginated: readonly [typeof fragment] = [fragment];
   const block: { blockNumber: bigint } | { blockTag?: BlockTag } =
     blockNumber !== undefined ? { blockNumber } : { blockTag };

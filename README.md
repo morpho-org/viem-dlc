@@ -66,11 +66,11 @@ see [Paginated lenses](#paginated-lenses). Most callers reach it through
 import { createPublicClient, encodeFunctionData, http, parseAbiItem } from 'viem'
 import { call } from 'viem/actions'
 import { deployless } from '@morpho-org/viem-dlc/transports'
-import { paginatedAbi, policy } from '@morpho-org/viem-dlc/actions'
+import { arrayifiedAbi, policy } from '@morpho-org/viem-dlc/actions'
 
 // The lens implements `positionOf((bytes32,address)) view returns ((uint256,uint128,uint128))`;
 // the array-shaped fragment the wire carries is derived from it.
-const positionsAbi = paginatedAbi(
+const positionsAbi = arrayifiedAbi(
   parseAbiItem('function positionOf((bytes32 id, address user) input) view returns ((uint256,uint128,uint128))')
 )
 
@@ -432,13 +432,13 @@ that ran out of gas even when retried alone. Check it if you need every element.
 The lower-level marker `readLens` attaches for you: a `stateOverride` entry that tells the
 `deployless` or `cache` transport to treat a deployless `eth_call` as a paginated lens read. The
 call is encoded against the array-shaped fragment `f(T[]) returns (U[] results, uint256[] skipped)`,
-which never exists on-chain; `paginatedAbi` derives it from the per-item function. Use it when you
+which never exists on-chain; `arrayifiedAbi` derives it from the per-item function. Use it when you
 want plain `readContract`/`call` instead of `readLens`. Element bytes round-trip through the cache
 untouched, so tuples, nested arrays, and other complex element types are supported.
 
 ```ts
 policy(opts: {
-  abi: AbiFunction              // paginatedAbi(itemFragment)
+  abi: AbiFunction              // arrayifiedAbi(itemFragment)
   maxItemBytes?: number
   maxResultBytes?: number
   batch?: {
@@ -453,7 +453,7 @@ policy(opts: {
 })
 ```
 
-- **`opts.abi`** — the array-shaped fragment from `paginatedAbi`. Build it from the per-item
+- **`opts.abi`** — the array-shaped fragment from `arrayifiedAbi`. Build it from the per-item
   fragment in the contract's real ABI: the transport derives the per-item selector from it, and a
   selector the lens does not implement fails as a page that skips every element.
 - **`opts.maxItemBytes`** / **`opts.maxResultBytes`** — upper bounds on one input / result
@@ -543,10 +543,10 @@ position, batch composition, or `gasleft()`).
 
 **What the caller sees.** `readLens` returns `{ results, skipped }` typed from the per-item
 function. Through plain viem, the chunked calls aggregate into one page over the whole input, in
-the shape `paginatedAbi` declares, so `readContract` and `decodeFunctionResult` work too:
+the shape `arrayifiedAbi` declares, so `readContract` and `decodeFunctionResult` work too:
 
 ```ts
-const pageAbi = paginatedAbi(getAbiItem({ abi: healthLens.abi, name: 'healthOf' }))
+const pageAbi = arrayifiedAbi(getAbiItem({ abi: healthLens.abi, name: 'healthOf' }))
 
 const [results, skipped] = await readContract(client, {
   ...healthLens.with(MORPHO),

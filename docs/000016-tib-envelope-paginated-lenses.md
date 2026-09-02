@@ -50,7 +50,7 @@ surfaceable later, since the wire already carries the bit).
 `view` function over one element, under a name of the author's choosing, on a contract that may
 expose several. Everything that makes it paginated lives in the envelope and the client. The
 array-shaped function the caller reads through — `f(T[]) returns (U[] results, uint256[]
-skipped)` — never exists on-chain: `paginatedAbi` derives it from the per-item fragment for
+skipped)` — never exists on-chain: `arrayifiedAbi` derives it from the per-item fragment for
 plain `readContract` use, and the `readLens` action hides even that.
 
 The invariant everything client-side leans on, and the envelope exists to make true:
@@ -318,14 +318,14 @@ those sole parameters, preserving names and tuple components, so `T[][]` becomes
 `T[3][]` becomes `T[3]`. Within that domain the derivation is unambiguous, but it is also the
 one place a wrong fragment would fail *silently*: a per-item selector the lens does not
 implement makes every call revert and every element a plain skip. There is one provenance guard
-and one diagnostic: `paginatedAbi(itemFragment)` is the only supported way to produce the
+and one diagnostic: `arrayifiedAbi(itemFragment)` is the only supported way to produce the
 array-shaped fragment, and it takes the per-item fragment from the contract's real ABI, so
 `getAbiItem({ abi: lens.abi, name: "healthOf" })` type-checks the name against the contract's typed ABI;
 and a page whose every element was skipped stamps `pages_all_skipped`, which makes a missing
 selector visible but cannot distinguish it from a legitimate all-decline page or a shared
 downstream failure.
 
-`paginatedAbi` is typed as a value-level and type-level transform (template-literal `` `${T}[]`
+`arrayifiedAbi` is typed as a value-level and type-level transform (template-literal `` `${T}[]`
 `` types, components carried through, outputs named `results` and `skipped`), verified against
 viem's `readContract` and the downstream consumer's TypeScript to preserve struct field names through to
 the decoded result. For most callers even that is invisible:
@@ -342,7 +342,7 @@ const { results, skipped } = await readLens(client, {
 `readLens` is a viem action: it looks the per-item fragment up in the real ABI, synthesizes the
 array-shaped one, encodes the call, attaches the `policy`, invokes `call` with the factory
 descriptor, and decodes to `{ results: U[], skipped: number[] }`. Plain `readContract` remains
-supported by passing `abi: [paginatedAbi(item)]` after the `with()` spread and the same fragment
+supported by passing `abi: [arrayifiedAbi(item)]` after the `with()` spread and the same fragment
 to `policy` — the interop path the previous design led with, now the escape hatch.
 
 **Packing.** Chunks honor byte budgets and nothing else:
@@ -461,7 +461,7 @@ the error path of `observe` captures them.
    sentinel, tag, floor, `MalformedResult`, `OOG_SENTINEL` on the deploy step), re-paste
    constants, port the Foundry sweep tests from the library to the envelopes. Delete
    `contracts/PagedLens.sol`.
-2. **Client.** `paginatedAbi` / `itemFragmentOf` in `codec.inner.ts`; `config` packing in
+2. **Client.** `arrayifiedAbi` / `itemFragmentOf` in `codec.inner.ts`; `config` packing in
    `codec.envelope.ts`; `CounterfactualDeployFailed` as a thrown protocol error in `call.ts`
    (`OOG_SENTINEL` keeps its corpse classification); `pages_all_skipped`; the `readLens` action.
 3. **Consumers.** Examples 04-07 as bare per-item functions read through `readLens`; README;
@@ -482,7 +482,7 @@ of the uncompressed envelope with no failure above the first success; the compre
 FLZ-compressed calldata. Real node (Robinhood Chain, example 06 through `readLens`): 152 pairs in
 one page, and 4,700 pairs (the candidate set replicated twenty-fold, ~170M gas of work in one
 compressed chunk) paged to completion with every element accounted for. The client-side
-`envelopeConfig` packs the word; `paginatedAbi` / `itemFragmentOf` / `readLens` shipped as
+`envelopeConfig` packs the word; `arrayifiedAbi` / `itemFragmentOf` / `readLens` shipped as
 specified; `pages_all_skipped` stamps.
 
 ## Scope & files
@@ -498,7 +498,7 @@ specified; `pages_all_skipped` stamps.
   constructor args are copied to `base` rather than to zero, and `[0, 0x80)` stays scratch for
   the error paths and the dynamic-result head check. Successful optimized strict-Yul
   compilation is the acceptance criterion; an explicit memory-stash pattern is the fallback.
-- `src/utils/deployless/codec.inner.ts` — `paginatedAbi` (typed transform), `itemFragmentOf`
+- `src/utils/deployless/codec.inner.ts` — `arrayifiedAbi` (typed transform), `itemFragmentOf`
   (the inverse the transport uses), `ResolvedArrayFunction.itemSelector`.
 - `src/utils/deployless/call.ts` — outcome table as above; `pages_all_skipped`.
 - `src/actions/read-lens.ts` — new; exported from `actions`.
@@ -506,7 +506,7 @@ specified; `pages_all_skipped` stamps.
 - `README.md`, `src/actions/call.ts` TSDoc — "paginated lens", the two-fragment story,
   `readLens`, constructor guidance, the revert-reason tradeoff.
 - Tests — envelope-level Foundry sweeps (scratch project, results recorded here); vitest
-  cases for `paginatedAbi` round-trips (static tuple, nested arrays, dynamic types), the
+  cases for `arrayifiedAbi` round-trips (static tuple, nested arrays, dynamic types), the
   derived selector, `pages_all_skipped`, `CounterfactualDeployFailed` as thrown, `readLens`
   end-to-end against a mock transport.
 - Downstream (not this repo) — the consumer's batch-lens helper collapses onto
@@ -531,7 +531,7 @@ successful response, same ABI, same merge); and the handler's rebasing machinery
   protocol errors and are never halved; `([], [])` is rejected as today; a terminal miss
   expands through dedup to all its caller indices, and `elements_unresolved`/`elements_missing`
   restamp to the expanded counts; a page skipping every element stamps `pages_all_skipped`.
-- `paginatedAbi`: derived fragment round-trips (`itemFragmentOf(paginatedAbi(f)) ≡ f`) for
+- `arrayifiedAbi`: derived fragment round-trips (`itemFragmentOf(arrayifiedAbi(f)) ≡ f`) for
   static tuples, nested arrays, and dynamic types; `readLens` returns `{ results, skipped }`
   typed from the per-item fragment, and only one-parameter, one-value `view`/`pure` names are
   accepted as `functionName` (struct field names survive through the examples' typecheck; the
@@ -574,7 +574,7 @@ successful response, same ABI, same merge); and the handler's rebasing machinery
   declared byte bounds; a lens with genuinely unbounded per-item output has no home in this
   design.
 - **A wrong per-item fragment fails as all-skips.** The transport cannot verify that the lens
-  implements the derived selector; `paginatedAbi`'s type-checked source and `pages_all_skipped`
+  implements the derived selector; `arrayifiedAbi`'s type-checked source and `pages_all_skipped`
   are the guards.
 - **Per-item revert reasons are lost.** A broken oracle and a deliberate decline look the same
   to the caller. Tolerable for a fleet that dedups caller-side and treats `skipped` as "re-read
@@ -729,7 +729,7 @@ as the corpse fallback means a too-stingy cap degrades to the current design's b
 instead of failing outright.
 
 **Why "paginated."** A lens is not itself a page; it is read in pages. The adjective for the
-mechanism is *paginated*, and it is the word exported (`paginatedAbi`, the README section, the
+mechanism is *paginated*, and it is the word exported (`arrayifiedAbi`, the README section, the
 TSDoc). Nouns keep *page* (`hexToPage`, `pages_continued`). TIB 000012's title is history and
 stays.
 
@@ -758,7 +758,7 @@ the death blind spot is "under `SLACK`" not "98.4%", and that the loop needed a 
 split for stack depth → **the maintainer's ergonomics objection**: the wrapper
 `function page(Input[] calldata) returns (Health[] memory, uint256[] memory) { PagedLens.run(sel, 2, 2); }`
 is a stub whose inputs and outputs move "magically", not Solidity → the fleet survey (eleven
-entrypoints, all per-element; one `policy` call site; `paginatedAbi` prototyped type-safe
+entrypoints, all per-element; one `policy` call site; `arrayifiedAbi` prototyped type-safe
 against the downstream consumer's viem/abitype/TS 7) → **this revision**: the loop moves into the
 envelope, the lens becomes one function, the array-shaped fragment becomes derived, and
 `readLens` hides the derivation → a second resumed validation pass on this revision (same
