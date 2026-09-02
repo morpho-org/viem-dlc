@@ -2,6 +2,64 @@ import type { AbiFunction, AbiParameter, Hex } from "viem";
 import { toFunctionSelector } from "viem";
 
 /**
+ * The array-shaped fragment `f(T[]) returns (U[] results, uint256[] skipped)` derived from a
+ * per-item lens function `f(T) returns (U)`. Types are transformed alongside values, so viem
+ * decodes `results` with `U`'s field names intact.
+ */
+export type PaginatedAbi<F extends AbiFunction> = Omit<F, "inputs" | "outputs"> & {
+  readonly inputs: readonly [Omit<F["inputs"][0], "type"> & { readonly type: `${F["inputs"][0]["type"]}[]` }];
+  readonly outputs: readonly [
+    Omit<F["outputs"][0], "type" | "name"> & {
+      readonly name: "results";
+      readonly type: `${F["outputs"][0]["type"]}[]`;
+    },
+    { readonly name: "skipped"; readonly type: "uint256[]" },
+  ];
+};
+
+/**
+ * Derives the array-shaped fragment the transports read a paginated lens through from the lens's
+ * real per-item function. The function must take exactly one parameter and return exactly one
+ * value; take it from the contract's ABI (`getAbiItem`) so the name and types are the compiler's.
+ * {@link itemFragmentOf} inverts it up to the output's name, which becomes `results`.
+ */
+export function paginatedAbi<const F extends AbiFunction>(item: F): PaginatedAbi<F> {
+  if (item.type !== "function") throw new Error("paginatedAbi: expected a function fragment");
+  const input = item.inputs[0];
+  const output = item.outputs[0];
+  if (item.inputs.length !== 1 || !input) {
+    throw new Error(`paginatedAbi: ${item.name} must take exactly one parameter`);
+  }
+  if (item.outputs.length !== 1 || !output) {
+    throw new Error(`paginatedAbi: ${item.name} must return exactly one value`);
+  }
+  return {
+    ...item,
+    inputs: [{ ...input, type: `${input.type}[]` }],
+    outputs: [
+      { ...output, name: "results", type: `${output.type}[]` },
+      { name: "skipped", type: "uint256[]" },
+    ],
+  } as PaginatedAbi<F>;
+}
+
+/**
+ * Recovers the per-item fragment `f(T) returns (U)` from an array-shaped
+ * `f(T[]) returns (U[] results, uint256[] skipped)` by removing the terminal `[]` from the sole
+ * input and the first output; parameter names (as they stand on `fragment`) and tuple components
+ * are preserved. Its selector is what the envelope calls.
+ */
+export function itemFragmentOf(fragment: AbiFunction): AbiFunction {
+  const input = fragment.inputs[0]!;
+  const output = fragment.outputs[0]!;
+  return {
+    ...fragment,
+    inputs: [{ ...input, type: input.type.slice(0, -2) }],
+    outputs: [{ ...output, type: output.type.slice(0, -2) }],
+  };
+}
+
+/**
  * Structural ABI codec for a single dynamic array `T[]`. We only decode the outer array
  * structure — element bytes are sliced raw and passed through to the cache and back to
  * the caller without ever instantiating their JS values. This keeps the hot path byte-
@@ -19,50 +77,79 @@ import { toFunctionSelector } from "viem";
  */
 export type ElementLayout = { mode: "static"; size: number } | { mode: "dynamic" };
 
+/**
+ * Declared upper bounds for dynamic element types, in padded ABI tail bytes (length word plus
+ * padded data, heads excluded). Facts about the lens's types, checked against every element.
+ */
+export type ElementBounds = {
+  maxItemBytes?: number;
+  maxResultBytes?: number;
+};
+
 export type ResolvedArrayFunction = {
-  /** 4-byte function selector computed from the original fragment. */
+  /** 4-byte selector of the array-shaped fragment — what the caller's calldata is encoded with. */
   selector: Hex;
+  /** 4-byte selector of the per-item function the envelope calls, see {@link itemFragmentOf}. */
+  itemSelector: Hex;
   /** Element layout for the input array. */
   inputLayout: ElementLayout;
-  /** Element layout for the output array. */
+  /** Element layout for the result array `U[]`. */
   outputLayout: ElementLayout;
-  /** Whether the fragment is a paged lens — see {@link resolveArrayFunction}. */
-  paged: boolean;
+  /** Bytes one input element occupies in calldata: its stride, or its declared bound plus offset word. */
+  inputBytes: number;
+  /** Bytes one result element occupies in a page: its stride, or its declared bound plus offset word. */
+  outputBytes: number;
+  /** Present iff `inputLayout` is dynamic. */
+  maxItemBytes?: number;
+  /** Present iff `outputLayout` is dynamic. */
+  maxResultBytes?: number;
 };
 
 /**
- * Validates that `fragment` is a single-input function whose input is a dynamic array, and
- * resolves the element layout of that input and of the result array.
- *
- * With `paged`, the fragment must return `(U[] results, uint256[] skipped)` instead of a bare
- * `U[]`; `outputLayout` describes `U` either way. The paged contract — index order, "attempt at
- * least one item", deterministic skips — is documented on `policy`'s `paged` option.
+ * Validates that `fragment` is a paginated lens's array-shaped fragment — one dynamic-array
+ * input, returning `(U[] results, uint256[] skipped)` — and resolves the element layouts and the
+ * per-item selector. A dynamic `T` or `U` must come with its bound in `bounds`; the client packs
+ * and verifies against it.
  */
-export function resolveArrayFunction(fragment: AbiFunction, paged = false): ResolvedArrayFunction {
+export function resolveArrayFunction(fragment: AbiFunction, bounds: ElementBounds = {}): ResolvedArrayFunction {
   if (fragment.type !== "function") {
     throw new Error("eth_call policy abi must be a function fragment");
   }
   const input = fragment.inputs[0];
   const output = fragment.outputs[0];
+  const skipped = fragment.outputs[1];
   if (fragment.inputs.length !== 1 || !input?.type.endsWith("[]")) {
     throw new Error(`function ${fragment.name}: expected exactly one dynamic-array input`);
   }
-  if (paged) {
-    const skipped = fragment.outputs[1];
-    if (fragment.outputs.length !== 2 || !output?.type.endsWith("[]")) {
-      throw new Error(`function ${fragment.name}: paged lenses must return (U[] results, uint256[] skipped)`);
-    }
-    if (skipped?.type !== "uint256[]") {
-      throw new Error(`function ${fragment.name}: paged output 1 must be uint256[], got ${skipped?.type}`);
-    }
-  } else if (fragment.outputs.length !== 1 || !output?.type.endsWith("[]")) {
-    throw new Error(`function ${fragment.name}: expected exactly one dynamic-array output`);
+  if (fragment.outputs.length !== 2 || !output?.type.endsWith("[]")) {
+    throw new Error(`function ${fragment.name}: paginated lenses must return (U[] results, uint256[] skipped)`);
   }
+  if (skipped?.type !== "uint256[]") {
+    throw new Error(`function ${fragment.name}: paginated output 1 must be uint256[], got ${skipped?.type}`);
+  }
+  const inputLayout = layoutOf(input);
+  const outputLayout = layoutOf(output);
+  const requireBound = (name: keyof ElementBounds, what: string) => {
+    const bound = bounds[name];
+    if (!Number.isSafeInteger(bound) || bound! < 32 || bound! % 32 !== 0) {
+      throw new Error(
+        `function ${fragment.name}: ${what} is dynamic, so policy.${name} (a positive multiple of 32 bytes) is required`,
+      );
+    }
+    return bound!;
+  };
+  const maxItemBytes = inputLayout.mode === "dynamic" ? requireBound("maxItemBytes", "the input element") : undefined;
+  const maxResultBytes =
+    outputLayout.mode === "dynamic" ? requireBound("maxResultBytes", "the result element") : undefined;
   return {
     selector: toFunctionSelector(fragment),
-    inputLayout: layoutOf(input),
-    outputLayout: layoutOf(output),
-    paged,
+    itemSelector: toFunctionSelector(itemFragmentOf(fragment)),
+    inputLayout,
+    outputLayout,
+    inputBytes: inputLayout.mode === "static" ? inputLayout.size : 32 + maxItemBytes!,
+    outputBytes: outputLayout.mode === "static" ? outputLayout.size : 32 + maxResultBytes!,
+    ...(maxItemBytes !== undefined && { maxItemBytes }),
+    ...(maxResultBytes !== undefined && { maxResultBytes }),
   };
 }
 
@@ -85,25 +172,35 @@ export function hexToArray(layout: ElementLayout, encoded: Hex): readonly Hex[] 
   return sliceArray(layout, encoded, readUint256(encoded, 0), hexByteLength(encoded));
 }
 
-/** A paged lens's return tuple — see {@link hexToPage}. */
+/** A paginated lens's return tuple — see {@link hexToPage}. */
 export type Page = {
   /** Raw element bytes for the attempted-and-served items, in input order. */
   results: readonly Hex[];
-  /** Indices (into *this call's* input) the lens attempted and declined. */
+  /** Indices (into *this call's* input) declined: the per-item call reverted, or the element exceeded its bound. */
   skipped: readonly number[];
+  /**
+   * Index (into *this call's* input) gas could not resolve — the page's last adjudicated element,
+   * carried on the wire as `~index` at the end of `skipped` and never surfaced past the client.
+   */
+  died?: number;
 };
 
+const UINT256_MAX = (1n << 256n) - 1n;
+
 /**
- * Slices a paged lens's `(U[] results, uint256[] skipped)` return tuple, keeping `results`
+ * Slices a paginated lens's `(U[] results, uint256[] skipped)` return tuple, keeping `results`
  * as raw element bytes the way {@link hexToArray} does and instantiating only `skipped`.
  *
  * Bounding `results` needs both head words: with one array the body runs to end-of-buffer, but
  * here `skipped`'s offset is where `results` stops. Reusing {@link hexToArray} would let the
  * final `U` swallow the whole `skipped` array whenever `U` is dynamic.
+ *
+ * A top-bit-set word is legal only as the last `skipped` entry and decodes to {@link Page.died}
+ * as the 256-bit complement; anywhere else it is a malformed page.
  */
 export function hexToPage(layout: ElementLayout, encoded: Hex): Page {
   if (encoded.length < 2 + 128) {
-    throw new Error("paged encoding shorter than a two-parameter head");
+    throw new Error("paginated encoding shorter than a two-parameter head");
   }
   const totalBytes = hexByteLength(encoded);
   const resultsAt = readUint256(encoded, 0);
@@ -116,20 +213,37 @@ export function hexToPage(layout: ElementLayout, encoded: Hex): Page {
     resultsAt >= skippedAt ||
     skippedAt > totalBytes
   ) {
-    throw new Error("paged encoding parameter offsets out of order or out of range");
+    throw new Error("paginated encoding parameter offsets out of order or out of range");
   }
 
   const skippedLength = readUint256(encoded, skippedAt);
   const skippedStart = 2 + (skippedAt + 32) * 2;
   if (encoded.length < skippedStart + skippedLength * 64) {
-    throw new Error("paged skipped array shorter than declared length");
+    throw new Error("paginated skipped array shorter than declared length");
   }
   const skipped = new Array<number>(skippedLength);
+  let died: number | undefined;
   for (let i = 0; i < skippedLength; i++) {
-    skipped[i] = readUint256(encoded, skippedAt + 32 + i * 32);
+    const at = skippedAt + 32 + i * 32;
+    if (i === skippedLength - 1 && isTopBitSet(encoded, at)) {
+      died = toSafeNumber(BigInt(`0x${encoded.slice(2 + at * 2, 2 + at * 2 + 64)}`) ^ UINT256_MAX);
+      skipped.length = i;
+      break;
+    }
+    skipped[i] = readUint256(encoded, at);
   }
 
-  return { results: sliceArray(layout, encoded, resultsAt, skippedAt), skipped };
+  const page: Page = { results: sliceArray(layout, encoded, resultsAt, skippedAt), skipped };
+  return died === undefined ? page : { ...page, died };
+}
+
+function isTopBitSet(hex: string, byteOffset: number): boolean {
+  return Number.parseInt(hex[2 + byteOffset * 2]!, 16) >= 8;
+}
+
+function toSafeNumber(n: bigint): number {
+  if (n > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("tagged skipped index exceeds safe integer range");
+  return Number(n);
 }
 
 /**
@@ -141,13 +255,12 @@ export function arrayToHex(layout: ElementLayout, elements: readonly Hex[]): Hex
   return `0x${writeUint256(32)}${encodeArrayBody(layout, elements)}` as Hex;
 }
 
-/** Inverse of {@link hexToPage}; used to build paged responses in tests and fixtures. */
-export function pageToHex(layout: ElementLayout, { results, skipped }: Page): Hex {
+/** Inverse of {@link hexToPage}; used to build paginated responses in tests and fixtures. */
+export function pageToHex(layout: ElementLayout, { results, skipped, died }: Page): Hex {
   const resultsBody = encodeArrayBody(layout, results);
-  const skippedBody = encodeArrayBody(
-    { mode: "static", size: 32 },
-    skipped.map((i) => `0x${writeUint256(i)}` as Hex),
-  );
+  const skippedWords = skipped.map((i) => `0x${writeUint256(i)}` as Hex);
+  if (died !== undefined) skippedWords.push(`0x${(BigInt(died) ^ UINT256_MAX).toString(16).padStart(64, "0")}` as Hex);
+  const skippedBody = encodeArrayBody({ mode: "static", size: 32 }, skippedWords);
   const skippedAt = 64 + resultsBody.length / 2;
   return `0x${writeUint256(64)}${writeUint256(skippedAt)}${resultsBody}${skippedBody}` as Hex;
 }

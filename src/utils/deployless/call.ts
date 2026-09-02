@@ -2,20 +2,34 @@ import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema } from
 
 import type { Facet } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
-import { isTimeoutLikeError } from "../errors.js";
+import { isTimeoutLikeError, serializeError } from "../errors.js";
 import type { Tail } from "../tuples.js";
 
 import {
   type DeploylessTarget,
+  envelopeConfig,
   extractRevertData,
+  isCounterfactualDeployFailedRevert,
+  isMalformedResultRevert,
   isOutOfGasRevert,
   wrapDeploylessFactoryCall,
 } from "./codec.envelope.js";
-import { arrayToCalldata, hexToArray, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
+import { arrayToCalldata, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
 
 type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
-type GasModel = { constant: number; linear: number; quadratic: number };
+/**
+ * Most bytes of memory one chunk may make the envelope and the lens allocate between them —
+ * decompressed input, calldata, and the response slab. Memory expansion is quadratic, so this
+ * caps the gas a chunk can spend before its first element (~2M at the cap) against the smallest
+ * `eth_call` gas cap the package supports, 10M; it is never tuned per lens, chain, or provider.
+ */
+export const MAX_ALLOC_BYTES = 1 << 20;
+
+/** Fixed per-element memory beyond its input and result bytes: result offset, skip word, input head. */
+const ALLOC_BYTES_PER_ELEMENT = 96;
+/** Envelope memory that does not scale with the chunk or the element bound: headers and scratch. */
+const ALLOC_BYTES_FIXED = 1024;
 
 type FactorisedFactoryCallParams = {
   target: DeploylessTarget;
@@ -24,9 +38,7 @@ type FactorisedFactoryCallParams = {
   batch?: {
     batchSize?: number;
     compress?: boolean;
-    gas?: GasModel;
   };
-  gasLimit?: number;
   restOfEthCallParams: RestOfEthCallParams;
   /**
    * Invoked with each freshly fetched element as its chunk lands, before siblings finish, and
@@ -42,95 +54,107 @@ export type ResolvedElement = { index: number; output: Hex };
 export type FactorisedFactoryCallResult = {
   /** Per-element outputs aligned to `elements`, sparse exactly at {@link FactorisedFactoryCallResult.missing}. */
   outputs: readonly (Hex | undefined)[];
-  /** Ascending indices no chunk could serve. Always empty for an unpaged lens. */
+  /** Ascending indices no chunk could serve: declined by the lens, declined for size, or unresolved by gas. */
   missing: readonly number[];
+  /** The subset of `missing` that gas could not resolve even as a singleton; another provider might. */
+  unresolved: readonly number[];
+  /** The subset of `missing` declined client-side for size, with no request made. */
+  oversize: readonly number[];
 };
 
-type MeasureBytes = (start: number, end: number) => number;
-
 /**
- * Packs `elements` into deployless-factory `eth_call` chunks honoring the byte budget
- * (`batch.batchSize`) and the gas budget (largest `N` with `batch.gas(N) ≤ gasLimit`),
- * fetches them in parallel, and returns per-element outputs aligned to `elements`. Either
- * budget can be unset; with neither, sends all elements in a single upstream call.
- *
- * When `solidity.paged`, chunks that stop early are re-requested from where they stopped rather
- * than bisected, and `missing` collects the indices no chunk could serve. `missing` is always
- * empty for an unpaged lens, which has no way to report a per-element failure.
+ * Packs `elements` into deployless-factory `eth_call` chunks under two byte budgets — the wire
+ * (`batch.batchSize`, at most EIP-3860's initcode cap) and {@link MAX_ALLOC_BYTES} — fetches them
+ * in parallel, and returns per-element outputs aligned to `elements`. No gas is modelled: the
+ * envelope reports how far it got, an element gas could not resolve is retried once alone, and
+ * only a frame that dies without reporting (a prologue death) is halved.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  { target, elements, solidity, batch, gasLimit, restOfEthCallParams, onResolved, facet }: FactorisedFactoryCallParams,
+  { target, elements, solidity, batch, restOfEthCallParams, onResolved, facet }: FactorisedFactoryCallParams,
 ): Promise<FactorisedFactoryCallResult> {
   const compress = batch?.compress ?? false;
-  const wrap = (els: readonly Hex[]): Hex =>
-    wrapDeploylessFactoryCall({ target, targetData: arrayToCalldata(solidity, els) }, { compress });
+  const missing: number[] = [];
+  const unresolved: number[] = [];
+  const oversize: number[] = [];
+
+  // Positions in `order` are what gets packed and fetched; `order[pos]` is the caller's index.
+  const order: number[] = [];
+  for (let i = 0; i < elements.length; i++) {
+    if (solidity.maxItemBytes !== undefined && hexByteLength(elements[i]!) > solidity.maxItemBytes) oversize.push(i);
+    else order.push(i);
+  }
+  const at = (pos: number) => elements[order[pos]!]!;
+  const slice = (start: number, end: number) => order.slice(start, end).map((i) => elements[i]!);
+
+  const config = envelopeConfig(solidity);
+  const wrap = (start: number, end: number): Hex =>
+    wrapDeploylessFactoryCall(
+      { target, targetData: arrayToCalldata(solidity, slice(start, end)) },
+      { compress, config },
+    );
 
   let referenceWrapped: Hex | undefined;
   const getReferenceWrapped = () => {
-    if (!referenceWrapped) referenceWrapped = wrap(elements);
+    if (!referenceWrapped) referenceWrapped = wrap(0, order.length);
     return referenceWrapped;
   };
 
-  let uncompressedMeasure: MeasureBytes | undefined;
-
-  const measureWrappedBytes: MeasureBytes = (start, end) => {
-    const wrapped = start === 0 && end === elements.length ? getReferenceWrapped() : wrap(elements.slice(start, end));
-    return hexByteLength(wrapped);
-  };
-
-  const measureUncompressedBytes: MeasureBytes = (start, end) => {
-    if (!uncompressedMeasure) {
-      // Per-element byte contribution: static layouts contribute a constant `layout.size`;
-      // dynamic layouts contribute one offset word plus the already-padded element bytes.
-      // Both are multiples of 32, so the outer `bytes` wrapper padding for `targetData` stays
-      // invariant and `overhead = referenceBytes - sum(perElementBytes)` is an exact per-batch
-      // constant for uncompressed calls.
-      const elementByteCost = (e: Hex) =>
-        solidity.inputLayout.mode === "static"
-          ? (solidity.inputLayout as { mode: "static"; size: number }).size
-          : 32 + hexByteLength(e);
-      const prefixBytes = [0];
-      for (const element of elements) {
-        prefixBytes.push(prefixBytes[prefixBytes.length - 1]! + elementByteCost(element));
-      }
-      const overheadBytes = hexByteLength(getReferenceWrapped()) - prefixBytes[elements.length]!;
-      uncompressedMeasure = (s, e) => overheadBytes + prefixBytes[e]! - prefixBytes[s]!;
-    }
-    return uncompressedMeasure(start, end);
-  };
-
-  const measureBytes = compress ? measureWrappedBytes : measureUncompressedBytes;
-
-  let maxItemsByGas: number | undefined;
-  if (gasLimit && batch?.gas) {
-    maxItemsByGas = solveMaxItemsByGas(batch.gas, gasLimit);
-    if (maxItemsByGas < 1) {
-      const { constant, linear, quadratic } = batch.gas;
-      throw new Error(
-        `[deployless] gasLimit=${gasLimit} cannot fit a single item under G(N) = ${constant} + ${linear}·N + ${quadratic}·N²`,
-      );
-    }
+  // Static layouts contribute `layout.size` per element; dynamic ones an offset word plus their
+  // padded bytes. Both are multiples of 32, so the wrapper's own padding is a per-batch constant.
+  const prefixBytes = [0];
+  for (let pos = 0; pos < order.length; pos++) {
+    const bytes = solidity.inputLayout.mode === "static" ? solidity.inputLayout.size : 32 + hexByteLength(at(pos));
+    prefixBytes.push(prefixBytes[pos]! + bytes);
   }
+  let overheadBytes: number | undefined;
+  const measureUncompressedBytes = (start: number, end: number) => {
+    overheadBytes ??= hexByteLength(getReferenceWrapped()) - prefixBytes[order.length]!;
+    return overheadBytes + prefixBytes[end]! - prefixBytes[start]!;
+  };
+  const measureWireBytes = compress
+    ? (start: number, end: number) =>
+        hexByteLength(start === 0 && end === order.length ? getReferenceWrapped() : wrap(start, end))
+    : measureUncompressedBytes;
+  // The envelope stages one element (selector plus its bound) beside the input; a compressed
+  // call also keeps the compressed args resident while the decompressed copy is used.
+  const stagingBytes = 4 + solidity.inputBytes;
+  const measureAllocBytes = (start: number, end: number, wireBytes: number) =>
+    measureUncompressedBytes(start, end) +
+    (compress ? wireBytes : 0) +
+    (end - start) * (solidity.outputBytes + ALLOC_BYTES_PER_ELEMENT) +
+    stagingBytes +
+    ALLOC_BYTES_FIXED;
 
-  const ranges = packBatches({
-    count: elements.length,
-    maxBytes: batch?.batchSize,
-    maxItems: maxItemsByGas,
-    measureBytes,
-  });
+  const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
+  const fits = (start: number, end: number) => {
+    const wireBytes = compress || wireCap !== Infinity ? measureWireBytes(start, end) : 0;
+    return wireBytes <= wireCap && measureAllocBytes(start, end, wireBytes) <= MAX_ALLOC_BYTES;
+  };
+
+  const packed = packBatches({ count: order.length, maxItems: Infinity, fits });
+  for (const pos of packed.oversize) oversize.push(order[pos]!);
+  missing.push(...oversize);
+  const ranges = packed.ranges;
   const outputs = new Array<Hex>(elements.length);
 
   facet?.set({ elements_requested: elements.length, nominal_batches: ranges.length });
-  // Sizes of the *initial* packing, to compare realized utilization against `batchSize`.
-  // Bisected children and paged continuations are not resampled. Guarded rather than
+  // Sizes of the *initial* packing, to compare realized utilization against the two budgets.
+  // Halved children and continuations are not resampled. Guarded rather than
   // `facet?.stat(...)` so unobserved calls skip re-measuring.
-  if (facet) for (const [start, end] of ranges) facet.stat("batch_bytes", measureBytes(start, end));
+  if (facet) {
+    for (const [start, end] of ranges) {
+      const wireBytes = measureWireBytes(start, end);
+      facet.stat("batch_bytes", wireBytes);
+      facet.stat("batch_alloc_bytes", measureAllocBytes(start, end, wireBytes));
+    }
+  }
   let fetched = 0;
-  const splits = { count: 0, size: 0, timeout: 0, maxDepth: 0 };
-  // Paged lenses stop early instead of failing, so continuations are counted apart from
-  // `splits_*`: those mean a chunk was too big, these mean the lens served what it could.
-  const pages = { continued: 0, waves: 0 };
+  const splits = { count: 0, size: 0, corpse: 0, timeout: 0, maxDepth: 0 };
+  // A lens stopping early is a continuation, a mid-page gas death an escalation; neither is a
+  // split, which now means only "the frame died without reporting".
+  const pages = { continued: 0, waves: 0, escalated: 0, unresolvedAttempts: 0, allSkipped: 0 };
+  const corpseErrors: unknown[] = [];
 
   const commit = async (entries: readonly ResolvedElement[]) => {
     for (const { index, output } of entries) outputs[index] = output;
@@ -138,20 +162,17 @@ export async function factorisedFactoryCall(
     if (entries.length > 0) await onResolved?.(entries);
   };
 
-  /** Re-packs `[from, to)` under the byte budget and an item cap the lens just demonstrated. */
+  /** Re-packs `[from, to)` under both budgets and an item cap the lens just demonstrated. */
   const packRange = (from: number, to: number, maxItems: number): BatchRange[] =>
     packBatches({
       count: to - from,
-      maxBytes: batch?.batchSize,
-      maxItems: Math.min(maxItems, maxItemsByGas ?? Infinity),
-      measureBytes: (s, e) => measureBytes(from + s, from + e),
-    }).map(([s, e]) => [from + s, from + e] as const);
-
-  const missing: number[] = [];
+      maxItems,
+      fits: (s, e) => fits(from + s, from + e),
+    }).ranges.map(([s, e]) => [from + s, from + e] as const);
 
   const fetchRecursive = async (
     [start, end]: BatchRange,
-    /** Ranges the paged path defers to the next wave. Unused (and never appended to) otherwise. */
+    /** Ranges deferred to the next wave: continuations and singleton escalations. */
     nextWave: BatchRange[],
     precomputed?: Hex,
     timeoutSplitsRemaining = 1,
@@ -159,54 +180,88 @@ export async function factorisedFactoryCall(
   ): Promise<void> => {
     if (depth > splits.maxDepth) splits.maxDepth = depth;
     const count = end - start;
-    const wrapped = precomputed ?? wrap(elements.slice(start, end));
+    const wrapped = precomputed ?? wrap(start, end);
 
     let returndata: Hex;
     try {
       returndata = await fetchChunk(requestFn, wrapped, restOfEthCallParams);
     } catch (e) {
-      if (count > 1) {
-        const cause = classifyBatchSizeError(e);
-        if (cause === "size" || (cause === "timeout" && timeoutSplitsRemaining > 0)) {
-          const nextBudget = cause === "timeout" ? timeoutSplitsRemaining - 1 : timeoutSplitsRemaining;
-          splits.count += 1;
-          splits[cause] += 1;
-          const mid = start + Math.floor(count / 2);
-          return settleAll([
-            fetchRecursive([start, mid], nextWave, undefined, nextBudget, depth + 1),
-            fetchRecursive([mid, end], nextWave, undefined, nextBudget, depth + 1),
-          ]);
-        }
-      } else if (solidity.paged && isOutOfGasRevert(e)) {
-        // A dead frame is a paged lens's only way to say "unservable": it may not decline index 0.
-        missing.push(start);
+      const halve = (nextBudget = timeoutSplitsRemaining) => {
+        const mid = start + Math.floor(count / 2);
+        return settleAll([
+          fetchRecursive([start, mid], nextWave, undefined, nextBudget, depth + 1),
+          fetchRecursive([mid, end], nextWave, undefined, nextBudget, depth + 1),
+        ]);
+      };
+      if (isMalformedResultRevert(e)) {
+        throw new Error("[deployless] lens returned a per-item result that does not fit its declared layout", {
+          cause: e,
+        });
+      }
+      if (isCounterfactualDeployFailedRevert(e)) {
+        throw new Error("[deployless] counterfactual deploy failed: the lens constructor reverted or left no code", {
+          cause: e,
+        });
+      }
+      const cause = classifyChunkError(e);
+      if (cause !== null && cause !== "timeout" && count > 1) {
+        splits.count += 1;
+        splits[cause] += 1;
+        return halve();
+      }
+      if (cause === "timeout" && count > 1 && timeoutSplitsRemaining > 0) {
+        splits.count += 1;
+        splits.timeout += 1;
+        return halve(timeoutSplitsRemaining - 1);
+      }
+      if (cause === "corpse" && count === 1) {
+        missing.push(order[start]!);
+        unresolved.push(order[start]!);
         return;
       }
+      if (cause === null && corpseErrors.length < 3) corpseErrors.push(serializeError(e));
       throw e;
-    }
-
-    if (!solidity.paged) {
-      const chunkOutputs = hexToArray(solidity.outputLayout, returndata);
-      if (chunkOutputs.length !== count) {
-        throw new Error(`eth_call returned ${chunkOutputs.length} output elements, expected ${count}`);
-      }
-      await commit(chunkOutputs.map((output, j) => ({ index: start + j, output })));
-      return;
     }
 
     const page = hexToPage(solidity.outputLayout, returndata);
     const attempted = validatePage(page, count);
+    if (solidity.maxResultBytes !== undefined) {
+      for (const result of page.results) {
+        if (hexByteLength(result) > solidity.maxResultBytes) {
+          throw new Error(
+            `[deployless] fresh response element of ${hexByteLength(result)} bytes exceeds maxResultBytes=${solidity.maxResultBytes}`,
+          );
+        }
+      }
+    }
+    facet?.stat("page_adjudicated", attempted);
+    if (page.died === undefined && page.results.length === 0 && page.skipped.length > 0) pages.allSkipped += 1;
+
     const declined = new Set(page.skipped);
     const entries: ResolvedElement[] = [];
     for (let i = 0, served = 0; i < attempted; i++) {
-      if (declined.has(i)) missing.push(start + i);
-      else entries.push({ index: start + i, output: page.results[served++]! });
+      if (i === page.died) continue;
+      if (declined.has(i)) missing.push(order[start + i]!);
+      else entries.push({ index: order[start + i]!, output: page.results[served++]! });
     }
     await commit(entries);
 
+    if (page.died !== undefined) {
+      pages.unresolvedAttempts += 1;
+      const pos = start + page.died;
+      if (count > 1) {
+        pages.escalated += 1;
+        nextWave.push([pos, pos + 1]);
+      } else {
+        missing.push(order[pos]!);
+        unresolved.push(order[pos]!);
+      }
+    }
+
     if (attempted < count) {
       pages.continued += 1;
-      nextWave.push(...packRange(start + attempted, end, attempted));
+      const served = attempted - (page.died === undefined ? 0 : 1);
+      nextWave.push(...packRange(start + attempted, end, served > 0 ? served : Infinity));
     }
   };
 
@@ -215,7 +270,7 @@ export async function factorisedFactoryCall(
     while (wave.length > 0) {
       pages.waves += 1;
       const nextWave: BatchRange[] = [];
-      const isWholeInput = wave.length === 1 && wave[0]![0] === 0 && wave[0]![1] === elements.length;
+      const isWholeInput = wave.length === 1 && wave[0]![0] === 0 && wave[0]![1] === order.length;
       await settleAll(
         wave.map((range) => fetchRecursive(range, nextWave, isWholeInput ? getReferenceWrapped() : undefined)),
       );
@@ -226,20 +281,27 @@ export async function factorisedFactoryCall(
       elements_fetched: fetched,
       splits_count: splits.count,
       splits_size: splits.size,
+      splits_corpse: splits.corpse,
       splits_timeout: splits.timeout,
       splits_max_depth: splits.maxDepth,
+      attempts_unresolved: pages.unresolvedAttempts,
+      pages_escalated: pages.escalated,
+      pages_all_skipped: pages.allSkipped,
+      pages_continued: pages.continued,
+      pages_waves: pages.waves,
+      elements_declined_oversize: oversize.length,
+      elements_missing: missing.length,
+      elements_unresolved: unresolved.length,
     });
-    // Paged-only, so their presence is what distinguishes a paged run from an ordinary one.
-    if (solidity.paged) {
-      facet?.set({
-        pages_continued: pages.continued,
-        pages_waves: pages.waves,
-        elements_missing: missing.length,
-      });
-    }
+    for (const error of corpseErrors) facet?.push("corpse_errors", error, 3);
   }
 
-  return { outputs, missing: missing.sort((a, b) => a - b) };
+  return {
+    outputs,
+    missing: missing.sort((a, b) => a - b),
+    unresolved: unresolved.sort((a, b) => a - b),
+    oversize: oversize.sort((a, b) => a - b),
+  };
 }
 
 /** `Promise.all`, but every branch settles before the first failure surfaces. */
@@ -250,21 +312,27 @@ async function settleAll(promises: readonly Promise<void>[]): Promise<void> {
 }
 
 /**
- * Returns the number of elements the page attempted, rejecting responses that break the parts of
- * the lens contract visible in the tuple. The rest of the contract is not observable here.
+ * Returns the number of elements the page adjudicated, rejecting responses that break the parts
+ * of the lens contract visible in the tuple. The rest of the contract is not observable here.
  *
  * The `attempted >= 1` floor is what bounds the wave loop: without it a lens can stall forever.
+ * A gas death is necessarily the page's last adjudicated element, so `died` must equal
+ * `attempted - 1` and sit above every plain skip.
  */
-function validatePage({ results, skipped }: Page, count: number): number {
-  const attempted = results.length + skipped.length;
+function validatePage({ results, skipped, died }: Page, count: number): number {
+  const attempted = results.length + skipped.length + (died === undefined ? 0 : 1);
   if (attempted < 1 || attempted > count) {
-    throw new Error(`paged lens attempted ${attempted} of ${count} elements, expected 1..${count}`);
+    throw new Error(`paginated lens attempted ${attempted} of ${count} elements, expected 1..${count}`);
   }
+  const plainLimit = died === undefined ? attempted : attempted - 1;
   for (let k = 0; k < skipped.length; k++) {
     const index = skipped[k]!;
-    if (index >= attempted || (k > 0 && index <= skipped[k - 1]!)) {
-      throw new Error(`paged lens returned skipped indices that are not strictly increasing below ${attempted}`);
+    if (index >= plainLimit || (k > 0 && index <= skipped[k - 1]!)) {
+      throw new Error(`paginated lens returned skipped indices that are not strictly increasing below ${plainLimit}`);
     }
+  }
+  if (died !== undefined && died !== attempted - 1) {
+    throw new Error(`paginated lens reported a gas death at ${died} but adjudicated ${attempted} elements`);
   }
   return attempted;
 }
@@ -282,51 +350,36 @@ async function fetchChunk(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: He
 
 type BatchRange = readonly [start: number, end: number];
 
-/**
- * Largest non-negative integer `N` such that `constant + linear·N + quadratic·N² ≤ gasLimit`.
- * Returns 0 when even `N=0` (the constant term alone) overflows the budget. With `quadratic = 0`
- * and `linear = 0`, the polynomial is constant and any `N` fits → returns `Infinity`.
- */
-function solveMaxItemsByGas({ constant, linear, quadratic }: GasModel, gasLimit: number): number {
-  const budget = gasLimit - constant;
-  if (budget < 0) return 0;
-  if (quadratic === 0) {
-    if (linear === 0) return Infinity;
-    return Math.floor(budget / linear);
-  }
-  const discriminant = linear * linear + 4 * quadratic * budget;
-  return Math.floor((-linear + Math.sqrt(discriminant)) / (2 * quadratic));
-}
-
 type PackBatchesArgs = {
   count: number;
-  maxBytes: number | undefined;
-  maxItems: number | undefined;
-  measureBytes: MeasureBytes;
+  maxItems: number;
+  /** Whether `[start, end)` fits every budget. Must be monotonic in `end` for a fixed `start`. */
+  fits: (start: number, end: number) => boolean;
 };
 
 /**
- * Greedy batch packer enforcing both a byte budget and an item-count budget. For each batch,
- * the search upper bound is `min(count, start + maxItems)`. Within that window: first checks
- * whether all remaining elements fit the byte budget, then binary searches for a fitting end
- * and shrinks defensively if measurement is not perfectly monotonic.
- *
- * Always includes at least one element per batch on the byte path, so a single oversized
- * element still makes progress. Either budget can be omitted (`undefined` or non-positive).
+ * Greedy packer: each batch takes the longest prefix of the remainder that `fits`, at most
+ * `maxItems` long, found by binary search with a defensive linear shrink for measures that are
+ * not perfectly monotonic. An element that does not fit alone is reported in `oversize` and
+ * left out rather than sent — a chunk that cannot fit is never the way to make progress.
  */
-function packBatches({ count, maxBytes, maxItems, measureBytes }: PackBatchesArgs): BatchRange[] {
-  if (count === 0) return [];
-  const itemCap = maxItems && maxItems > 0 ? maxItems : Infinity;
-  const byteCap = maxBytes && maxBytes > 0 ? maxBytes : Infinity;
-
+function packBatches({ count, maxItems, fits }: PackBatchesArgs): { ranges: BatchRange[]; oversize: number[] } {
   const ranges: BatchRange[] = [];
+  const oversize: number[] = [];
+  const itemCap = maxItems > 0 ? maxItems : Infinity;
+
   let start = 0;
   while (start < count) {
     const itemCappedEnd = Math.min(count, start + itemCap);
 
-    if (byteCap === Infinity || measureBytes(start, itemCappedEnd) <= byteCap) {
+    if (fits(start, itemCappedEnd)) {
       ranges.push([start, itemCappedEnd]);
       start = itemCappedEnd;
+      continue;
+    }
+    if (!fits(start, start + 1)) {
+      oversize.push(start);
+      start += 1;
       continue;
     }
 
@@ -334,21 +387,20 @@ function packBatches({ count, maxBytes, maxItems, measureBytes }: PackBatchesArg
     let hi = itemCappedEnd;
     while (end < hi) {
       const mid = Math.floor((end + hi + 1) / 2);
-      if (measureBytes(start, mid) <= byteCap) {
+      if (fits(start, mid)) {
         end = mid;
       } else {
         hi = mid - 1;
       }
     }
-
-    while (end > start + 1 && measureBytes(start, end) > byteCap) {
+    while (end > start + 1 && !fits(start, end)) {
       end--;
     }
 
     ranges.push([start, end]);
     start = end;
   }
-  return ranges;
+  return { ranges, oversize };
 }
 
 function hexByteLength(hex: Hex): number {
@@ -365,26 +417,25 @@ function hexByteLength(hex: Hex): number {
  * doesn't get hammered with `2^depth` retries:
  *   - viem TimeoutError, HTTP 408 / 504 / 524, generic "timed out" / "timeout" messages
  *
+ * `"corpse"` is a frame that died of gas without reporting — the envelope's deploy out-of-gas
+ * marker ({@link isOutOfGasRevert}) or a provider's "out of gas" text for the envelope's own
+ * prologue. Halving shrinks the prologue; alone, the element is unresolved.
+ *
  * `"size"` covers errors that scale deterministically with batch size; bisecting always helps:
  *   - Calldata size:   HTTP 413; messages containing "too large" or "request size"
- *   - Gas limit:       the wrapper's out-of-gas marker ({@link isOutOfGasRevert}), or "out of gas"
  *   - Initcode size (EIP-3860): "max initcode size exceeded" — matched by /code.*size/
  */
-function classifyBatchSizeError(error: unknown): "size" | "timeout" | null {
+function classifyChunkError(error: unknown): "corpse" | "size" | "timeout" | null {
   if (isTimeoutLikeError(error)) return "timeout";
-  if (isOutOfGasRevert(error)) return "size";
+  if (isOutOfGasRevert(error)) return "corpse";
 
   const e = error instanceof BaseError ? error.walk() : error;
   const status = (e as { status?: number }).status;
   const msg = (e as { message?: string }).message ?? "";
 
+  if (/out of gas/i.test(msg)) return "corpse";
   if (status === 413) return "size";
-  if (
-    /too large/i.test(msg) ||
-    /request.{0,10}size/i.test(msg) ||
-    /out of gas/i.test(msg) ||
-    /code.{0,10}size/i.test(msg)
-  ) {
+  if (/too large/i.test(msg) || /request.{0,10}size/i.test(msg) || /code.{0,10}size/i.test(msg)) {
     return "size";
   }
 

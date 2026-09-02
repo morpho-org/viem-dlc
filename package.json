@@ -70,6 +70,7 @@
     "typecheck": "tsc --project tsconfig.json --noEmit --incremental",
     "pretest": "pnpm build",
     "test": "vitest run",
+    "test:forge": "forge test --root test/forge",
     "prepare": "pnpm build",
     "loc": "tokei src"
   },

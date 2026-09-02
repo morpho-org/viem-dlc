@@ -28,8 +28,8 @@ export interface FailoverConfig {
  *
  * @example
  * const transport = failover([
- *   cache(http(rpcA), [{ ..., gasLimit: G_A }, { maxBlockRange: M_A }, ...]),
- *   cache(http(rpcB), [{ ..., gasLimit: G_B }, { maxBlockRange: M_B }, ...]),
+ *   cache(http(rpcA), [{ ... }, { maxBlockRange: M_A }, ...]),
+ *   cache(http(rpcB), [{ ... }, { maxBlockRange: M_B }, ...]),
  * ]);
  */
 export function failover<S extends RpcSchema>(

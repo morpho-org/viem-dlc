@@ -22,7 +22,12 @@ import { withLogging } from "../../src/observability.js";
 import { deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
-import { OK_SENTINEL, OOG_SENTINEL, unwrapDeploylessFactoryCall } from "../../src/utils/deployless/codec.envelope.js";
+import {
+  MALFORMED_RESULT_SELECTOR,
+  OK_SENTINEL,
+  OOG_SENTINEL,
+  unwrapDeploylessFactoryCall,
+} from "../../src/utils/deployless/codec.envelope.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 
 type EthCallRequest = EIP1193Parameters<import("viem").PublicRpcSchema, "eth_call">;
@@ -38,9 +43,12 @@ const pageAbi = parseAbiItem(
 const addr = (n: number) => pad(toHex(n), { size: 20 });
 const addrValue = (a: Address) => Number(BigInt(a));
 
+/** The wire form of a gas death at `index`: the 256-bit complement, `~index`. */
+const tag = (index: number) => ((1n << 256n) - 1n) ^ BigInt(index);
+
 function createRequest(addrs: readonly Address[], batch?: Record<string, unknown>): EthCallRequest {
   const targetData = concat([toFunctionSelector(pageAbi), encodeAbiParameters([{ type: "address[]" }], [addrs])]);
-  const policy: Record<string, unknown> = { abi: pageAbi, paged: true };
+  const policy: Record<string, unknown> = { abi: pageAbi };
   if (batch) policy.batch = batch;
   return {
     method: "eth_call",
@@ -81,9 +89,15 @@ function revertWith(data: Hex): Error & { data: Hex } {
   return err;
 }
 
-function revertWithPage(results: readonly bigint[], skipped: readonly number[]) {
-  const encoded = encodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], [results, skipped.map(BigInt)]);
+/** A lens response whose `skipped` words are given verbatim, tags included. */
+function revertWithWords(results: readonly bigint[], skippedWords: readonly bigint[]) {
+  const encoded = encodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], [results, skippedWords]);
   return revertWith(`${OK_SENTINEL}${encoded.slice(2)}` as Hex);
+}
+
+function revertWithPage(results: readonly bigint[], skipped: readonly number[], died?: number) {
+  const words = skipped.map(BigInt);
+  return revertWithWords(results, died === undefined ? words : [...words, tag(died)]);
 }
 
 type LensBehavior = {
@@ -93,13 +107,24 @@ type LensBehavior = {
   decline?: readonly number[];
   /** Address values that exhaust the frame when attempted, taking the whole call with them. */
   fatal?: readonly number[];
+  /** Address values the lens reports a gas death on, ending the page at that index. */
+  starve?: readonly number[];
+  /** Whether a `starve` element resolves once it is the only element in the chunk. */
+  recoversAlone?: boolean;
 };
 
 /**
- * A conforming paged lens: walks its input in index order, stops after `pageSize` attempts,
- * declines `decline` elements, and lets `fatal` elements kill the frame (no per-element cap).
+ * A conforming paginated lens: walks its input in index order, stops after `pageSize` attempts,
+ * declines `decline` elements, reports a gas death on `starve` elements, and lets `fatal`
+ * elements kill the frame without reporting (no per-element cap).
  */
-function mockPagedLens({ pageSize = Infinity, decline = [], fatal = [] }: LensBehavior = {}) {
+function mockPagedLens({
+  pageSize = Infinity,
+  decline = [],
+  fatal = [],
+  starve = [],
+  recoversAlone = false,
+}: LensBehavior = {}) {
   return vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
     const addrs = sentAddresses((args.params[0] as { data: Hex }).data);
     const results: bigint[] = [];
@@ -107,6 +132,9 @@ function mockPagedLens({ pageSize = Infinity, decline = [], fatal = [] }: LensBe
     for (let i = 0; i < addrs.length && i < pageSize; i++) {
       const value = addrValue(addrs[i]!);
       if (fatal.includes(value)) throw revertWith(OOG_SENTINEL);
+      if (starve.includes(value) && !(recoversAlone && addrs.length === 1)) {
+        throw revertWithPage(results, skipped, i);
+      }
       if (decline.includes(value)) skipped.push(i);
       else results.push(BigInt(value));
     }
@@ -114,8 +142,8 @@ function mockPagedLens({ pageSize = Infinity, decline = [], fatal = [] }: LensBe
   });
 }
 
-function createTransport(requestFn: ReturnType<typeof vi.fn>, gasLimit = 30_000_000) {
-  return deployless(custom({ request: requestFn as never }), { gasLimit })({ retryCount: 0 } as never);
+function createTransport(requestFn: ReturnType<typeof vi.fn>) {
+  return deployless(custom({ request: requestFn as never }))({ retryCount: 0 } as never);
 }
 
 function decodeResults(result: unknown): bigint[] {
@@ -123,7 +151,7 @@ function decodeResults(result: unknown): bigint[] {
   return [...(values as readonly bigint[])];
 }
 
-/** Decodes the `(U[] results, uint256[] skipped)` tuple a paged policy responds with. */
+/** Decodes the `(U[] results, uint256[] skipped)` tuple a paginated policy responds with. */
 function decodePage(result: unknown): { results: bigint[]; skipped: number[] } {
   const [results, skipped] = decodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], result as Hex);
   return { results: [...(results as readonly bigint[])], skipped: (skipped as readonly bigint[]).map(Number) };
@@ -136,7 +164,19 @@ function requestedIndices(requestFn: ReturnType<typeof vi.fn>): number[][] {
   );
 }
 
-describe("deployless (paged)", () => {
+/** Runs `request` under a stub logger and returns the response plus a field reader. */
+async function withFacet(request: () => Promise<unknown>) {
+  const { logger, events } = createStubLogger();
+  const result = await withLogging(request, { logger });
+  const { context } = events[0]!;
+  return {
+    result,
+    context,
+    field: (name: string) => findDotted(context, "viem-dlc-deployless", `eth_call.${name}`),
+  };
+}
+
+describe("deployless (paginated)", () => {
   it("returns a dense array when the lens serves everything in one page", async () => {
     const requestFn = mockPagedLens();
     const transport = createTransport(requestFn);
@@ -209,26 +249,54 @@ describe("deployless (paged)", () => {
     expect(page).toEqual({ results: [1n, 3n], skipped: [1, 3] });
   });
 
-  it("stamps paged continuations and unservable elements onto the wide event", async () => {
+  it("stamps paginated continuations and unservable elements onto the wide event", async () => {
     // Serves 2 per call and declines the element valued 3, so the run both continues and
     // ends up short: one continuation, two waves, one element the lens refused.
     const requestFn = mockPagedLens({ pageSize: 2, decline: [3] });
     const transport = createTransport(requestFn);
 
-    const { logger, events } = createStubLogger();
-    const result = await withLogging(() => transport.request(createRequest([1, 2, 3, 4, 5].map(addr))), { logger });
+    const { result, context, field } = await withFacet(() =>
+      transport.request(createRequest([1, 2, 3, 4, 5].map(addr))),
+    );
 
-    expect(events).toHaveLength(1);
-    const { context } = events[0]!;
-    const field = (name: string) => findDotted(context, "viem-dlc-deployless", `eth_call.${name}`);
     // An unservable element is reported in `skipped`, not raised — the request still succeeds.
     expect(context.status).toBe("ok");
     expect(decodePage(result).skipped).toEqual([2]);
     expect(field("elements_missing")).toBe(1);
+    expect(field("elements_unresolved")).toBe(0);
     expect(field("pages_continued")).toBe(1);
     expect(field("pages_waves")).toBe(2);
+    expect(field("pages_escalated")).toBe(0);
+    expect(field("attempts_unresolved")).toBe(0);
     // A lens stopping early is a continuation, not a bisect.
     expect(field("splits_count")).toBe(0);
+    expect(field("splits_corpse")).toBe(0);
+    // Every page here served at least one element.
+    expect(field("pages_all_skipped")).toBe(0);
+  });
+
+  it("counts a page that adjudicated only declines on the wide event", async () => {
+    const requestFn = mockPagedLens({ decline: [1, 2] });
+    const transport = createTransport(requestFn);
+
+    const { result, field } = await withFacet(() => transport.request(createRequest([1, 2].map(addr))));
+
+    expect(decodePage(result)).toEqual({ results: [], skipped: [0, 1] });
+    expect(field("pages_all_skipped")).toBe(1);
+    expect(field("elements_missing")).toBe(2);
+    expect(field("elements_unresolved")).toBe(0);
+  });
+
+  it("does not count a page that stopped for gas as all-skipped", async () => {
+    const requestFn = mockPagedLens({ decline: [1], starve: [2] });
+    const transport = createTransport(requestFn);
+
+    const { result, field } = await withFacet(() => transport.request(createRequest([1, 2].map(addr))));
+
+    expect(decodePage(result)).toEqual({ results: [], skipped: [0, 1] });
+    expect(field("pages_all_skipped")).toBe(0);
+    expect(field("elements_missing")).toBe(2);
+    expect(field("elements_unresolved")).toBe(1);
   });
 
   it("propagates an ordinary lens revert instead of treating it as unservable", async () => {
@@ -236,6 +304,86 @@ describe("deployless (paged)", () => {
     const transport = createTransport(requestFn);
 
     await expect(transport.request(createRequest([addr(1)]))).rejects.toThrow(/execution reverted/);
+  });
+
+  describe("gas deaths", () => {
+    it("escalates a mid-chunk death to a singleton and still fetches the tail behind it", async () => {
+      const requestFn = mockPagedLens({ starve: [2], recoversAlone: true });
+      const transport = createTransport(requestFn);
+
+      const result = await transport.request(createRequest([1, 2, 3, 4].map(addr)));
+
+      expect(decodePage(result)).toEqual({ results: [1n, 2n, 3n, 4n], skipped: [] });
+      // The death is retried exactly once, alone; the tail behind it is re-packed at the rate the
+      // page realized (one element served), so it comes back as singletons of its own.
+      expect(requestedIndices(requestFn)).toEqual([[1, 2, 3, 4], [2], [3], [4]]);
+    });
+
+    it("stamps the escalation on the wide event", async () => {
+      const requestFn = mockPagedLens({ starve: [2], recoversAlone: true });
+      const transport = createTransport(requestFn);
+
+      const { field } = await withFacet(() => transport.request(createRequest([1, 2, 3, 4].map(addr))));
+
+      expect(field("attempts_unresolved")).toBe(1);
+      expect(field("pages_escalated")).toBe(1);
+      expect(field("elements_unresolved")).toBe(0);
+      expect(field("elements_fetched")).toBe(4);
+    });
+
+    it("is terminal when the element dies alone, without throwing", async () => {
+      const requestFn = mockPagedLens({ starve: [1] });
+      const transport = createTransport(requestFn);
+
+      const { result, context, field } = await withFacet(() => transport.request(createRequest([addr(1)])));
+
+      // A page that adjudicates nothing but its own death is still one element attempted.
+      expect(context.status).toBe("ok");
+      expect(decodePage(result)).toEqual({ results: [], skipped: [0] });
+      expect(field("elements_unresolved")).toBe(1);
+      expect(field("elements_missing")).toBe(1);
+      expect(field("pages_escalated")).toBe(0);
+    });
+
+    it("gives up on an element that dies again as a singleton", async () => {
+      const requestFn = mockPagedLens({ starve: [2] });
+      const transport = createTransport(requestFn);
+
+      const { result, field } = await withFacet(() => transport.request(createRequest([1, 2].map(addr))));
+
+      expect(decodePage(result)).toEqual({ results: [1n], skipped: [1] });
+      // Adjudicated once in the original chunk, once alone — never a third time.
+      expect(requestedIndices(requestFn)).toEqual([[1, 2], [2]]);
+      expect(field("attempts_unresolved")).toBe(2);
+      expect(field("pages_escalated")).toBe(1);
+      expect(field("elements_unresolved")).toBe(1);
+    });
+  });
+
+  describe("frames that die without reporting", () => {
+    it("halves a corpse and gives up only once the element is alone", async () => {
+      const requestFn = mockPagedLens({ fatal: [3] });
+      const transport = createTransport(requestFn);
+
+      const { result, field } = await withFacet(() => transport.request(createRequest([1, 2, 3, 4].map(addr))));
+
+      expect(decodePage(result)).toEqual({ results: [1n, 2n, 4n], skipped: [2] });
+      expect(field("splits_corpse")).toBeGreaterThanOrEqual(1);
+      expect(field("splits_count")).toBe(field("splits_corpse"));
+      expect(field("splits_size")).toBe(0);
+      expect(field("elements_unresolved")).toBe(1);
+      expect(field("elements_missing")).toBe(1);
+    });
+
+    it("throws a malformed-result revert instead of halving it", async () => {
+      const requestFn = vi.fn().mockRejectedValue(revertWith(`${MALFORMED_RESULT_SELECTOR}${"00".repeat(64)}` as Hex));
+      const transport = createTransport(requestFn);
+
+      await expect(transport.request(createRequest([1, 2, 3, 4].map(addr)))).rejects.toThrow(
+        /does not fit its declared layout/,
+      );
+      expect(requestFn).toHaveBeenCalledOnce();
+    });
   });
 
   describe("protocol violations", () => {
@@ -253,15 +401,27 @@ describe("deployless (paged)", () => {
 
       expect(error.message).toMatch(expected);
     });
+
+    it.each([
+      ["tags a death that is not the last element adjudicated", [], [tag(1), 1n], /exceeds safe integer range/],
+      ["tags two deaths", [], [tag(0), tag(1)], /exceeds safe integer range/],
+      ["skips past the death it reported", [], [1n, tag(1)], /not strictly increasing below 1/],
+      ["reports a death above the elements it adjudicated", [1n], [tag(2)], /gas death at 2 but adjudicated 2/],
+    ])("throws when the lens %s", async (_name, results, skippedWords, expected) => {
+      const requestFn = vi.fn().mockRejectedValue(revertWithWords(results as bigint[], skippedWords as bigint[]));
+      const transport = createTransport(requestFn);
+
+      const error = await transport.request(createRequest([addr(1), addr(2), addr(3)])).catch((e) => e);
+
+      expect(error.message).toMatch(expected);
+    });
   });
 });
 
 describe("viem interop", () => {
   it("is readable through readContract, which decodes against the lens abi", async () => {
     const requestFn = mockPagedLens({ decline: [2] });
-    const client = createPublicClient({
-      transport: deployless(custom({ request: requestFn as never }), { gasLimit: 30_000_000 }),
-    });
+    const client = createPublicClient({ transport: deployless(custom({ request: requestFn as never })) });
 
     const [results, skipped] = await readContract(client, {
       abi: [pageAbi],
@@ -270,7 +430,7 @@ describe("viem interop", () => {
       factory: FACTORY,
       factoryData: FACTORY_DATA,
       address: TARGET_TO,
-      stateOverride: [policy({ abi: pageAbi, paged: true })],
+      stateOverride: [policy({ abi: pageAbi })],
     } as never);
 
     expect(results).toEqual([1n, 3n]);

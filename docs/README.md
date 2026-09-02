@@ -77,3 +77,4 @@ else, it is Derivation.
 | Document | Landed | |
 |---|---|---|
 | [Paged lenses, partial results, and dropping RETURN mode](./000012-tib-paged-lenses-partial-results.md) | `07e49df`, `0df02a9` | Lenses report how far they got instead of being bisected into; RETURN-mode exfiltration removed. |
+| [Envelope-driven pagination: dropping the gas model, the lens-side estimate, and the lens-side loop](./000016-tib-envelope-paginated-lenses.md) | | The envelope calls the lens's per-item function once per element in its own frame, deposits results into a slab, and reports out-of-gas in-band as a sign-tagged skip; a lens is one plain `view` function; no gas configuration anywhere; bisection survives only for prologue deaths. |

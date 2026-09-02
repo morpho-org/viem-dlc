@@ -8,27 +8,18 @@ export const ETH_CALL_POLICY_ADDRESS: Address = getAddress(`0x${keccak256(toHex(
 const ETH_CALL_POLICY_ADDRESS_LOWER = ETH_CALL_POLICY_ADDRESS.toLowerCase() as Address;
 
 export type EthCallPolicy = {
+  /** The array-shaped fragment of a paginated lens, from `paginatedAbi`: `f(T[]) returns (U[] results, uint256[] skipped)`. */
   abi: AbiFunction;
   /**
-   * Whether `abi` describes a paged lens returning `(U[] results, uint256[] skipped)`. See
-   * `policy`'s docs for the contract a paged lens must honor.
+   * Most padded ABI tail bytes (length word plus padded data) one input element may occupy.
+   * Required when `T` is dynamic.
    */
-  paged?: boolean;
+  maxItemBytes?: number;
+  /** As {@link EthCallPolicy.maxItemBytes}, for one result element `U`. */
+  maxResultBytes?: number;
   batch?: {
     batchSize?: number;
     compress?: boolean;
-    /**
-     * Gas cost model `G(N) = constant + linear·N + quadratic·N²`. The chunker picks the
-     * largest `N` such that `G(N) ≤ gasLimit`.
-     * - `constant`: fixed per-call overhead (dispatcher/decoder/encoder). Pass 0 if unused.
-     * - `linear`: per-item rate at scale (the dominant term for typical lenses).
-     * - `quadratic`: per-item² cost — typically memory expansion. Pass 0 if unused.
-     */
-    gas?: {
-      constant: number;
-      linear: number;
-      quadratic: number;
-    };
   };
   cache?: {
     blobKey: string;
