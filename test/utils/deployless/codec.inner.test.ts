@@ -4,11 +4,11 @@ import { describe, expect, it } from "vitest";
 
 import { envelopeConfig } from "../../../src/utils/deployless/codec.envelope.js";
 import {
+  arrayifiedAbi,
   hexToPage,
   itemFragmentOf,
   type Page,
   pageToHex,
-  paginatedAbi,
   resolveArrayFunction,
 } from "../../../src/utils/deployless/codec.inner.js";
 
@@ -85,7 +85,7 @@ describe("resolveArrayFunction", () => {
   });
 });
 
-describe("paginatedAbi", () => {
+describe("arrayifiedAbi", () => {
   const item = (signature: string) => parseAbiItem(signature) as AbiFunction;
 
   it.each([
@@ -105,7 +105,7 @@ describe("paginatedAbi", () => {
     ],
   ])("derives the array-shaped fragment for %s", (_name, signature, inputType, outputType) => {
     const f = item(signature);
-    const paginated = paginatedAbi(f);
+    const paginated = arrayifiedAbi(f);
 
     expect(paginated.inputs).toEqual([{ ...f.inputs[0], type: inputType }]);
     expect(paginated.outputs).toEqual([
@@ -130,47 +130,47 @@ describe("paginatedAbi", () => {
     ["a fixed-array input", "function rootOf(bytes32[3] leaves) view returns (uint256 root)"],
   ])("round-trips through itemFragmentOf for %s", (_name, signature) => {
     const f = item(signature);
-    const back = itemFragmentOf(paginatedAbi(f) as AbiFunction);
+    const back = itemFragmentOf(arrayifiedAbi(f) as AbiFunction);
 
-    // `paginatedAbi` renames the sole output to `results` so viem decodes the page tuple by name;
+    // `arrayifiedAbi` renames the sole output to `results` so viem decodes the page tuple by name;
     // that rename is the only thing the round trip does not restore.
     expect(back).toEqual({ ...f, outputs: [{ ...f.outputs[0], name: "results" }] });
     expect(toFunctionSelector(back)).toBe(toFunctionSelector(f));
   });
 
   it("rejects a function taking two parameters", () => {
-    expect(() => paginatedAbi(item("function pairOf(address a, address b) view returns (uint256 r)"))).toThrow(
+    expect(() => arrayifiedAbi(item("function pairOf(address a, address b) view returns (uint256 r)"))).toThrow(
       /pairOf must take exactly one parameter/,
     );
   });
 
   it("rejects a function returning nothing", () => {
-    expect(() => paginatedAbi(item("function poke(address a) view"))).toThrow(/poke must return exactly one value/);
+    expect(() => arrayifiedAbi(item("function poke(address a) view"))).toThrow(/poke must return exactly one value/);
   });
 
   it("rejects a function returning two values", () => {
-    expect(() => paginatedAbi(item("function bothOf(address a) view returns (uint256 r, uint256 s)"))).toThrow(
+    expect(() => arrayifiedAbi(item("function bothOf(address a) view returns (uint256 r, uint256 s)"))).toThrow(
       /bothOf must return exactly one value/,
     );
   });
 
   it("resolves to the per-item selector the envelope has to call", () => {
     const f = item("function healthOf(address user) view returns (uint256 health)");
-    expect(resolveArrayFunction(paginatedAbi(f) as AbiFunction).itemSelector).toBe(toFunctionSelector(f));
+    expect(resolveArrayFunction(arrayifiedAbi(f) as AbiFunction).itemSelector).toBe(toFunctionSelector(f));
   });
 });
 
 describe("envelopeConfig", () => {
   it("packs a static lens as selector, no dynamic bits, and both strides", () => {
     const f = parseAbiItem("function healthOf(address user) view returns (uint256 health)") as AbiFunction;
-    const resolved = resolveArrayFunction(paginatedAbi(f) as AbiFunction);
+    const resolved = resolveArrayFunction(arrayifiedAbi(f) as AbiFunction);
 
     expect(envelopeConfig(resolved)).toBe((BigInt(toFunctionSelector(f)) << 224n) | (32n << 64n) | 32n);
   });
 
   it("packs a dynamic lens as selector, both dynamic bits, and both declared bounds", () => {
     const f = parseAbiItem("function describe(bytes blob) view returns (string text)") as AbiFunction;
-    const resolved = resolveArrayFunction(paginatedAbi(f) as AbiFunction, {
+    const resolved = resolveArrayFunction(arrayifiedAbi(f) as AbiFunction, {
       maxItemBytes: 96,
       maxResultBytes: 64,
     });
@@ -182,7 +182,7 @@ describe("envelopeConfig", () => {
 
   it("sets only the input bit when just the input element is dynamic", () => {
     const f = parseAbiItem("function lengthOf(bytes blob) view returns (uint256 size)") as AbiFunction;
-    const resolved = resolveArrayFunction(paginatedAbi(f) as AbiFunction, { maxItemBytes: 128 });
+    const resolved = resolveArrayFunction(arrayifiedAbi(f) as AbiFunction, { maxItemBytes: 128 });
 
     expect(envelopeConfig(resolved)).toBe((BigInt(toFunctionSelector(f)) << 224n) | (1n << 223n) | (128n << 64n) | 32n);
   });

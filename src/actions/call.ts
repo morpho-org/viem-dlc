@@ -14,7 +14,7 @@ export const MAX_INITCODE_SIZE = 49_152;
  * array; `readLens` does so for you.
  *
  * Marks a deployless `eth_call` (`call({ factory, factoryData, to, data, ... })`) encoded against
- * the array-shaped fragment `paginatedAbi` derives from a lens's per-item function, for the
+ * the array-shaped fragment `arrayifiedAbi` derives from a lens's per-item function, for the
  * `deployless` or `cache` transport: elements are re-packed into chunks under byte budgets, the
  * envelope calls the per-item function once per element and pages, and the pages aggregate back
  * into the shape `abi` declares. With `cache`, element bytes are keyed by
@@ -26,7 +26,7 @@ export const MAX_INITCODE_SIZE = 49_152;
  * - The request must not depend on tx envelope fields outside `data` (`from`, `gas`,
  *   `value`, etc.). Those fields are intentionally excluded from cache identity.
  *
- * @param opts.abi The array-shaped fragment from `paginatedAbi`, built from the contract's real
+ * @param opts.abi The array-shaped fragment from `arrayifiedAbi`, built from the contract's real
  *   ABI: the per-item selector the envelope calls is derived from it.
  * @param opts.maxItemBytes Required when the input element is dynamic: an upper bound on its
  *   ABI-encoded tail (length word plus padded data). Larger inputs are declined client-side.

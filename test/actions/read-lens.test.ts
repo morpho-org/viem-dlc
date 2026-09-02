@@ -21,7 +21,7 @@ import {
   OK_SENTINEL,
   unwrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
-import { paginatedAbi, resolveArrayFunction } from "../../src/utils/deployless/codec.inner.js";
+import { arrayifiedAbi, resolveArrayFunction } from "../../src/utils/deployless/codec.inner.js";
 
 const ADDRESS = "0x1111111111111111111111111111111111111111" as const;
 const FACTORY = "0x2222222222222222222222222222222222222222" as const;
@@ -46,7 +46,7 @@ const lensAbi = [
 ] as const satisfies Abi;
 
 const itemAbi = lensAbi[0] as AbiFunction;
-const arrayAbi = paginatedAbi(itemAbi) as AbiFunction;
+const arrayAbi = arrayifiedAbi(itemAbi) as AbiFunction;
 const ARRAY_SELECTOR = toFunctionSelector(arrayAbi);
 const CONFIG = envelopeConfig(resolveArrayFunction(arrayAbi));
 

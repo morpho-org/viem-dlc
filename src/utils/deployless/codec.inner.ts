@@ -6,7 +6,7 @@ import { toFunctionSelector } from "viem";
  * per-item lens function `f(T) returns (U)`. Types are transformed alongside values, so viem
  * decodes `results` with `U`'s field names intact.
  */
-export type PaginatedAbi<F extends AbiFunction> = Omit<F, "inputs" | "outputs"> & {
+export type ArrayifiedAbi<F extends AbiFunction> = Omit<F, "inputs" | "outputs"> & {
   readonly inputs: readonly [Omit<F["inputs"][0], "type"> & { readonly type: `${F["inputs"][0]["type"]}[]` }];
   readonly outputs: readonly [
     Omit<F["outputs"][0], "type" | "name"> & {
@@ -23,15 +23,15 @@ export type PaginatedAbi<F extends AbiFunction> = Omit<F, "inputs" | "outputs"> 
  * value; take it from the contract's ABI (`getAbiItem`) so the name and types are the compiler's.
  * {@link itemFragmentOf} inverts it up to the output's name, which becomes `results`.
  */
-export function paginatedAbi<const F extends AbiFunction>(item: F): PaginatedAbi<F> {
-  if (item.type !== "function") throw new Error("paginatedAbi: expected a function fragment");
+export function arrayifiedAbi<const F extends AbiFunction>(item: F): ArrayifiedAbi<F> {
+  if (item.type !== "function") throw new Error("arrayifiedAbi: expected a function fragment");
   const input = item.inputs[0];
   const output = item.outputs[0];
   if (item.inputs.length !== 1 || !input) {
-    throw new Error(`paginatedAbi: ${item.name} must take exactly one parameter`);
+    throw new Error(`arrayifiedAbi: ${item.name} must take exactly one parameter`);
   }
   if (item.outputs.length !== 1 || !output) {
-    throw new Error(`paginatedAbi: ${item.name} must return exactly one value`);
+    throw new Error(`arrayifiedAbi: ${item.name} must return exactly one value`);
   }
   return {
     ...item,
@@ -40,7 +40,7 @@ export function paginatedAbi<const F extends AbiFunction>(item: F): PaginatedAbi
       { ...output, name: "results", type: `${output.type}[]` },
       { name: "skipped", type: "uint256[]" },
     ],
-  } as PaginatedAbi<F>;
+  } as ArrayifiedAbi<F>;
 }
 
 /**

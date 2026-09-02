@@ -432,10 +432,10 @@ describe("deployless", () => {
   });
 
   it("throws when the policy abi is not a paginated lens", async () => {
-    const unpaginatedAbi = parseAbiItem("function balancesOf(address[] a) view returns (uint256[])") as AbiFunction;
+    const unarrayifiedAbi = parseAbiItem("function balancesOf(address[] a) view returns (uint256[])") as AbiFunction;
     const transport = createTransport(vi.fn());
 
-    await expect(transport.request(createRequest([addr(1)], { abi: unpaginatedAbi }))).rejects.toThrow(
+    await expect(transport.request(createRequest([addr(1)], { abi: unarrayifiedAbi }))).rejects.toThrow(
       /must return \(U\[\] results, uint256\[\] skipped\)/,
     );
   });
