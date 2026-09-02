@@ -2,7 +2,7 @@
  * Outer constructor wrapper for deployless eth_call, REVERT-mode exfiltration (Yul source).
  *
  * Canonical envelope: the compressed variant points here for the constructor-args layout, the
- * bytecode-length patching trick, the skip-deploy rule, the OOG heuristic, and the page loop
+ * bytecode-length patching trick, the occupied-target rule, the OOG heuristic, and the page loop
  * (`paginate`, `stage`, `malformed` are copied verbatim there — Yul has no imports).
  *
  * Constructor args (ABI tuple; viem's wrapper's four, plus a config word):
@@ -26,7 +26,7 @@
  * On page:              revert(OK_SENTINEL || (results, skipped))
  * On malformed result:  revert(MalformedResult(index, returndataSize))      — lens bug
  * On deploy OOG:        revert(OOG_SENTINEL)                                — factory/constructor drained
- * On deploy fail:       revert(CounterfactualDeployFailed(bytes("")))
+ * On deploy fail:       revert(CounterfactualDeployFailed(bytes("")))      — or `target` already had code
  *
  * Build: `pnpm build:RevertEnvelope` — prints the hex constant to paste into codec.envelope.ts.
  */
@@ -47,32 +47,29 @@ object "RevertEnvelope" {
         let tdOff := add(base, mload(add(base, 0x20)))
         paginate(lens, add(tdOff, 0x20), mload(tdOff), mload(add(base, 0x80)))
 
-        // Deploy only into an empty `target`. Matches viem, and keeps a pre-deployed lens from
-        // bricking every call: a CREATE2 factory asked to redeploy reverts, which would turn
-        // "someone already deployed our lens" into a permanent CounterfactualDeployFailed.
-        // Trusting resident code is safe because a CREATE2 address commits to its initcode hash.
-        // The post-check catches a misformed (target, factory, factoryData) triple where the
-        // factory succeeded without deploying at the precomputed address; without it the
-        // per-item calls would hit an EOA and succeed with empty returndata.
+        // Unlike viem's wrapper, resident code at `target` is a failure: nothing here can check it
+        // was built from `factoryData`, so the only lens trusted is the one this frame watched the
+        // factory deploy (a CREATE2 address commits to that initcode). The post-check catches a
+        // factory that succeeded without deploying at the precomputed address.
         function deploy(target, factory, fdOff) {
-            if extcodesize(target) { leave }
-            let gasBefore := gas()
-            let deployed := call(gas(), factory, 0, add(fdOff, 0x20), mload(fdOff), 0, 0)
-            // A constructor that dies of gas is two frames down: the factory keeps its own 1/64 and
-            // hands it back, so a drained deploy leaves at most ~2/64 of `gasBefore` here.
-            if and(iszero(deployed), and(iszero(returndatasize()), iszero(gt(gas(), div(gasBefore, 32))))) {
-                // The factory (or the constructor inside it) ran out of gas: a prologue death the
-                // envelope can report. OOG_SENTINEL = bytes4(keccak256("ViemDlcOutOfGas()")) = 0xcc0bd34c
-                mstore(0x00, 0xcc0bd34c00000000000000000000000000000000000000000000000000000000)
-                revert(0x00, 0x04)
+            if iszero(extcodesize(target)) {
+                let gasBefore := gas()
+                let deployed := call(gas(), factory, 0, add(fdOff, 0x20), mload(fdOff), 0, 0)
+                // A constructor that dies of gas is two frames down: the factory keeps its own 1/64
+                // and hands it back, so a drained deploy leaves at most ~2/64 of `gasBefore` here.
+                if and(iszero(deployed), and(iszero(returndatasize()), iszero(gt(gas(), div(gasBefore, 32))))) {
+                    // The factory (or the constructor inside it) ran out of gas: a prologue death the
+                    // envelope can report. OOG_SENTINEL = bytes4(keccak256("ViemDlcOutOfGas()")) = 0xcc0bd34c
+                    mstore(0x00, 0xcc0bd34c00000000000000000000000000000000000000000000000000000000)
+                    revert(0x00, 0x04)
+                }
+                if and(deployed, iszero(iszero(extcodesize(target)))) { leave }
             }
-            if or(iszero(deployed), iszero(extcodesize(target))) {
-                // bytes4(keccak256("CounterfactualDeployFailed(bytes)")) = 0x101bb98d
-                mstore(0x00, 0x101bb98d00000000000000000000000000000000000000000000000000000000)
-                mstore(0x04, 0x20)
-                mstore(0x24, 0)
-                revert(0x00, 0x44)
-            }
+            // bytes4(keccak256("CounterfactualDeployFailed(bytes)")) = 0x101bb98d
+            mstore(0x00, 0x101bb98d00000000000000000000000000000000000000000000000000000000)
+            mstore(0x04, 0x20)
+            mstore(0x24, 0)
+            revert(0x00, 0x44)
         }
 
         // Runs the page over the elements in `targetData` at `td` (length `tdLen`) and reverts.

@@ -11,7 +11,7 @@ export type EthCallPolicy = {
   /** The array-shaped fragment of a paginated lens, from `paginatedAbi`: `f(T[]) returns (U[] results, uint256[] skipped)`. */
   abi: AbiFunction;
   /**
-   * Most padded ABI tail bytes (length word plus padded data) one input element may occupy.
+   * Upper bound on one input element's ABI-encoded tail (length word plus padded data).
    * Required when `T` is dynamic.
    */
   maxItemBytes?: number;

@@ -36,7 +36,6 @@ jobs:
       - name: Test
         run: pnpm test
 
-      # Envelope tests rebuild the Yul; solc is pinned to the version the pasted constants came from.
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
       - name: Install solc
         run: |
