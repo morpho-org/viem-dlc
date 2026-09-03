@@ -1,6 +1,7 @@
 /*
  * The envelope: initcode for a deployless eth_call over a paginated lens (Yul source).
- * Design: docs/000016-tib-envelope-paginated-lenses.md, docs/000016-tib-outcome-stream.md.
+ * Design: docs/000016-tib-envelope-paginated-lenses.md, docs/000016-tib-outcome-stream.md,
+ * docs/000016-tib-page-telemetry.md.
  *
  * Constructor args (ABI tuple; viem's wrapper's four, plus a config word):
  *   [0..32]:    target address
@@ -19,7 +20,10 @@
  *
  * The envelope calls the lens's per-item function once per element in its own frame, with all
  * remaining gas, and appends one record per adjudicated element to an outcome stream:
- * success `(1 << 255) | L ‖ L bytes`, decline `i`, death `~i` (always last). The guarantee:
+ * success `(1 << 255) | L ‖ L bytes`, decline `i`, death `~i` (always last). Ahead of the records,
+ * four words of gas telemetry (docs/000016-tib-page-telemetry.md): the usable budget the loop
+ * started with, then the sum, sum of squares and maximum of the per-attempt gas of every record
+ * but a death. The guarantee:
  * nothing is touched before it is admitted, and nothing after the call costs more than the callee
  * is unable to take away. Gas before the call's EIP-150 split reaches the retained reserve at
  * 1/64; gas after it reaches the admission floor at 64× — see `prepare`.
@@ -28,7 +32,7 @@
  *   0x00 target · 0x20 n · 0x40 body · 0x60 bodyLen · 0x80 config · 0xa0 ip · 0xc0 op · 0xe0 cur
  *   0x100 ipEnd · 0x120 consumed · 0x140 i · 0x160… history (compressed only), then the slab
  *
- * On page:              revert(OK_SENTINEL ‖ nA ‖ records)
+ * On page:              revert(OK_SENTINEL ‖ nA ‖ budget ‖ Σg ‖ Σg² ‖ gmax ‖ records)
  * On malformed result:  revert(MalformedResult(index, returndataSize))   — lens bug
  * On malformed input:   revert(MalformedInput(index))                    — codec bug
  * On deploy OOG:        revert(OOG_SENTINEL)                             — factory/constructor drained
@@ -114,23 +118,28 @@ object "Envelope" {
         // Runs the page over the `n` elements described by the frame `F` and reverts with the
         // outcome stream.
         //
-        // The slab starts at `slab`: OK_SENTINEL, nA (patched at exit), then records. `P` is one
+        // The slab starts at `slab`: OK_SENTINEL, nA (patched at exit), the four telemetry words
+        // (accumulated in place), then records. `P` is one
         // past the last record; attempt `i` is staged at `P + 0x20`, where its record's bytes will
         // go, so a static result lands on its own arguments and abandoned bytes lie at or past `P`,
         // outside the reverted prefix. `hw` is the highest byte this frame has deliberately
         // touched — never above the true high-water — so every admission prices memory expansion
         // exactly or conservatively.
         function paginate(F, slab) {
-            // OK_SENTINEL = bytes4(keccak256("ViemDlcPage()")) = 0xf90a85b5
-            mstore(slab, 0xf90a85b500000000000000000000000000000000000000000000000000000000)
-            let P := add(slab, 0x24)
+            // OK_SENTINEL = bytes4(keccak256("ViemDlcPage2()")) = 0x1824683e
+            mstore(slab, 0x1824683e00000000000000000000000000000000000000000000000000000000)
+            // The budget an attempt can spend: what is here now, less the reserve every admission
+            // insists on keeping (`prepare`). Fresh memory zeroes the three accumulators.
+            mstore(0x20, gas())
+            mstore(add(slab, 0x24), sub(mload(0x20), mul(64, cpost())))
+            let P := add(slab, 0xa4)
             mstore(P, 0)
             let hw := add(P, 0x20)
             let n := mload(add(F, 0x20))
             let config := mload(add(F, 0x80))
 
             let i := 0
-            for {} lt(i, n) { i := add(i, 1) } {
+            for {} lt(i, n) { i := add(i, 1) account(slab) } {
                 mstore(add(F, 0x140), i)
                 let L, end, need := prepare(F, config, P, hw)
                 if iszero(gt(gas(), need)) {
@@ -190,6 +199,18 @@ object "Envelope" {
 
             mstore(add(slab, 4), i)
             revert(slab, sub(P, slab))
+        }
+
+        // Charges the attempt that began at the gas level in scratch 0x20 to the telemetry words
+        // and leaves the level the next one begins at. Reached through the loop's post block, so a
+        // `break` — a death or a refusal — is never charged.
+        function account(slab) {
+            let now := gas()
+            let d := sub(mload(0x20), now)
+            mstore(0x20, now)
+            mstore(add(slab, 0x44), add(mload(add(slab, 0x44)), d))
+            mstore(add(slab, 0x64), add(mload(add(slab, 0x64)), mul(d, d)))
+            if gt(d, mload(add(slab, 0x84))) { mstore(add(slab, 0x84), d) }
         }
 
         // Locates element `i` (the frame's) and prices its attempt: `L` its byte length, `end` the
@@ -342,7 +363,7 @@ object "Envelope" {
         // with nothing left, test/forge's `test_adversary_drainedCallee*`; nothing else can test it.
         // `apre` is pre-split, so its error reaches the reserve at 1/64.
         function apre(argsLen) -> a { a := add(200, mul(3, shr(5, add(argsLen, 31)))) }
-        function cpost() -> c { c := 1200 }
+        function cpost() -> c { c := 1400 }
 
         function memcost(b) -> c {
             let w := shr(5, add(b, 31))

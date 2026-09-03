@@ -3,7 +3,7 @@ pragma solidity ^0.8.25;
 
 import { DynInLens, DynOutLens, EchoLens, Env, Factory, HungryLens, Runner, StaticLens, WideLens } from "./Fixtures.sol";
 
-bytes4 constant OK = 0xf90a85b5;
+bytes4 constant OK = 0x1824683e;
 bytes4 constant OOG = 0xcc0bd34c;
 bytes4 constant DEPLOY_FAILED = 0x101bb98d;
 bytes4 constant MALFORMED = 0xace36ecd;
@@ -81,7 +81,7 @@ contract EnvelopeTest {
         Env.Page memory p = Env.page(ret);
         uint256[] memory r = Env.uints(p);
         require(p.nA == 3 && r.length == 3 && r[0] == 2 && r[1] == 4 && r[2] == 6 && p.skipped.length == 0 && !p.died, "page");
-        require(ret.length == 4 + 32 + 3 * (32 + 32), "used prefix only");
+        require(ret.length == Env.HEADER + 3 * (32 + 32), "used prefix only");
     }
 
     function test_declinesThenDeathTag() public {
@@ -112,7 +112,65 @@ contract EnvelopeTest {
         require(called, "called");
         Env.Page memory p = Env.page(ret);
         require(p.nA == 1 && p.results.length == 0 && p.skipped.length == 0 && p.died && p.diedAt == 0, "[~0]");
-        require(ret.length == 4 + 32 + 32, "one record");
+        require(ret.length == Env.HEADER + 32, "one record");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                              TELEMETRY
+    //////////////////////////////////////////////////////////////*/
+
+    /// The relations any sum, sum of squares and maximum of `nA` samples satisfy.
+    function consistent(Env.Page memory p, uint256 served) internal pure returns (bool) {
+        if (served == 0) return p.sum == 0 && p.sumSq == 0 && p.gmax == 0;
+        return p.sum > 0 && p.gmax <= p.sum && p.sum * p.sum <= served * p.sumSq && p.sumSq <= p.sum * p.gmax;
+    }
+
+    /// The per-attempt mean tracks the frame's own marginal cost per element.
+    function test_telemetry_densePageTracksMarginalGas() public {
+        (uint256 used10,) = runner.execMeasured(staticIc(values(10), modes(10)));
+        (uint256 used110, bytes memory ret) = runner.execMeasured(staticIc(values(110), modes(110)));
+        Env.Page memory p = Env.page(ret);
+        require(consistent(p, 110) && p.budget > p.sum, "relations");
+        uint256 marginal = (used110 - used10) / 100;
+        uint256 mean = p.sum / 110;
+        require(mean * 100 > marginal * 90 && mean * 100 < marginal * 110, "mean within 10% of marginal");
+        require(p.gmax < mean * 2, "flat costs");
+    }
+
+    function test_telemetry_declinesAreCharged() public {
+        uint256[] memory m = modes(3);
+        (m[0], m[1], m[2]) = (1, 1, 1);
+        Env.Page memory p = Env.page(staticPage(values(3), m));
+        require(p.nA == 3 && p.results.length == 0 && consistent(p, 3), "three charged declines");
+    }
+
+    function test_telemetry_headDeathChargesNothing() public {
+        uint256[] memory m = modes(3);
+        m[0] = 3;
+        (, bytes memory ret) = execWithGas(staticIc(new uint256[](3), m), 3_000_000);
+        Env.Page memory p = Env.page(ret);
+        require(p.died && p.diedAt == 0 && p.budget > 0 && consistent(p, 0), "budget only");
+    }
+
+    /// A page that dies at 4 charges the same as a page over its first four elements alone.
+    function test_telemetry_deathIsNotCharged() public {
+        uint256[] memory m = modes(6);
+        (m[1], m[2], m[4]) = (1, 2, 3);
+        (, bytes memory ret) = execWithGas(staticIc(values(6), m), 3_000_000);
+        Env.Page memory dying = Env.page(ret);
+        uint256[] memory m4 = modes(4);
+        (m4[1], m4[2]) = (1, 2);
+        Env.Page memory whole = Env.page(staticPage(values(4), m4));
+        require(dying.died && dying.diedAt == 4 && consistent(dying, 4), "shape");
+        uint256 diff = dying.sum > whole.sum ? dying.sum - whole.sum : whole.sum - dying.sum;
+        require(diff * 100 < whole.sum, "within 1%");
+    }
+
+    function test_telemetry_compressedChargesDecompression() public {
+        bytes memory w = staticInputs(values(3), modes(3));
+        Env.Page memory clear = Env.page(staticPage(values(3), modes(3)));
+        Env.Page memory z = Env.page(runner.exec(compressedStaticIc(Env.compress(w))));
+        require(consistent(z, 3) && z.sum > clear.sum, "compressed costs more");
     }
 
     function test_malformedStatic() public {
@@ -135,7 +193,7 @@ contract EnvelopeTest {
         require(p.nA == n && p.results.length == n && !p.died, "full page");
         require(used < 10_000_000, string.concat("over 10M: ", Env.VM.toString(used)));
         require(p.results[0].length == 1024 && Env.word(p.results[5], 31 * 32) == 36, "wide value");
-        require(ret.length == 4 + 32 + n * (32 + 1024), "record length");
+        require(ret.length == Env.HEADER + n * (32 + 1024), "record length");
     }
 
     /*//////////////////////////////////////////////////////////////
