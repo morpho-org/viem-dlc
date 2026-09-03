@@ -211,6 +211,10 @@ export function hexToPage(layout: ElementLayout, encoded: Hex): Page {
 export function pageToWire({ results, skipped, died }: Page): Hex {
   const attempted = results.length + skipped.length + (died === undefined ? 0 : 1);
   const declined = new Set(skipped);
+  if (declined.size !== skipped.length || skipped.some((i) => i >= attempted || i === died)) {
+    throw new Error("page skips an index it did not attempt");
+  }
+  if (died !== undefined && died !== attempted - 1) throw new Error("page death is not its last record");
   let out = writeUint256(attempted);
   for (let j = 0, served = 0; j < attempted; j++) {
     if (j === died) out += writeWord(BigInt(j) ^ UINT256_MAX);
@@ -232,11 +236,10 @@ export function arrayToHex(layout: ElementLayout, elements: readonly Hex[]): Hex
   return `0x${writeUint256(32)}${encodeArrayBody(layout, elements)}` as Hex;
 }
 
-/** Encodes a page as the caller-facing `(U[] results, uint256[] skipped)` ABI tuple. */
-export function pageToHex(layout: ElementLayout, { results, skipped, died }: Page): Hex {
+/** Encodes the caller-facing `(U[] results, uint256[] skipped)` ABI tuple; a death never reaches it. */
+export function pageToHex(layout: ElementLayout, { results, skipped }: Pick<Page, "results" | "skipped">): Hex {
   const resultsBody = encodeArrayBody(layout, results);
   const skippedWords = skipped.map((i) => `0x${writeUint256(i)}` as Hex);
-  if (died !== undefined) skippedWords.push(`0x${writeWord(BigInt(died) ^ UINT256_MAX)}` as Hex);
   const skippedBody = encodeArrayBody({ mode: "static", size: 32 }, skippedWords);
   const skippedAt = 64 + resultsBody.length / 2;
   return `0x${writeUint256(64)}${writeUint256(skippedAt)}${resultsBody}${skippedBody}` as Hex;
@@ -371,7 +374,7 @@ export function wireToArray(layout: ElementLayout, wire: Hex): readonly Hex[] {
   const out: Hex[] = new Array(n);
   let at = 64;
   for (let i = 0; i < n; i++) {
-    let length = 0;
+    let length: number;
     if (layout.mode === "static") length = layout.size;
     else {
       if (at + 32 > totalBytes) throw new Error(`wire element ${i} has no length word`);

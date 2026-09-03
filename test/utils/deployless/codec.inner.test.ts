@@ -276,9 +276,8 @@ describe("hexToPage", () => {
     const decoded = hexToPage(layout, pageToWire(page));
 
     expect(decoded).toEqual(page);
-    expect(pageToHex(layout, decoded)).toBe(
-      encodePage(types, results, died === undefined ? skipped : [...skipped, tag(died)]),
-    );
+    // The caller-facing tuple never carries the death: the client resolves it before aggregating.
+    expect(pageToHex(layout, decoded)).toBe(encodePage(types, results, skipped));
   });
 
   it("reads records in attempt order and binds each to its ordinal", () => {
@@ -324,6 +323,15 @@ describe("pageToWire", () => {
     const wire = pageToWire({ results: [wordHex(7)], skipped: [1], died: 2 });
     expect(wire).toBe(stream(success(wordHex(7)), word(1), word(tag(2))));
   });
+
+  it.each([
+    ["a skip past the attempts", { results: [wordHex(7)], skipped: [5] }, /did not attempt/],
+    ["a repeated skip", { results: [], skipped: [0, 0] }, /did not attempt/],
+    ["a skip at the death", { results: [], skipped: [1], died: 1 }, /did not attempt/],
+    ["a death that is not last", { results: [wordHex(7)], skipped: [], died: 0 }, /not its last record/],
+  ])("rejects a page with %s", (_name, page, expected) => {
+    expect(() => pageToWire(page as Page)).toThrow(expected);
+  });
 });
 
 describe("pageToHex", () => {
@@ -331,9 +339,5 @@ describe("pageToHex", () => {
     const page: Page = { results: [], skipped: [] };
     expect(pageToHex(DYNAMIC, page)).toBe(encodePage("string[]", [], []));
     expect(pageToHex(STATIC, page)).toBe(encodePage("uint256[]", [], []));
-  });
-
-  it("emits a death with no results as a lone tagged word", () => {
-    expect(pageToHex(STATIC, { results: [], skipped: [], died: 0 })).toBe(encodePage("uint256[]", [], [tag(0)]));
   });
 });

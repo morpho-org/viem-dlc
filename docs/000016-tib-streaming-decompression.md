@@ -63,26 +63,46 @@ Unchanged. 000016-outcome-stream already frames `targetData` as `n ‖ bodyLen �
 body FLZ-compressed under the config word's compression bit, so `n` is readable without
 decompressing and `bodyLen` is available to validate every length and the stream's end. This TIB
 changes only what the envelope does with those bytes. `flz.ts` and the client's wrap/unwrap are
-untouched; a `decompressTargetData` helper reconstructs the logical body for tests.
+untouched; `unwrapDeploylessFactoryCall` already returns the logical body, which is what tests read.
 
 ### Memory
 
 ```
-[args: n ‖ bodyLen ‖ FLZ(body)][F][history: 2·8192 + 296][slab: sentinel | nA | records / current slot …]
+[args: n ‖ bodyLen ‖ FLZ(body)][F][history: 2·8192 + 320][slab: sentinel | nA | records / current slot …]
                                    ^ fixed; absent when the bit is clear      ^ the only growing region
 ```
 
 The history holds the back-reference window (8,192 bytes), a growth zone of the same size so
-rebases amortize, and `296 = 264 + 32` bytes of headroom for the most a token's 32-byte-stride
-writes can overshoot its output. Its size is decided by the format, not by the chunk or the node.
+rebases amortize, and `296 = 264 + 32` bytes of headroom (rounded up to a word) for the most a
+token's 32-byte-stride writes can overshoot its output. Its size is decided by the format, not by
+the chunk or the node. `F` holds the frame in both modes — target, `n`, body, `bodyLen`, config
+and the cursors — so the loop reads invariants from memory rather than holding them on the stack.
 Elements are not kept in history for the call: each is copied out into the record slot at
 `P + 0x24`, which is the memory the previous TIB already admits per attempt.
 
 ### The resumable decompressor
 
-`F` gains `ip` (compressed read cursor), `op` (history write cursor) and `cur` (the history
-position of the next byte not yet handed out). `materialize(len, dst)` produces whole tokens until
-`len` bytes are pending, then copies them out:
+The envelope is a transducer: a stream of input records in, a stream of outcome records out, and
+one cursor on each side. The frame `F` is the state between them. On the clear path advancing the
+input cursor is a pointer add; on the compressed path it is `materialize`, and nothing else in
+the loop knows the difference. The frame:
+
+| word | field | meaning |
+|---|---|---|
+| `0x00` | `target` | the lens |
+| `0x20` | `n` | elements on the wire |
+| `0x40` | `body` | first logical body byte (clear: in the args; compressed: unused) |
+| `0x60` | `bodyLen` | logical body length |
+| `0x80` | `config` | the config word |
+| `0xa0` | `ip` | compressed read cursor |
+| `0xc0` | `op` | history write cursor |
+| `0xe0` | `cur` | next logical byte not yet handed out (clear: a pointer into the body) |
+| `0x100` | `ipEnd` | end of the compressed input |
+| `0x120` | `consumed` | logical bytes handed out (compressed; clear derives it from `cur`) |
+| `0x140` | `i` | the element being attempted, for `MalformedInput` |
+| `0x160…` | history | `2·8192 + 320` bytes, compressed only; the slab follows |
+
+`materialize(len, dst)` produces whole tokens until `len` bytes are pending, then copies them out:
 
 ```
 materialize(F, len, dst):
@@ -96,8 +116,10 @@ materialize(F, len, dst):
   mcopy(dst, cur, len);  cur += len
 ```
 
-Token structure and the copy loop are Solady's, as now; only the loop bound, the persistent
-cursors and the bounds checks change. The target is a *length relative to `cur`*, so a rebase —
+Token structure is Solady's; the loop bound, the persistent cursors and the bounds checks
+change, and a back-reference is copied by doubling `mcopy` rather than by a fixed stride: each
+round copies the whole periodic prefix written so far, so source and destination never overlap and
+the rounds are logarithmic in the match length. The target is a *length relative to `cur`*, so a rebase —
 which moves `cur` and `op` together — cannot leave it in stale coordinates. A token may cross a
 record boundary: the overshoot (≤ 263 bytes) stays pending in history and is the first thing the
 next `materialize` hands out. Flushing before a rebase is sound because everything pending
@@ -145,12 +167,13 @@ and:
 | `D(L)` | producing and copying out one element, pre-split: `tokenWork(L + 263)` + `3 + 3·⌈L/32⌉` (the copy-out) + one rebase (`3 + 3·256` for the 8 KiB `mcopy`, plus the flush) when `op + L + 559 > histEnd`, else 0 |
 
 `tokenWork(b)` is a source-level bound on decoding `b` output bytes: every token yields at least
-one byte, so it is `b ×` the worst per-token cost, whose witnesses are one-byte literals (two
-input bytes per output byte) and distance-one matches of length three. Those two streams are
-what the boundary sweep drives; normal compressor output is not evidence for a safety bound. The
-`+ 263` is the overshoot token, produced but not requested. `D` is a reserve, not a spend: for
-32-byte elements it is a few thousand gas and only shortens a page already that close to its
-end.
+one byte, so it is `b ×` the worst per-token cost, whose witness is a stream of one-byte literals
+(two input bytes per output byte; ~250 gas each as compiled). The overshoot term is the worst
+single token, a 264-byte distance-one match. Only a large element can pin the per-byte term: a
+shortfall before the split reaches the retained gas at 1/64, so for small elements the exit
+reserve absorbs it, and the sweep that pins it drives a 6 KiB element encoded as literals.
+Normal compressor output is not evidence for a safety bound. `D` is a reserve, not a spend: for
+32-byte elements it is under 20k gas and only shortens a page already that close to its end.
 
 ### Client
 
@@ -160,14 +183,14 @@ end.
   `count === 1` corpse path. `isOutOfGasRevert` now throws `[deployless] counterfactual deployment
   (factory or constructor) ran out of gas under this node's cap`. The first wave is bounded by the
   wire cap only; continuations keep `maxItems = served`.
-- **`codec.envelope.ts`:** `decompressTargetData` for tests; re-pasted constant.
+- **`codec.envelope.ts`:** re-pasted constant.
 - **Facets:** `splits_corpse`, `corpse_errors`, `batch_alloc_bytes` removed.
 
 ## Scope & files
 
 1. `Envelope.yul`: history layout, `materialize`, the compressed `locate`, `D`, the end-of-stream
    check; `flzDecompress` deleted. Re-paste the constant.
-2. `codec.envelope.ts`: test helper.
+2. `codec.envelope.ts`: the constant.
 3. `call.ts`: deletions above; `OOG_SENTINEL` as a thrown error.
 4. Docs. README: the `batch.compress` paragraph ("an over-packed chunk pages") and the transport
    intro's "plus a fixed allocation budget". TIB 000016 addendum: `MAX_ALLOC_BYTES`, the corpse
@@ -187,10 +210,15 @@ heuristic; everything caller-facing.
   second (record) `materialize` of one dynamic element. Hand-built streams: a literal and a match
   token each straddling a record boundary; a token running past `ipEnd`; a stream exhausting
   mid-record; a back-reference before the history; trailing compressed bytes after the last
-  record; `consumed ≠ bodyLen` — each `MalformedInput(i)`. The gas sweep in compressed mode, with the first-page grant independent of the unmaterialized bytes. Boundary sweeps
-  at `need − 1 / need / need + 1` driven by the two `tokenWork` witnesses, with and without a
-  rebase inside the admitted quantum; they pin `tokenWork`'s per-token cost in the Yul.
-- **Vitest.** `decompressTargetData` round-trips wrap's output; the packer packs a compression bomb as one wire chunk followed by valid
+  record; `consumed ≠ bodyLen`, a zero-length record — each `MalformedInput(i)`. A compressed singleton
+  refused at its admission floor reports `~0`, not a malformed stream. The gas sweep in
+  compressed mode, with the first-page grant independent of the unmaterialized bytes. Boundary
+  sweeps as in 000016-outcome-stream (±1,500-gas windows around each grant that adjudicates one
+  more element) over one-byte-literal and distance-one streams, the compression bomb across its
+  first rebase, and a 6 KiB one-byte-literal element — the one fixture whose materialization is
+  large enough to pin the per-byte term, since a pre-split shortfall reaches the retained gas at
+  1/64.
+- **Vitest.** The packer packs a compression bomb as one wire chunk followed by valid
   continuations; corpse tests become "deploy OOG throws a distinct error"; `MAX_ALLOC_BYTES` tests
   deleted.
 
@@ -203,9 +231,26 @@ heuristic; everything caller-facing.
   a frame that cannot afford it stops before it, or at the head reports `~0`, and the client
   retries the element alone. A single element larger than a whole frame's memory budget is
   unresolvable and lands in `elements_unresolved`; that is inherent to the element.
+- **A slower path fails nothing.** The sweeps catch a corpse; a compiler change that makes a
+  token or the post-call path dearer without crossing a constant only shortens pages. CI checks
+  `test/forge/Gas.t.sol` against `.gas-snapshot` so the regression is visible in review.
 - **Per-element overhead.** One `materialize` (two for dynamic input), one copy-out of `L`
-  bytes, and the amortized rebase (`3/32` gas per byte) replace a one-pass copy. Tens of gas per
-  element; measured in the sweep.
+  bytes, and the amortized rebase replace a one-pass copy, and the loop's invariants moved into a
+  memory frame to keep the decompressor off a deep stack. Measured on 64-byte static elements
+  from a real compressor stream: ~4.5k gas per element against ~5.0k before this TIB, and ~2.3k
+  against ~1.8k on the clear path. Per token the resumable decoder costs ~230 gas where the
+  one-pass decoder cost far less, because the optimizer inlines it among the loop's live
+  variables; keeping it out of line by recursion was measured to recover a further ~10% but
+  was declined, since it rests on inliner heuristics and a recursive rebase bounds the element
+  size by the EVM stack rather than by gas. A leaner decoder is a follow-up, not a correctness
+  question.
+- **The reserve is bounded by output, not input.** `D(L)` charges the worst per-byte cost for
+  every byte of `L`, so a highly compressible large element reserves far more than producing it
+  costs, and a compression bomb's elements are refused at grants that could in fact serve them.
+  Every token consumes at least two compressed bytes, so token work is also bounded by a constant
+  times the compressed bytes remaining — under 48 KiB by EIP-3860 — and
+  `min(PB·L, C·remainingInput)` would tighten the reserve by orders of magnitude for such
+  elements. It needs its own witness sweep to pin `C`; a follow-up.
 
 ## Notes
 
