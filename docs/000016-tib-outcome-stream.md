@@ -36,7 +36,9 @@ attempted.
 computes the exact memory delta the attempt can cause (`3w + w²/512` against the current
 high-water) and refuses the attempt if the frame cannot afford it and the exit. A dynamic result
 is admitted after the call, against the gas actually retained. A frame that reaches the loop
-never dies unreported, for any input, result size, or skip pattern.
+never dies unreported, for any input, result size, or skip pattern. In one sentence: nothing is
+touched before it is admitted, and nothing after the call costs more than the callee is unable to
+take away.
 
 **No numbers from the author about the lens.** Static element sizes come from the ABI. Dynamic
 element sizes come from the elements themselves: inputs carry their length on the wire, results
@@ -187,27 +189,37 @@ recorded here leaves `returndatasize() > 0`, so no heuristic can misread it.
 
 ### Admission
 
-`memcost(b)` is over byte ends: `w = ⌈b/32⌉`, `3w + ⌊w²/512⌋`. `E(b) = memcost(max(b, msize()))
-− memcost(msize())`, which cannot underflow.
+`memcost(b)` is over byte ends: `w = ⌈b/32⌉`, `3w + ⌊w²/512⌋`. `E(b) = memcost(max(b, hw))
+− memcost(hw)` against the tracked high-water `hw`, which cannot underflow.
 
-| term | what |
-|---|---|
-| `E(end)` | expansion to this attempt's touch, exact |
-| `Apre(argsLen)` | everything from the admission sample to the call's upfront charge: the touch store, the selector and head stores, the staging `mcopy` (`3 + 3·⌈argsLen/32⌉`), argument setup, the `gas()` sample, the 100-gas warm access (`deploy` ran `extcodesize` on `target`) |
-| `Cpost` | the longest path from the call's return to a valid used-prefix `revert`: classification, the head check and deposit calculation for dynamic output, one record store, the header patch, `revert` over expanded memory, or the next iteration's admission check and its refusal exit |
+**Two currencies, one exchange rate.** Gas spent before the call's EIP-150 split and gas needed
+after it are not the same money. EIP-150 retains 1/64 of what is available at the call, so a
+pre-split cost reaches the reserve divided by 64 and a post-split cost reaches the floor multiplied
+by 64. `need = E(end) + Apre + 64·Cpost` is that statement: the pre-split terms are paid once and
+their error is 1/64 of itself, while `Cpost` is the reserve itself and every unit of it costs 64
+at the floor. Consequences: `Apre` may be a rough constant; `Cpost` is the whole question; the
+tail of every page leaves `64·Cpost` unused; and only a callee that returns with nothing left can
+test `Cpost`, because any prompt return refunds more than the post-call path needs.
 
-`need = E(end) + Apre + 64·Cpost`. The terms are symbols: their values are pinned in the Yul
-where they are set, from the boundary sweep in Verification, not in this document. The floor is
-no longer flat — `E` grows with high-water — but every term is measured or schedule-derived,
-none is a node property, and the exit is O(1): `revert` charges nothing for already-expanded
-memory and nothing is relocated.
+| term | currency | what |
+|---|---|---|
+| `E(end)` | pre-split | expansion to this attempt's touch, exact |
+| `Apre(argsLen)` | pre-split | the touch store, the selector and head stores, the staging copy (`3 + 3·⌈argsLen/32⌉`), argument setup, the `gas()` sample, the 100-gas warm access |
+| `Cpost` | post-split | the longest path from the call's return to a valid used-prefix `revert`: classification, the head check and deposit calculation for dynamic output, one record store, the header patch, `revert` over expanded memory, or the next iteration's admission check and its refusal exit |
+
+The terms are symbols: their values are pinned in the Yul where they are set, by the adversary
+fixtures in Verification, not in this document. The floor is no longer flat — `E` grows with
+high-water — but every term is measured or schedule-derived, none is a node property, and the
+exit is O(1): `revert` charges nothing for already-expanded memory and nothing is relocated.
 
 Proof sketch. After admission the frame holds `> need`. The pre-split spend is `≤ E + Apre`, so
 the gas available to the call is `> 64·Cpost` and EIP-150 retains `> Cpost` however the callee
 behaves. Every post-call path is within `Cpost` and expands nothing, except the dynamic deposit,
 which is separately admitted against the actual gas left and whose refusal is itself within
-`Cpost`. The head refusal (`i = 0` below `need`) writes one word the prologue touched. A
-refusal at `i > 0` writes nothing: the prefix so far is the page.
+`Cpost`. That deposit is the one place the guarantee is met by a check rather than by
+construction, and it is where a drained dynamic result becomes a death rather than a success. The
+head refusal (`i = 0` below `need`) writes one word the prologue touched. A refusal at `i > 0`
+writes nothing: the prefix so far is the page.
 
 The death heuristic `returndatasize() == 0 && gas() ≤ g/64 + SLACK` is unchanged: `g` is sampled
 after every input access and expansion, immediately before the call, so memory work can never be
@@ -278,12 +290,18 @@ Deliberately unchanged: `deploy`, `OOG_SENTINEL`, the death heuristic, `pageToHe
   with the first-page grant independent of the response's size (it still varies with the wire
   bytes copied). **Boundary sweeps**: for each `Cpost` path — empty out-of-gas tag, empty revert,
   revert with data, static success, static malformed, dynamic short and bad-head malformed,
-  dynamic success copied and converted to a tag, the head refusal at `i = 0`, and a callee that
-  returns with almost nothing left so the post-call path runs on the retained 1/64 alone — find
-  each grant at which one more element is adjudicated, then run every grant in a ±1,500 window
-  around it and require a well-formed page or protocol error. `Cpost` is pinned by the drained
-  callee: lowering it fails that sweep, and every other fixture passes with `Cpost` far too low
-  because a prompt return refunds what the post-call path needs.
+  dynamic success copied and converted to a tag, the head refusal at `i = 0` — find each grant at
+  which one more element is adjudicated, then run every grant in a ±1,500 window around it and
+  require a well-formed page or protocol error. These are no-corpse fuzzing over grants; they do
+  not pin anything. **Adversaries pin constants.** A constant is pinned by a lens built to be the
+  worst case for that term alone, such that lowering the term fails its sweep: `Cpost` by a
+  callee that returns with almost nothing left (`test_adversary_drainedCallee*`), so the post-call
+  path runs on the retained 1/64 alone. Every other fixture passes with `Cpost` far too low,
+  because a prompt return refunds what the post-call path needs. A term without an adversary is
+  unpinned, whatever the sweeps say. **Gas snapshot.** The sweeps catch a corpse, not a slower
+  path: a compiler change that lengthens the post-call path by 20% without crossing `Cpost`
+  shortens every page and fails nothing. `test/forge/Gas.t.sol` records the per-element cost of
+  both paths and CI checks it against `.gas-snapshot`, so that regression is a diff in review.
 - **Vitest.** Decoder: every record kind, `~0`, non-final death, wrong-but-in-range ordinal,
   namespace `01`, zero or misaligned dynamic length, oversized `nA`, truncation exactly on a
   record boundary. `pageToWire ∘ hexToPage` round-trips including a death. `arrayToCalldata`

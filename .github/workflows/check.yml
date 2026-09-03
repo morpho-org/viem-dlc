@@ -45,3 +45,5 @@ jobs:
 
       - name: Test envelopes
         run: pnpm test:forge
+        - name: Gas snapshot
+          run: forge snapshot --root test/forge --match-contract GasTest --check

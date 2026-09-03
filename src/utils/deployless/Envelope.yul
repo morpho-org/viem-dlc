@@ -19,9 +19,14 @@
  *
  * The envelope calls the lens's per-item function once per element in its own frame, with all
  * remaining gas, and appends one record per adjudicated element to an outcome stream:
- * success `(1 << 255) | L ‖ L bytes`, decline `i`, death `~i` (always last). Nothing past the page
- * header is written before the attempt that needs it, and every memory expansion is admitted
- * against the fee schedule first.
+ * success `(1 << 255) | L ‖ L bytes`, decline `i`, death `~i` (always last). The guarantee:
+ * nothing is touched before it is admitted, and nothing after the call costs more than the callee
+ * is unable to take away. Gas before the call's EIP-150 split reaches the retained reserve at
+ * 1/64; gas after it reaches the admission floor at 64× — see `prepare`.
+ *
+ * Frame `F` (words), the state between the input cursor and the output cursor:
+ *   0x00 target · 0x20 n · 0x40 body · 0x60 bodyLen · 0x80 config · 0xa0 ip · 0xc0 op · 0xe0 cur
+ *   0x100 ipEnd · 0x120 consumed · 0x140 i · 0x160… history (compressed only), then the slab
  *
  * On page:              revert(OK_SENTINEL ‖ nA ‖ records)
  * On malformed result:  revert(MalformedResult(index, returndataSize))   — lens bug
@@ -323,11 +328,13 @@ object "Envelope" {
 
         // Reserve for producing and copying out `L` bytes: the worst per-byte token cost (one-byte
         // literals, ~230 gas each), then one overshooting token, one rebase and the copy-out with
-        // margin. The per-byte term is pinned by test/forge's `test_boundarySweep_literalStream_large`.
+        // margin. Pre-split, so an error reaches the reserve at 1/64; only a large element can pin
+        // the per-byte term — test/forge's `test_adversary_largeLiteralElement`.
         function dwork(L) -> d { d := add(add(mul(300, L), mul(3, shr(5, add(L, 31)))), 9000) }
 
-        // `cpost` is pinned by test/forge's `test_boundarySweep_returnsDrained*` (lowering it fails
-        // them); `apre` is the measured pre-call spend, whose error reaches the retained gas at 1/64.
+        // `cpost` is post-split: the reserve itself, 64× at the floor. Pinned by a callee that returns
+        // with nothing left, test/forge's `test_adversary_drainedCallee*`; nothing else can test it.
+        // `apre` is pre-split, so its error reaches the reserve at 1/64.
         function apre(argsLen) -> a { a := add(200, mul(3, shr(5, add(argsLen, 31)))) }
         function cpost() -> c { c := 1200 }
 

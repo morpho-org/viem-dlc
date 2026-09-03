@@ -536,10 +536,11 @@ contract EnvelopeTest {
         require(s.pages > 0 && s.maxAdjudicated == 4, "pages");
     }
 
-    /// An element that returns with ~120 gas left however much it was granted, followed by another,
-    /// so the post-call success path and the next admission's refusal run on the retained 1/64
-    /// alone: the fixture that pins `cpost`.
-    function test_boundarySweep_returnsDrained() public {
+    /// Adversaries pin constants: a lens built to be the worst case for one term, such that lowering
+    /// the term fails the sweep. This one returns with ~40 gas left however much it was granted, then
+    /// another element follows, so the post-call path and the next admission's refusal run on the
+    /// retained 1/64 alone. It pins `cpost`; every other fixture passes with `cpost` far too low.
+    function test_adversary_drainedCallee() public {
         uint256[] memory a = values(4);
         uint256[] memory m = modes(4);
         (a[2], m[2]) = (DRAIN_TO, 6);
@@ -547,7 +548,7 @@ contract EnvelopeTest {
         require(s.pages > 0 && s.maxResults >= 3, "drained element never served");
     }
 
-    function test_boundarySweep_returnsDrained_compressed() public {
+    function test_adversary_drainedCallee_compressed() public {
         uint256[] memory a = values(4);
         uint256[] memory m = modes(4);
         (a[2], m[2]) = (DRAIN_TO, 6);
@@ -557,7 +558,7 @@ contract EnvelopeTest {
         require(s.pages > 0 && s.maxResults >= 3, "drained element never served");
     }
 
-    function test_boundarySweep_returnsDrained_dynamic() public {
+    function test_adversary_drainedCallee_dynamic() public {
         uint256[] memory xs = new uint256[](4);
         (xs[0], xs[1], xs[2], xs[3]) = (5, 40, 11, 5);
         Sweep memory s = boundarySweep(dynOutIc(xs), 3);
@@ -573,8 +574,9 @@ contract EnvelopeTest {
     }
 
     /// A 6 KiB element as one-byte literals: producing it costs more than the exit reserve can
-    /// absorb, so this is the sweep that pins `dwork`'s per-byte term.
-    function test_boundarySweep_literalStream_large() public {
+    /// absorb (a pre-split shortfall reaches the reserve at 1/64), so this adversary pins `dwork`'s
+    /// per-byte term where small elements cannot.
+    function test_adversary_largeLiteralElement() public {
         bytes[] memory xs = new bytes[](3);
         (xs[0], xs[1], xs[2]) = (hex"01", new bytes(6_000), hex"02");
         bytes memory w = Env.wireDyn(xs);

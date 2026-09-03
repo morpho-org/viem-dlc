@@ -82,9 +82,27 @@ Elements are not kept in history for the call: each is copied out into the recor
 
 ### The resumable decompressor
 
-`F` gains `ip` (compressed read cursor), `op` (history write cursor) and `cur` (the history
-position of the next byte not yet handed out). `materialize(len, dst)` produces whole tokens until
-`len` bytes are pending, then copies them out:
+The envelope is a transducer: a stream of input records in, a stream of outcome records out, and
+one cursor on each side. The frame `F` is the state between them. On the clear path advancing the
+input cursor is a pointer add; on the compressed path it is `materialize`, and nothing else in
+the loop knows the difference. The frame:
+
+| word | field | meaning |
+|---|---|---|
+| `0x00` | `target` | the lens |
+| `0x20` | `n` | elements on the wire |
+| `0x40` | `body` | first logical body byte (clear: in the args; compressed: unused) |
+| `0x60` | `bodyLen` | logical body length |
+| `0x80` | `config` | the config word |
+| `0xa0` | `ip` | compressed read cursor |
+| `0xc0` | `op` | history write cursor |
+| `0xe0` | `cur` | next logical byte not yet handed out (clear: a pointer into the body) |
+| `0x100` | `ipEnd` | end of the compressed input |
+| `0x120` | `consumed` | logical bytes handed out (compressed; clear derives it from `cur`) |
+| `0x140` | `i` | the element being attempted, for `MalformedInput` |
+| `0x160…` | history | `2·8192 + 320` bytes, compressed only; the slab follows |
+
+`materialize(len, dst)` produces whole tokens until `len` bytes are pending, then copies them out:
 
 ```
 materialize(F, len, dst):
@@ -213,6 +231,9 @@ heuristic; everything caller-facing.
   a frame that cannot afford it stops before it, or at the head reports `~0`, and the client
   retries the element alone. A single element larger than a whole frame's memory budget is
   unresolvable and lands in `elements_unresolved`; that is inherent to the element.
+- **A slower path fails nothing.** The sweeps catch a corpse; a compiler change that makes a
+  token or the post-call path dearer without crossing a constant only shortens pages. CI checks
+  `test/forge/Gas.t.sol` against `.gas-snapshot` so the regression is visible in review.
 - **Per-element overhead.** One `materialize` (two for dynamic input), one copy-out of `L`
   bytes, and the amortized rebase replace a one-pass copy, and the loop's invariants moved into a
   memory frame to keep the decompressor off a deep stack. Measured on 64-byte static elements
