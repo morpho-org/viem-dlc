@@ -42,7 +42,7 @@ type ItemInput<abi extends Abi, functionName extends LensFunctionName<abi>> =
 
 export type ReadLensParameters<abi extends Abi, functionName extends LensFunctionName<abi>> = Pick<
   EthCallPolicy,
-  "maxItemBytes" | "maxResultBytes" | "batch" | "cache"
+  "batch" | "cache"
 > & {
   abi: abi;
   /** The per-item function: one parameter in, one value out. */

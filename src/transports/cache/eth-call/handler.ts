@@ -54,13 +54,13 @@ export async function handleEthCall(
   }
 
   const { target, targetData } = unwrapDeploylessFactoryCall(txn.data);
-  const solidity = resolveArrayFunction(extracted.policy.abi, extracted.policy);
+  const solidity = resolveArrayFunction(extracted.policy.abi);
   const inputElements = calldataToArray(solidity, targetData);
 
   facet?.set({ input_elements: inputElements.length });
 
   if (inputElements.length === 0) {
-    return encodeResponse(solidity, [], [], "fresh");
+    return encodeResponse(solidity, [], []);
   }
 
   const blobKey = keychain.blobKey(chainId, req);
@@ -77,7 +77,7 @@ export async function handleEthCall(
       restOfEthCallParams,
       facet,
     });
-    return encodeResponse(solidity, outputs, missing, "fresh");
+    return encodeResponse(solidity, outputs, missing);
   }
 
   facet?.set({ blob_key: blobKey, ttl_ms: ttl, delta_ms: delta });
@@ -203,7 +203,6 @@ export async function handleEthCall(
       solidity,
       hits,
       unservable.sort((a, b) => a - b),
-      "cache hit",
     );
 
     const leaderHash = cyrb64Hash(JSON.stringify(req.params));
@@ -220,26 +219,12 @@ export async function handleEthCall(
 
 /**
  * Encodes the aggregated `(U[] results, uint256[] skipped)` page, with `outputs` sparse at every
- * skipped index and `skipped` already expressed against the caller's input array. Elements are
- * checked against the declared result bound here, where cache hits — written under whatever
- * bound the policy declared at the time — merge with fresh results; `source` names the offender.
+ * skipped index and `skipped` already expressed against the caller's input array.
  */
 function encodeResponse(
   solidity: ResolvedArrayFunction,
   outputs: readonly (Hex | undefined)[],
   skipped: readonly number[],
-  source: "fresh" | "cache hit",
 ): Hex {
-  const results = outputs.filter((o) => o !== undefined);
-  if (solidity.maxResultBytes !== undefined) {
-    for (const result of results) {
-      const bytes = (result.length - 2) / 2;
-      if (bytes > solidity.maxResultBytes) {
-        throw new Error(
-          `[cache] ${source} response element of ${bytes} bytes exceeds maxResultBytes=${solidity.maxResultBytes}`,
-        );
-      }
-    }
-  }
-  return pageToHex(solidity.outputLayout, { results, skipped });
+  return pageToHex(solidity.outputLayout, { results: outputs.filter((o) => o !== undefined), skipped });
 }

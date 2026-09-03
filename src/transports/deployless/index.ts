@@ -81,7 +81,7 @@ async function handleEthCall(
   }
 
   const { target, targetData } = unwrapDeploylessFactoryCall(txn.data);
-  const solidity = resolveArrayFunction(extracted.policy.abi, extracted.policy);
+  const solidity = resolveArrayFunction(extracted.policy.abi);
   const inputElements = calldataToArray(solidity, targetData);
 
   const facet = getObservability()?.facet(facetId).sub("eth_call");

@@ -28,10 +28,6 @@ export const MAX_INITCODE_SIZE = 49_152;
  *
  * @param opts.abi The array-shaped fragment from `arrayifiedAbi`, built from the contract's real
  *   ABI: the per-item selector the envelope calls is derived from it.
- * @param opts.maxItemBytes Required when the input element is dynamic: an upper bound on its
- *   ABI-encoded tail (length word plus padded data). Larger inputs are declined client-side.
- * @param opts.maxResultBytes Required when the result element is dynamic: the same bound. A
- *   result exceeding it, fresh or cached, is a protocol error.
  * @param opts.batch Optional batching config. Omit to send all elements in one upstream
  *   `eth_call`, still under the fixed allocation budget.
  * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk; elements
