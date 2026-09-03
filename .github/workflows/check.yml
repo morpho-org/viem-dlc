@@ -38,11 +38,11 @@ jobs:
 
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with:
-          version: v1.5.1
+          version: v1.8.1
       - name: Install solc
         run: |
-          curl -sSL https://github.com/ethereum/solidity/releases/download/v0.8.34/solc-static-linux -o "$RUNNER_TEMP/solc"
-          echo "d40adc6f9fdbb22a97d32a02fa05688bf2ee7886affc48c9851b0afd4a726b39  $RUNNER_TEMP/solc" | sha256sum -c
+          curl -sSL https://github.com/ethereum/solidity/releases/download/v0.8.36/solc-static-linux -o "$RUNNER_TEMP/solc"
+          echo "c8d35afdddc3cd2743ee88b8f25e0fecd16e2bdd5f2120f37e52cd9cc45ae0e6  $RUNNER_TEMP/solc" | sha256sum -c
           sudo install -m 755 "$RUNNER_TEMP/solc" /usr/local/bin/solc
 
       - name: Test envelopes

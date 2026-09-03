@@ -3,7 +3,7 @@ src = "."
 test = "."
 libs = []
 evm_version = "cancun"
-solc = "0.8.34"
+solc = "0.8.36"
 ffi = true
 fs_permissions = [
   { access = "read", path = "../../src/utils/deployless/codec.envelope.ts" },
