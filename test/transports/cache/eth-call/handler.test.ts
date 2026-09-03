@@ -6,6 +6,7 @@ import {
   deploylessCallViaFactoryBytecode,
   encodeAbiParameters,
   encodeDeployData,
+  getAddress,
   type Hex,
   pad,
   parseAbiItem,
@@ -32,8 +33,13 @@ import {
   unwrapDeploylessFactoryCall,
   wrapDeploylessFactoryCall,
 } from "../../../../src/utils/deployless/codec.envelope.js";
-import { resolveArrayFunction } from "../../../../src/utils/deployless/codec.inner.js";
-import { flzDecompress } from "../../../../src/utils/deployless/flz.js";
+import {
+  arrayToWire,
+  hexToArray,
+  pageToWire,
+  resolveArrayFunction,
+  wireToArray,
+} from "../../../../src/utils/deployless/codec.inner.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
 import { createStubLogger, findDotted } from "../../../helpers/logger.js";
 
@@ -55,7 +61,7 @@ const addr = (n: number) => pad(toHex(n), { size: 20 });
 const addrs = (n: number) => Array.from({ length: n }, (_, i) => addr(i + 1));
 
 /** The envelope's config word for {@link pageAbi} — invariant across chunks. */
-const CONFIG = envelopeConfig(resolveArrayFunction(pageAbi));
+const CONFIG = envelopeConfig(resolveArrayFunction(pageAbi), false);
 
 function buildTargetCalldata(abi: AbiFunction, accounts: readonly Address[]): Hex {
   return concat([toFunctionSelector(abi), encodeAbiParameters([{ type: "address[]" }], [accounts])]);
@@ -86,7 +92,10 @@ function wireBytesFor(count: number): number {
   const wrapped = wrapDeploylessFactoryCall(
     {
       target: { address: TARGET_TO, factory: FACTORY, factoryData: FACTORY_DATA },
-      targetData: buildTargetCalldata(pageAbi, addrs(count)),
+      targetData: arrayToWire(
+        WORD,
+        addrs(count).map((a) => pad(a, { size: 32 })),
+      ),
     },
     { compress: false, config: CONFIG },
   );
@@ -95,8 +104,6 @@ function wireBytesFor(count: number): number {
 
 type PolicyOpts = {
   batch?: { batchSize?: number; compress?: boolean };
-  maxItemBytes?: number;
-  maxResultBytes?: number;
 };
 
 function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
@@ -106,8 +113,6 @@ function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
         JSON.stringify({
           abi,
           ...(opts.batch ? { batch: opts.batch } : {}),
-          ...(opts.maxItemBytes !== undefined ? { maxItemBytes: opts.maxItemBytes } : {}),
-          ...(opts.maxResultBytes !== undefined ? { maxResultBytes: opts.maxResultBytes } : {}),
           cache: { blobKey: "test-blob", ttl },
         }),
       ),
@@ -153,11 +158,19 @@ async function withFacet(context: HandlerContext, req: EthCallRequest) {
   };
 }
 
-/** Recovers the accounts from upstream-wrapped data. */
+const WORD = { mode: "static", size: 32 } as const;
+const DYNAMIC = { mode: "dynamic" } as const;
+
+/** Recovers the accounts from upstream-wrapped data, compressed or not. */
 function decodeSentAddresses(data: Hex): readonly Address[] {
   const { targetData } = unwrapDeploylessFactoryCall(data);
-  const [accounts] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
-  return accounts as readonly Address[];
+  return wireToArray(WORD, targetData).map((w) => getAddress(`0x${w.slice(26)}`));
+}
+
+/** The raw element bytes viem's encoding of `values` yields for the array type `types`. */
+function elementsOf(types: string, values: readonly unknown[]): readonly Hex[] {
+  const layout = types === "uint256[]" ? WORD : DYNAMIC;
+  return hexToArray(layout, encodeAbiParameters([{ type: types }], [values] as never));
 }
 
 /** Builds a viem-shaped error whose `.data` field carries OK_SENTINEL || payload. */
@@ -167,17 +180,9 @@ function revertWithSentinel(payload: Hex): Error & { data: Hex } {
   return err;
 }
 
-/** The wire form of a gas death at `index`: the 256-bit complement, `~index`. */
-const tag = (index: number) => ((1n << 256n) - 1n) ^ BigInt(index);
-
 function pageRevert(types: string, results: readonly unknown[], skipped: readonly number[], died?: number) {
-  const words = skipped.map(BigInt);
-  return revertWithSentinel(
-    encodeAbiParameters([{ type: types }, { type: "uint256[]" }], [
-      results,
-      died === undefined ? words : [...words, tag(died)],
-    ] as never),
-  );
+  const page = { results: elementsOf(types, results), skipped, ...(died === undefined ? {} : { died }) };
+  return revertWithSentinel(pageToWire(page));
 }
 
 type LensBehavior = {
@@ -200,20 +205,6 @@ function mockPagedFn({ decline = [], starve = [] }: LensBehavior = {}) {
       else results.push(BigInt(value));
     }
     throw pageRevert("uint256[]", results, skipped);
-  });
-}
-
-function mockCompressibleFn(compress: boolean) {
-  return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
-    const data = (args.params[0] as { data: Hex }).data;
-    const { targetData: raw } = unwrapDeploylessFactoryCall(data);
-    const targetData = compress ? flzDecompress(raw) : raw;
-    const [accounts] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
-    throw pageRevert(
-      "uint256[]",
-      (accounts as readonly Address[]).map((a) => BigInt(a)),
-      [],
-    );
   });
 }
 
@@ -459,7 +450,7 @@ describe("handleEthCall", () => {
   describe("compress=true", () => {
     it("round-trips addresses correctly", async () => {
       const accounts = addrs(3);
-      const requestFn = mockCompressibleFn(true);
+      const requestFn = mockPagedFn();
       const req = createRequest(accounts, { batch: { batchSize: 8192, compress: true } });
 
       const result = await handleEthCall(ctx(requestFn), req);
@@ -666,16 +657,13 @@ describe("handleEthCall", () => {
     });
   });
 
-  describe("dynamic element bounds", () => {
+  describe("dynamic element types", () => {
     const namesAbi = parseAbiItem(
       "function getNames(address[] accounts) view returns (string[] results, uint256[] skipped)",
     ) as AbiFunction;
     const lengthsAbi = parseAbiItem(
       "function lengths(string[] input) view returns (uint256[] results, uint256[] skipped)",
     ) as AbiFunction;
-
-    /** The tail bytes a `string` element occupies: length word plus padded data. */
-    const stringTail = (s: string) => `0x${encodeAbiParameters([{ type: "string" }], [s]).slice(2 + 64)}` as Hex;
 
     function stringRequest(values: readonly string[], opts: PolicyOpts): EthCallRequest {
       const targetData = concat([
@@ -688,10 +676,35 @@ describe("handleEthCall", () => {
       };
     }
 
+    /** A lens over `string[]` answering each element's length, read off its length-prefixed tail. */
+    function lengthsLens() {
+      return vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
+        const { targetData } = unwrapDeploylessFactoryCall((args.params[0] as { data: Hex }).data);
+        const tails = wireToArray(DYNAMIC, targetData);
+        throw pageRevert(
+          "uint256[]",
+          tails.map((t) => BigInt(`0x${t.slice(2, 66)}`)),
+          [],
+        );
+      });
+    }
+
+    /** Bytes the transport puts on the wire for a chunk carrying exactly these strings. */
+    function wireBytesForStrings(values: readonly string[]): number {
+      const wrapped = wrapDeploylessFactoryCall(
+        {
+          target: { address: TARGET_TO, factory: FACTORY, factoryData: FACTORY_DATA },
+          targetData: arrayToWire(DYNAMIC, elementsOf("string[]", values)),
+        },
+        { compress: false, config: envelopeConfig(resolveArrayFunction(lengthsAbi), false) },
+      );
+      return (wrapped.length - 2) / 2;
+    }
+
     it("handles dynamic result element types (string[])", async () => {
       const expectedNames = ["one", "two", "three"];
       const requestFn = vi.fn().mockRejectedValue(pageRevert("string[]", expectedNames, []));
-      const req = createRequest(addrs(3), { abi: namesAbi, maxResultBytes: 96, batch: { batchSize: 8192 } });
+      const req = createRequest(addrs(3), { abi: namesAbi, batch: { batchSize: 8192 } });
 
       const result = await handleEthCall(ctx(requestFn), req);
 
@@ -699,88 +712,36 @@ describe("handleEthCall", () => {
       expect(decodeResults(result, "string[]")).toEqual(expectedNames);
     });
 
-    it("throws before any request when a dynamic input element has no declared bound", async () => {
-      const requestFn = vi.fn();
-
-      await expect(handleEthCall(ctx(requestFn), stringRequest(["alpha"], {}))).rejects.toThrow(
-        /policy\.maxItemBytes \(a positive multiple of 32 bytes\) is required/,
-      );
-      expect(requestFn).not.toHaveBeenCalled();
-    });
-
-    it("throws when a fresh result element exceeds maxResultBytes", async () => {
-      const requestFn = vi.fn().mockRejectedValue(pageRevert("string[]", ["a name that spans two whole words"], []));
-      const req = createRequest([addr(1)], { abi: namesAbi, maxResultBytes: 32 });
-
-      await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow(
-        /fresh response element of 96 bytes exceeds maxResultBytes=32/,
-      );
-    });
-
-    it("throws when a cache hit written under a larger bound exceeds maxResultBytes", async () => {
-      const store = new MemoryStore();
-      const req = createRequest([addr(1)], { abi: namesAbi, maxResultBytes: 64 });
-      const blobKey = keychain.blobKey(chainId, req)!;
-      await populateStore(store, blobKey, [
-        {
-          key: entryKeyFor(pad(addr(1), { size: 32 }), namesAbi),
-          value: { output: stringTail("a name that spans two whole words"), fetchedAt: Date.now() },
-        },
-      ]);
-      const requestFn = vi.fn() as unknown as HandlerContext["requestFn"];
-
-      await expect(handleEthCall(ctx(requestFn, store), req)).rejects.toThrow(
-        /cache hit response element of 96 bytes exceeds maxResultBytes=64/,
-      );
-      expect(requestFn).not.toHaveBeenCalled();
-    });
-
-    it("declines an oversize input element client-side, without asking upstream about it", async () => {
-      const values = ["alpha", "x".repeat(40), "bee"];
-      const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
-        const { targetData } = unwrapDeploylessFactoryCall((args.params[0] as { data: Hex }).data);
-        const [sent] = decodeAbiParameters([{ type: "string[]" }], `0x${targetData.slice(10)}` as Hex);
-        throw pageRevert(
-          "uint256[]",
-          (sent as readonly string[]).map((s) => BigInt(s.length)),
-          [],
-        );
-      });
+    it("sends dynamic input elements of any size as length-prefixed tails, with no bound to declare", async () => {
+      const values = ["alpha", "x".repeat(40), "bee", "y".repeat(500)];
+      const requestFn = lengthsLens();
 
       const { result, field } = await withFacet(
         ctx(requestFn as unknown as HandlerContext["requestFn"]),
-        stringRequest(values, { maxItemBytes: 64 }),
+        stringRequest(values, {}),
       );
 
       expect(requestFn).toHaveBeenCalledTimes(1);
-      const { targetData } = unwrapDeploylessFactoryCall(
-        (requestFn.mock.calls[0]![0] as EthCallRequest).params[0].data as Hex,
-      );
-      const [sent] = decodeAbiParameters([{ type: "string[]" }], `0x${targetData.slice(10)}` as Hex);
-      expect(sent).toEqual(["alpha", "bee"]);
-
-      expect(decodePage(result)).toEqual({ results: [5n, 3n], skipped: [1] });
-      expect(field("elements_declined_oversize")).toBe(1);
-      expect(field("elements_missing")).toBe(1);
+      expect(decodePage(result)).toEqual({ results: [5n, 40n, 3n, 500n], skipped: [] });
+      expect(field("elements_declined_oversize")).toBe(0);
     });
 
-    it("counts a repeated oversize element once per caller index", async () => {
-      const big = "x".repeat(40);
-      const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
-        const { targetData } = unwrapDeploylessFactoryCall((args.params[0] as { data: Hex }).data);
-        const [sent] = decodeAbiParameters([{ type: "string[]" }], `0x${targetData.slice(10)}` as Hex);
-        throw pageRevert(
-          "uint256[]",
-          (sent as readonly string[]).map((s) => BigInt(s.length)),
-          [],
-        );
-      });
+    it("declines an element that cannot fit a chunk alone under the wire cap, without asking upstream", async () => {
+      const big = "x".repeat(200);
+      const requestFn = lengthsLens();
 
       const { result, field } = await withFacet(
         ctx(requestFn as unknown as HandlerContext["requestFn"]),
-        stringRequest(["alpha", big, "bee", big], { maxItemBytes: 64 }),
+        stringRequest(["alpha", big, "bee", big], { batch: { batchSize: wireBytesForStrings(["alpha", "bee"]) } }),
       );
 
+      // The oversize element splits its neighbours into two chunks; it is never sent itself.
+      const sent = requestFn.mock.calls.flatMap((call) =>
+        wireToArray(DYNAMIC, unwrapDeploylessFactoryCall((call[0] as EthCallRequest).params[0].data as Hex).targetData),
+      );
+      expect(sent).toEqual(elementsOf("string[]", ["alpha", "bee"]));
+
+      // The repeated element dedupes to one miss but is reported at every caller index.
       expect(decodePage(result)).toEqual({ results: [5n, 3n], skipped: [1, 3] });
       expect(field("elements_declined_oversize")).toBe(2);
       expect(field("elements_missing")).toBe(2);
