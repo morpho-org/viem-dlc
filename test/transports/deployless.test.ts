@@ -8,6 +8,7 @@ import {
   deploylessCallViaFactoryBytecode,
   encodeAbiParameters,
   encodeDeployData,
+  getAddress,
   pad,
   parseAbiItem,
   parseAbiParameters,
@@ -31,8 +32,7 @@ import {
   unwrapDeploylessFactoryCall,
   wrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
-import { resolveArrayFunction } from "../../src/utils/deployless/codec.inner.js";
-import { flzDecompress } from "../../src/utils/deployless/flz.js";
+import { arrayToWire, pageToWire, resolveArrayFunction, wireToArray } from "../../src/utils/deployless/codec.inner.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 
 type EthCallRequest = EIP1193Parameters<import("viem").PublicRpcSchema, "eth_call">;
@@ -47,9 +47,11 @@ const pageAbi = parseAbiItem(
 
 const addr = (n: number) => pad(toHex(n), { size: 20 });
 const addrs = (n: number) => Array.from({ length: n }, (_, i) => addr(i + 1));
+const word = (n: number | bigint | Hex) => BigInt(n).toString(16).padStart(64, "0");
+const WORD = { mode: "static", size: 32 } as const;
 
 /** The envelope's config word for {@link pageAbi} — invariant across chunks. */
-const CONFIG = envelopeConfig(resolveArrayFunction(pageAbi));
+const CONFIG = envelopeConfig(resolveArrayFunction(pageAbi), false);
 
 /** The per-item function {@link pageAbi} paginates, as the envelope must call it. */
 const ITEM_SELECTOR = toFunctionSelector("function balancesOf(address) view returns (uint256)");
@@ -83,9 +85,12 @@ function wireBytesFor(count: number, compress = false): number {
   const wrapped = wrapDeploylessFactoryCall(
     {
       target: { address: TARGET_TO, factory: FACTORY, factoryData: FACTORY_DATA },
-      targetData: buildTargetCalldata(pageAbi, addrs(count)),
+      targetData: arrayToWire(
+        WORD,
+        addrs(count).map((a) => pad(a, { size: 32 })),
+      ),
     },
-    { compress, config: CONFIG },
+    { compress, config: envelopeConfig(resolveArrayFunction(pageAbi), compress) },
   );
   return (wrapped.length - 2) / 2;
 }
@@ -120,11 +125,10 @@ function createRequest(accounts: readonly Address[], opts: RequestOpts = {}): Et
   };
 }
 
-/** Recovers the accounts from the upstream-wrapped data. */
+/** Recovers the accounts from the upstream-wrapped data, compressed or not. */
 function decodeSentAddresses(data: Hex): readonly Address[] {
   const { targetData } = unwrapDeploylessFactoryCall(data);
-  const [accounts] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
-  return accounts as readonly Address[];
+  return wireToArray(WORD, targetData).map((w) => getAddress(`0x${w.slice(26)}`));
 }
 
 /** The `data` field of each upstream `eth_call`, in call order. */
@@ -147,9 +151,7 @@ function revertRaw(data: Hex): Error & { data: Hex } {
 }
 
 function pageRevert(results: readonly bigint[], skipped: readonly number[] = []) {
-  return revertWithSentinel(
-    encodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], [results, skipped.map(BigInt)]),
-  );
+  return revertWithSentinel(pageToWire({ results: results.map((r) => `0x${word(r)}` as Hex), skipped }));
 }
 
 /** The wrapper always exfiltrates via REVERT, so a served page arrives as a sentinel-framed throw. */
@@ -157,20 +159,6 @@ function mockPagedFn() {
   return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
     const data = (args.params[0] as { data: Hex }).data;
     throw pageRevert(decodeSentAddresses(data).map((a) => BigInt(a)));
-  });
-}
-
-/**
- * Full-fidelity mock: decompresses incoming `targetData` when compress=true (input-only
- * compression) and answers with a raw, uncompressed page either way.
- */
-function mockCompressibleFn(compress: boolean) {
-  return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
-    const data = (args.params[0] as { data: Hex }).data;
-    const { targetData: raw } = unwrapDeploylessFactoryCall(data);
-    const targetData = compress ? flzDecompress(raw) : raw;
-    const [accounts] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
-    throw pageRevert((accounts as readonly Address[]).map((a) => BigInt(a)));
   });
 }
 
@@ -254,7 +242,7 @@ describe("deployless", () => {
 
       // The config describes the lens, not the chunk, so both chunks carry the same word.
       expect(configs).toEqual([CONFIG, CONFIG]);
-      // Per-item selector in the top 32 bits, neither dynamic bit set, both strides 32 bytes.
+      // Per-item selector in the top 32 bits, no flag bits set, both strides 32 bytes.
       expect(CONFIG).toBe((BigInt(ITEM_SELECTOR) << 224n) | (32n << 64n) | 32n);
     });
 
@@ -295,11 +283,11 @@ describe("deployless", () => {
     });
 
     it("splits on the allocation budget even when no batchSize is set", async () => {
-      // 32 input bytes, 32 result bytes and fixed per-element memory put a few thousand elements
-      // at the 1 MiB allocation cap; nothing else here bounds the chunk.
+      // 32 input bytes per element put ~32k elements at the 1 MiB allocation cap; nothing else
+      // here bounds the chunk.
       const requestFn = mockPagedFn();
       const transport = createTransport(requestFn);
-      const req = createRequest(addrs(8_000));
+      const req = createRequest(addrs(40_000));
 
       const { logger, events } = createStubLogger();
       const result = await withLogging(() => transport.request(req), { logger });
@@ -307,38 +295,37 @@ describe("deployless", () => {
 
       expect(requestFn.mock.calls.length).toBeGreaterThan(1);
       expect(field("batch_alloc_bytes.max")).toBeLessThanOrEqual(MAX_ALLOC_BYTES);
-      expect(decodeResults(result)).toHaveLength(8_000);
+      expect(decodeResults(result)).toHaveLength(40_000);
     });
 
-    it("packs fewer elements per chunk for a wider output stride at equal input stride", async () => {
+    it("packs a wide output stride no differently: nothing is reserved for results", async () => {
       const wideAbi = parseAbiItem(
         "function wide(address[] accounts) view returns ((uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256)[] results, uint256[] skipped)",
       );
       const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
         const sent = decodeSentAddresses((args.params[0] as { data: Hex }).data);
         throw revertWithSentinel(
-          encodeAbiParameters(
-            [{ type: "uint256[8][]" }, { type: "uint256[]" }],
-            [sent.map((a) => Array<bigint>(8).fill(BigInt(a))), []],
-          ),
+          pageToWire({ results: sent.map((a) => `0x${word(a).repeat(8)}` as Hex), skipped: [] }),
         );
       });
       const transport = createTransport(requestFn);
       const narrowFn = mockPagedFn();
       const narrow = createTransport(narrowFn);
 
-      await transport.request(createRequest(addrs(8_000), { abi: wideAbi }));
-      await narrow.request(createRequest(addrs(8_000)));
+      const wide = await transport.request(createRequest(addrs(40_000), { abi: wideAbi }));
+      await narrow.request(createRequest(addrs(40_000)));
 
-      expect(requestFn.mock.calls.length).toBeGreaterThan(narrowFn.mock.calls.length);
+      expect(requestFn.mock.calls.length).toBe(narrowFn.mock.calls.length);
+      const [results] = decodeAbiParameters([{ type: "uint256[8][]" }, { type: "uint256[]" }], wide as Hex);
+      expect(results).toHaveLength(40_000);
     });
 
     it("packs pathologically compressible input under the allocation budget, not just wire bytes", async () => {
       // One address repeated compresses to a few hundred bytes; only the decompressed size
       // stops the chunk.
-      const requestFn = mockCompressibleFn(true);
+      const requestFn = mockPagedFn();
       const transport = createTransport(requestFn);
-      const req = createRequest(Array<Address>(20_000).fill(addrs(1)[0]!), { batch: { compress: true } });
+      const req = createRequest(Array<Address>(40_000).fill(addrs(1)[0]!), { batch: { compress: true } });
 
       const { logger, events } = createStubLogger();
       const result = await withLogging(() => transport.request(req), { logger });
@@ -347,7 +334,7 @@ describe("deployless", () => {
       expect(requestFn.mock.calls.length).toBeGreaterThan(1);
       expect(field("batch_bytes.max")).toBeLessThan(MAX_INITCODE_SIZE);
       expect(field("batch_alloc_bytes.max")).toBeLessThanOrEqual(MAX_ALLOC_BYTES);
-      expect(decodeResults(result)).toHaveLength(20_000);
+      expect(decodeResults(result)).toHaveLength(40_000);
     });
 
     it("forwards block, cleaned stateOverride, and blockOverride upstream", async () => {
@@ -507,7 +494,7 @@ describe("deployless", () => {
     });
 
     it("decodes sentinel data from an intermediate BaseError", async () => {
-      const encoded = encodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], [[1n], []]);
+      const encoded = pageToWire({ results: [`0x${word(1)}`], skipped: [] });
       const dataError = Object.assign(new BaseError("rpc", { cause: new Error("inner") }), {
         data: `${OK_SENTINEL}${encoded.slice(2)}` as Hex,
       });
@@ -532,7 +519,7 @@ describe("deployless", () => {
   describe("compress=true", () => {
     it("round-trips addresses correctly", async () => {
       const accounts = addrs(3);
-      const requestFn = mockCompressibleFn(true);
+      const requestFn = mockPagedFn();
       const transport = createTransport(requestFn);
 
       const result = await transport.request(createRequest(accounts, { batch: { batchSize: 8192, compress: true } }));
@@ -540,21 +527,34 @@ describe("deployless", () => {
       expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
     });
 
-    it("does not use viem's stock RETURN bytecode as prefix", async () => {
-      const requestFn = mockCompressibleFn(true);
+    it("sets the compression bit and compresses only the body", async () => {
+      const requestFn = mockPagedFn();
       const transport = createTransport(requestFn);
+      const accounts = addrs(3);
 
-      await transport.request(createRequest([addr(1)], { batch: { batchSize: 8192, compress: true } }));
+      await transport.request(createRequest(accounts, { batch: { batchSize: 8192, compress: true } }));
 
-      expect(sentData(requestFn)[0]!.toLowerCase().startsWith(deploylessCallViaFactoryBytecode.toLowerCase())).toBe(
-        false,
+      const data = sentData(requestFn)[0]!;
+      expect(data.toLowerCase().startsWith(FACTORY_BYTECODE_REVERT)).toBe(true);
+      const [, wire, , , config] = decodeAbiParameters(
+        parseAbiParameters("address, bytes, address, bytes, uint256"),
+        `0x${data.slice(FACTORY_BYTECODE_REVERT.length)}` as Hex,
+      );
+      expect(config).toBe(CONFIG | (1n << 221n));
+      // `n` and `bodyLen` stay clear; the body behind them is the compressed one.
+      expect(wire.slice(2, 2 + 128)).toBe(`${word(3)}${word(96)}`);
+      expect(unwrapDeploylessFactoryCall(data).targetData).toBe(
+        arrayToWire(
+          WORD,
+          accounts.map((a) => pad(a, { size: 32 })),
+        ),
       );
     });
 
     it("keeps compressed chunks within the actual wrapped byte budget", async () => {
       const accounts = Array.from({ length: 60 }, () => addr(1));
       const batchSize = wireBytesFor(1, true) + 8;
-      const requestFn = mockCompressibleFn(true);
+      const requestFn = mockPagedFn();
       const transport = createTransport(requestFn);
 
       const result = await transport.request(createRequest(accounts, { batch: { batchSize, compress: true } }));

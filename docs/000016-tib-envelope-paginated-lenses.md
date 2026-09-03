@@ -7,6 +7,14 @@ related:
 
 # TIB — Envelope-driven pagination: dropping the gas model, the lens-side estimate, and the lens-side loop
 
+> **Superseded in part by 000016-tib-outcome-stream.md**: the Intent's "declared byte bounds"
+> (`maxItemBytes` / `maxResultBytes`); the slab layout, the staging region and its `S` term, and
+> the flat `FLOOR = 64·C + B + M + S` in Design (admission is now priced per attempt from the
+> memory it touches); "The response encoding: one tag, wire-only" (now an outcome stream); the
+> two envelopes, `RevertEnvelope.yul` and `RevertEnvelopeCompressed.yul` (now one
+> `Envelope.yul`); the note "Why the allocation budget must see the output stride"; and the
+> "Death-detection imprecision" risk, which now also covers the post-call deposit path.
+
 The gas model survives pagination for exactly one reason: the prologue isn't paginated. Work
 proportional to the *sent* count — envelope decompression, calldata copy, output allocation —
 runs before the first `gasleft()` check and can kill a frame with zero progress, and the

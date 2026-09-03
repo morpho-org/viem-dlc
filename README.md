@@ -104,9 +104,9 @@ pathological), `pages_all_skipped` (pages whose every element reverted — a per
 lens does not implement is one cause), `attempts_unresolved` (elements a frame's gas could not
 resolve, whether the per-item frame died or the envelope refused to start it), `pages_escalated`
 (singleton retries those cost), and, matching the response's
-`skipped` array: `elements_missing` in total, of which `elements_declined_oversize` were declined
-client-side against `maxItemBytes` and `elements_unresolved` were gas-terminal even alone — the
-subset another provider with a higher cap might still serve.
+`skipped` array: `elements_missing` in total, of which `elements_declined_oversize` could not fit
+a chunk alone under `batch.batchSize` and `elements_unresolved` were gas-terminal even alone —
+the subset another provider with a higher cap might still serve.
 
 ### `cache`
 
@@ -439,8 +439,6 @@ untouched, so tuples, nested arrays, and other complex element types are support
 ```ts
 policy(opts: {
   abi: AbiFunction              // arrayifiedAbi(itemFragment)
-  maxItemBytes?: number
-  maxResultBytes?: number
   batch?: {
     batchSize?: number
     compress?: boolean
@@ -456,18 +454,13 @@ policy(opts: {
 - **`opts.abi`** — the array-shaped fragment from `arrayifiedAbi`. Build it from the per-item
   fragment in the contract's real ABI: the transport derives the per-item selector from it, and a
   selector the lens does not implement fails as a page that skips every element.
-- **`opts.maxItemBytes`** / **`opts.maxResultBytes`** — upper bounds on one input / result
-  element's ABI-encoded tail (length word plus padded data), required when `T` / `U` is dynamic.
-  An input past `maxItemBytes` is declined client-side and lands in `skipped`; a result past
-  `maxResultBytes` is a protocol error, fresh or cached.
 - **`opts.batch`** — optional batching config. Omit to send all elements in a single upstream
   `eth_call`, still under the allocation budget below.
 - **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk; elements
   are greedy-packed under it and fetched in parallel. `MAX_INITCODE_SIZE` (EIP-3860's 49 152
   bytes) is the usual value. Independently, every chunk fits a fixed 1 MiB allocation budget
-  (input plus response slab, from the ABI strides or the declared bounds) that keeps envelope
-  memory cheap on any node cap the package supports. Neither budget is tuned per lens, chain, or
-  provider.
+  (the input, plus its decompressed copy when compressed) that keeps envelope memory cheap on any
+  node cap the package supports. Neither budget is tuned per lens, chain, or provider.
 - **`opts.batch.compress`** — FastLZ-compress calldata on the wire, so more elements fit per
   chunk at the cost of encoding time and decompression gas. An over-packed chunk pages and costs
   one more round trip, never a bisection.
@@ -519,15 +512,15 @@ broken dependency is skipped the same way, and the revert reason is not surfaced
 of gas**: EIP-150 guarantees the envelope keeps 1/64 of what it forwarded, which is enough to
 report that in-band and stop; the transport retries the element once on its own, where it holds
 the largest frame a node can grant, and only if it dies there too does it land in the caller's
-`skipped`. Before each attempt the envelope also checks a fixed floor of gas needed to report an
-outcome at all; below it, it stops (or, for element 0, reports it unresolved without attempting).
+`skipped`. Before each attempt the envelope also checks that the frame can pay for the memory the
+attempt would touch and still report an outcome, priced from the fee schedule; below that, it
+stops (or, for element 0, reports it unresolved without attempting).
 So a frame never dies mid-page; the only thing halving still cures is a prologue too large for a
 node's cap.
 
-Static element types (`uint`, `address`, `bytes32`, static structs and fixed arrays) need no
-numbers anywhere. Dynamic element types declare their bound — in padded ABI tail bytes — as
-`maxItemBytes` / `maxResultBytes`, and the envelope refuses a result that exceeds it or is
-otherwise ill-formed (`MalformedResult`, surfaced as a protocol error rather than halved).
+No element type needs a number from the author: static sizes come from the ABI, dynamic inputs
+carry their length on the wire, and dynamic results carry theirs in returndata. The envelope
+refuses an ill-formed result (`MalformedResult`, surfaced as a protocol error rather than halved).
 
 **Shared work goes in the constructor.** Item frames share no memory, but the counterfactual
 deploy runs the constructor inside the same `eth_call`: immutables hold value types, and storage

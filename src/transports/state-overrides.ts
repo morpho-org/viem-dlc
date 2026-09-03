@@ -10,13 +10,6 @@ const ETH_CALL_POLICY_ADDRESS_LOWER = ETH_CALL_POLICY_ADDRESS.toLowerCase() as A
 export type EthCallPolicy = {
   /** The array-shaped fragment of a paginated lens, from `arrayifiedAbi`: `f(T[]) returns (U[] results, uint256[] skipped)`. */
   abi: AbiFunction;
-  /**
-   * Upper bound on one input element's ABI-encoded tail (length word plus padded data).
-   * Required when `T` is dynamic.
-   */
-  maxItemBytes?: number;
-  /** As {@link EthCallPolicy.maxItemBytes}, for one result element `U`. */
-  maxResultBytes?: number;
   batch?: {
     batchSize?: number;
     compress?: boolean;

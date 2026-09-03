@@ -5,16 +5,26 @@ interface Vm {
     function ffi(string[] calldata) external returns (bytes memory);
     function readFile(string calldata) external view returns (string memory);
     function toString(bytes calldata) external pure returns (string memory);
+    function toString(uint256) external pure returns (string memory);
 }
 
 library Env {
     Vm constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     bytes32 constant SALT = bytes32(uint256(1));
+    bytes4 constant OK = 0xf90a85b5;
 
-    /// Builds an envelope from its Yul with the package's own script, and checks the pasted constant matches.
-    function build(string memory script) internal returns (bytes memory code) {
+    struct Page {
+        uint256 nA;
+        bytes[] results;
+        uint256[] skipped;
+        bool died;
+        uint256 diedAt;
+    }
+
+    /// Builds the envelope from its Yul with the package's own script, and checks the pasted constant matches.
+    function build() internal returns (bytes memory code) {
         string[] memory cmd = new string[](5);
-        (cmd[0], cmd[1], cmd[2], cmd[3], cmd[4]) = ("pnpm", "-s", "--dir", "../..", script);
+        (cmd[0], cmd[1], cmd[2], cmd[3], cmd[4]) = ("pnpm", "-s", "--dir", "../..", "build:Envelope");
         code = VM.ffi(cmd);
         bytes memory ts = bytes(VM.readFile("../../src/utils/deployless/codec.envelope.ts"));
         bytes memory hex_ = bytes(VM.toString(code));
@@ -23,11 +33,40 @@ library Env {
             while (j < hex_.length && ts[i + j] == hex_[j]) j++;
             if (j == hex_.length) return code;
         }
-        revert(string.concat("codec.envelope.ts is stale: rerun pnpm ", script));
+        revert("codec.envelope.ts is stale: rerun pnpm build:Envelope");
     }
 
-    function config(bytes4 sel, bool inDyn, uint256 inSize, bool outDyn, uint256 outSize) internal pure returns (uint256) {
-        return (uint256(uint32(sel)) << 224) | ((inDyn ? uint256(1) : 0) << 223) | ((outDyn ? uint256(1) : 0) << 222) | (inSize << 64) | outSize;
+    function config(bytes4 sel, bool inDyn, uint256 inSize, bool outDyn, uint256 outSize, bool compressed)
+        internal pure returns (uint256)
+    {
+        return (uint256(uint32(sel)) << 224) | ((inDyn ? uint256(1) : 0) << 223) | ((outDyn ? uint256(1) : 0) << 222)
+            | ((compressed ? uint256(1) : 0) << 221) | (inSize << 64) | outSize;
+    }
+
+    /// The wire for a static `T[]`, from `abi.encode(array)`: `n ‖ bodyLen ‖ strides`.
+    function wire(bytes memory encodedArray) internal pure returns (bytes memory) {
+        uint256 n = word(encodedArray, 32);
+        bytes memory body = slice(encodedArray, 64, encodedArray.length - 64);
+        return abi.encodePacked(n, body.length, body);
+    }
+
+    /// The wire for a dynamic `T[]`: `n ‖ bodyLen ‖ (L ‖ tail)*`, each tail the padded ABI tail of `abi.encode(x)`.
+    function wireDyn(bytes[] memory xs) internal pure returns (bytes memory) {
+        bytes memory body;
+        for (uint256 i; i < xs.length; i++) {
+            bytes memory tail = slice(abi.encode(xs[i]), 32, 32 + ((xs[i].length + 31) / 32) * 32);
+            body = abi.encodePacked(body, tail.length, tail);
+        }
+        return abi.encodePacked(xs.length, body.length, body);
+    }
+
+    /// Replaces a clear wire's body with its FastLZ compression, using the package's own compressor.
+    function compress(bytes memory clearWire) internal returns (bytes memory) {
+        string[] memory cmd = new string[](8);
+        (cmd[0], cmd[1], cmd[2], cmd[3]) = ("pnpm", "-s", "--dir", "../..");
+        (cmd[4], cmd[5], cmd[6]) = ("exec", "tsx", "test/forge/flz-compress.ts");
+        cmd[7] = VM.toString(slice(clearWire, 64, clearWire.length - 64));
+        return abi.encodePacked(word(clearWire, 0), word(clearWire, 32), VM.ffi(cmd));
     }
 
     /// `envelope || abi.encode(target, targetData, factory, factoryData, config)`, as the TS codec wraps.
@@ -38,9 +77,66 @@ library Env {
         return abi.encodePacked(envelope, abi.encode(target, targetData, factory, abi.encodePacked(SALT, initcode), cfg));
     }
 
-    function body(bytes memory ret) internal pure returns (bytes memory b) {
-        b = new bytes(ret.length - 4);
-        for (uint256 i; i < b.length; i++) b[i] = ret[i + 4];
+    /// Decodes an outcome stream, requiring every record to be bound to its ordinal.
+    function page(bytes memory ret) internal pure returns (Page memory p) {
+        require(bytes4(ret) == OK, "ok sentinel");
+        require(ret.length >= 36, "no nA");
+        p.nA = word(ret, 4);
+        require(p.nA >= 1, "nA >= 1");
+        p.results = new bytes[](p.nA);
+        p.skipped = new uint256[](p.nA);
+        uint256 nR;
+        uint256 nS;
+        uint256 at = 36;
+        for (uint256 j; j < p.nA; j++) {
+            require(at + 32 <= ret.length, "record missing");
+            uint256 w = word(ret, at);
+            at += 32;
+            uint256 kind = w >> 254;
+            if (kind == 0) {
+                require(w == j, "decline ordinal");
+                p.skipped[nS++] = j;
+            } else if (kind == 3) {
+                require(~w == j && j == p.nA - 1, "death not last or misbound");
+                p.died = true;
+                p.diedAt = j;
+            } else if (kind == 2) {
+                uint256 L = w ^ (1 << 255);
+                require(at + L <= ret.length, "result overruns");
+                p.results[nR++] = slice(ret, at, L);
+                at += L;
+            } else {
+                revert("record kind 01");
+            }
+        }
+        require(at == ret.length, "trailing bytes");
+        bytes[] memory results = p.results;
+        uint256[] memory skipped = p.skipped;
+        assembly {
+            mstore(results, nR)
+            mstore(skipped, nS)
+        }
+    }
+
+    function uints(Page memory p) internal pure returns (uint256[] memory out) {
+        out = new uint256[](p.results.length);
+        for (uint256 i; i < out.length; i++) {
+            require(p.results[i].length == 32, "not a word");
+            out[i] = word(p.results[i], 0);
+        }
+    }
+
+    function body(bytes memory ret) internal pure returns (bytes memory) {
+        return slice(ret, 4, ret.length - 4);
+    }
+
+    function word(bytes memory b, uint256 at) internal pure returns (uint256 w) {
+        assembly { w := mload(add(add(b, 0x20), at)) }
+    }
+
+    function slice(bytes memory b, uint256 at, uint256 len) internal pure returns (bytes memory out) {
+        out = new bytes(len);
+        assembly { mcopy(add(out, 0x20), add(add(b, 0x20), at), len) }
     }
 }
 
@@ -57,11 +153,18 @@ contract Factory {
     }
 }
 
-/// The deployless eth_call: CREATE the envelope and hand back its revert data.
+/// The deployless eth_call: CREATE the envelope and hand back its revert data, and the gas the
+/// envelope's frame consumed.
 contract Runner {
     function exec(bytes memory initcode) external returns (bytes memory ret) {
+        (, ret) = execMeasured(initcode);
+    }
+
+    function execMeasured(bytes memory initcode) public returns (uint256 used, bytes memory ret) {
         assembly {
+            let g := gas()
             if create(0, add(initcode, 0x20), mload(initcode)) { revert(0, 0) }
+            used := sub(g, gas())
             ret := mload(0x40)
             mstore(ret, returndatasize())
             returndatacopy(add(ret, 0x20), 0, returndatasize())
@@ -73,6 +176,7 @@ contract Runner {
 contract StaticLens {
     struct In { uint256 a; uint256 mode; }
     // mode: 0 ok · 1 revert() · 2 revert("nope") · 3 burn everything · 4 malformed · 5 burn `a` gas then ok
+    //       6 return with a little under `a` gas left, however much was granted
     function item(In calldata x) external view returns (uint256) {
         if (x.mode == 1) revert();
         if (x.mode == 2) revert("nope");
@@ -81,20 +185,45 @@ contract StaticLens {
         uint256 start = gasleft();
         uint256 n;
         if (x.mode == 5) while (start - gasleft() < x.a) n++;
+        if (x.mode == 6) assembly {
+            let a := calldataload(4)
+            for {} gt(gas(), a) {} {}
+            mstore(0, mul(a, 2))
+            return(0, 0x20)
+        }
         return x.a * 2;
     }
-    function page(In[] calldata) external view returns (uint256[] memory, uint256[] memory) {}
+}
+
+/// A 32-word static result, cheaply: word `i` is `x + i`.
+contract WideLens {
+    function item(uint256 x) external pure returns (uint256[32] memory) {
+        assembly {
+            for { let i := 0 } lt(i, 32) { i := add(i, 1) } { mstore(mul(i, 32), add(x, i)) }
+            return(0, 1024)
+        }
+    }
 }
 
 contract DynOutLens {
-    function item(uint256 x) external pure returns (bytes memory b) {
+    // x: 7 revert() · 8 revert("nope") · 9 success shorter than a head word · 10 bad head
+    //    11 return 64 bytes with ~50 gas left, however much was granted · else `x` bytes of x
+    function item(uint256 x) external view returns (bytes memory b) {
         if (x == 7) revert();
-        if (x == 8) return new bytes(300); // past the 256-byte bound
-        if (x == 9) assembly { return(0, 0x10) } // success shorter than a head word
+        if (x == 8) revert("nope");
+        if (x == 9) assembly { return(0, 0x10) }
+        if (x == 10) assembly { mstore(0, 0x40) return(0, 0x40) }
+        if (x == 11) assembly {
+            for {} gt(gas(), 80) {} {}
+            mstore(0, 0x20)
+            mstore(0x20, 0x40)
+            mstore(0x40, 11)
+            mstore(0x60, 11)
+            return(0, 0x80)
+        }
         b = new bytes(x);
         for (uint256 i; i < x; i++) b[i] = bytes1(uint8(x));
     }
-    function page(uint256[] calldata) external view returns (bytes[] memory, uint256[] memory) {}
 }
 
 contract DynInLens {
@@ -102,7 +231,13 @@ contract DynInLens {
         if (x.length == 3) revert();
         return uint256(keccak256(x));
     }
-    function page(bytes[] calldata) external view returns (uint256[] memory, uint256[] memory) {}
+}
+
+contract EchoLens {
+    function item(bytes calldata x) external pure returns (bytes memory) {
+        if (x.length == 3) revert();
+        return abi.encodePacked(x, x);
+    }
 }
 
 contract HungryLens {

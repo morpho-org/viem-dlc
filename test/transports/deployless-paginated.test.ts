@@ -23,11 +23,13 @@ import { deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
 import {
+  MALFORMED_INPUT_SELECTOR,
   MALFORMED_RESULT_SELECTOR,
   OK_SENTINEL,
   OOG_SENTINEL,
   unwrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
+import { pageToWire, wireToArray } from "../../src/utils/deployless/codec.inner.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 
 type EthCallRequest = EIP1193Parameters<import("viem").PublicRpcSchema, "eth_call">;
@@ -41,10 +43,14 @@ const pageAbi = parseAbiItem(
 ) as AbiFunction;
 
 const addr = (n: number) => pad(toHex(n), { size: 20 });
-const addrValue = (a: Address) => Number(BigInt(a));
+const addrValue = (a: Hex) => Number(BigInt(a));
 
 /** The wire form of a gas death at `index`: the 256-bit complement, `~index`. */
 const tag = (index: number) => ((1n << 256n) - 1n) ^ BigInt(index);
+
+const word = (n: number | bigint) => BigInt(n).toString(16).padStart(64, "0");
+/** A success record carrying one word. */
+const success = (value: bigint) => word((1n << 255n) | 32n) + word(value);
 
 function createRequest(addrs: readonly Address[], batch?: Record<string, unknown>): EthCallRequest {
   const targetData = concat([toFunctionSelector(pageAbi), encodeAbiParameters([{ type: "address[]" }], [addrs])]);
@@ -77,10 +83,9 @@ function createRequest(addrs: readonly Address[], batch?: Record<string, unknown
   };
 }
 
-function sentAddresses(data: Hex): readonly Address[] {
-  const { targetData } = unwrapDeploylessFactoryCall(data);
-  const [addrs] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
-  return addrs as readonly Address[];
+/** The addresses a chunk carries, as 32-byte words off the wire. */
+function sentAddresses(data: Hex): readonly Hex[] {
+  return wireToArray({ mode: "static", size: 32 }, unwrapDeploylessFactoryCall(data).targetData);
 }
 
 function revertWith(data: Hex): Error & { data: Hex } {
@@ -89,15 +94,14 @@ function revertWith(data: Hex): Error & { data: Hex } {
   return err;
 }
 
-/** A lens response whose `skipped` words are given verbatim, tags included. */
-function revertWithWords(results: readonly bigint[], skippedWords: readonly bigint[]) {
-  const encoded = encodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], [results, skippedWords]);
-  return revertWith(`${OK_SENTINEL}${encoded.slice(2)}` as Hex);
+/** A lens response whose records are given verbatim. */
+function revertWithRecords(...records: string[]) {
+  return revertWith(`${OK_SENTINEL}${word(records.length)}${records.join("")}` as Hex);
 }
 
 function revertWithPage(results: readonly bigint[], skipped: readonly number[], died?: number) {
-  const words = skipped.map(BigInt);
-  return revertWithWords(results, died === undefined ? words : [...words, tag(died)]);
+  const page = { results: results.map((r) => `0x${word(r)}` as Hex), skipped, ...(died === undefined ? {} : { died }) };
+  return revertWith(`${OK_SENTINEL}${pageToWire(page).slice(2)}` as Hex);
 }
 
 type LensBehavior = {
@@ -388,13 +392,29 @@ describe("deployless (paginated)", () => {
 
   describe("protocol violations", () => {
     it.each([
-      ["makes no progress", [], [], /attempted 0 of 2 elements, expected 1\.\.2/],
-      ["attempts more than it was given", [1n, 2n, 3n], [], /attempted 3 of 2 elements, expected 1\.\.2/],
-      ["skips an index it never attempted", [1n], [5], /not strictly increasing below 2/],
-      ["repeats a skipped index", [], [0, 0], /not strictly increasing below 2/],
-      ["returns skipped indices out of order", [], [1, 0], /not strictly increasing below 2/],
-    ])("throws when the lens %s", async (_name, results, skipped, expected) => {
-      const requestFn = vi.fn().mockRejectedValue(revertWithPage(results as bigint[], skipped as number[]));
+      ["makes no progress", [], /adjudicated no elements/],
+      [
+        "attempts more than it was given",
+        [success(1n), success(2n), success(3n)],
+        /attempted 3 of 2 elements, expected 1\.\.2/,
+      ],
+      ["skips an index it never attempted", [success(1n), word(5)], /record 1 declines element 5/],
+      ["repeats a skipped index", [word(0), word(0)], /record 1 declines element 0/],
+      ["returns skipped indices out of order", [word(1), word(0)], /record 0 declines element 1/],
+      [
+        "tags a death that is not the last element adjudicated",
+        [word(tag(0)), word(1)],
+        /record 0 of 2 reports a gas death at 0/,
+      ],
+      ["tags two deaths", [word(tag(0)), word(tag(1))], /record 0 of 2 reports a gas death at 0/],
+      ["skips past the death it reported", [word(1), word(tag(1))], /record 0 declines element 1/],
+      [
+        "reports a death above the elements it adjudicated",
+        [success(1n), word(tag(2))],
+        /record 1 of 2 reports a gas death at 2/,
+      ],
+    ])("throws when the lens %s", async (_name, records, expected) => {
+      const requestFn = vi.fn().mockRejectedValue(revertWithRecords(...(records as string[])));
       const transport = createTransport(requestFn);
 
       const error = await transport.request(createRequest([addr(1), addr(2)])).catch((e) => e);
@@ -402,18 +422,12 @@ describe("deployless (paginated)", () => {
       expect(error.message).toMatch(expected);
     });
 
-    it.each([
-      ["tags a death that is not the last element adjudicated", [], [tag(1), 1n], /exceeds safe integer range/],
-      ["tags two deaths", [], [tag(0), tag(1)], /exceeds safe integer range/],
-      ["skips past the death it reported", [], [1n, tag(1)], /not strictly increasing below 1/],
-      ["reports a death above the elements it adjudicated", [1n], [tag(2)], /gas death at 2 but adjudicated 2/],
-    ])("throws when the lens %s", async (_name, results, skippedWords, expected) => {
-      const requestFn = vi.fn().mockRejectedValue(revertWithWords(results as bigint[], skippedWords as bigint[]));
+    it("throws a malformed-input revert instead of halving it", async () => {
+      const requestFn = vi.fn().mockRejectedValue(revertWith(`${MALFORMED_INPUT_SELECTOR}${"00".repeat(32)}` as Hex));
       const transport = createTransport(requestFn);
 
-      const error = await transport.request(createRequest([addr(1), addr(2), addr(3)])).catch((e) => e);
-
-      expect(error.message).toMatch(expected);
+      await expect(transport.request(createRequest([1, 2, 3, 4].map(addr)))).rejects.toThrow(/rejected the input wire/);
+      expect(requestFn).toHaveBeenCalledOnce();
     });
   });
 });

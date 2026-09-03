@@ -10,25 +10,24 @@ import {
   envelopeConfig,
   extractRevertData,
   isCounterfactualDeployFailedRevert,
+  isMalformedInputRevert,
   isMalformedResultRevert,
   isOutOfGasRevert,
   wrapDeploylessFactoryCall,
 } from "./codec.envelope.js";
-import { arrayToCalldata, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
+import { arrayToWire, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
 
 type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
 /**
- * Most bytes of memory one chunk may make the envelope and the lens allocate between them —
- * decompressed input, calldata, and the response slab. Memory expansion is quadratic, so this
- * caps the gas a chunk can spend before its first element (~2M at the cap) against the smallest
+ * Most bytes of memory one chunk may make the envelope allocate before its first element — the
+ * constructor args and, when compressed, the decompressed body. Memory expansion is quadratic, so
+ * this caps the gas a chunk can spend in its prologue (~2M at the cap) against the smallest
  * `eth_call` gas cap the package supports, 10M; it is never tuned per lens, chain, or provider.
  */
 export const MAX_ALLOC_BYTES = 1 << 20;
 
-/** Fixed per-element memory beyond its input and result bytes: result offset, skip word, input head. */
-const ALLOC_BYTES_PER_ELEMENT = 96;
-/** Envelope memory that does not scale with the chunk or the element bound: headers and scratch. */
+/** Envelope memory that does not scale with the chunk: scratch, headers, the page header. */
 const ALLOC_BYTES_FIXED = 1024;
 
 type FactorisedFactoryCallParams = {
@@ -77,54 +76,41 @@ export async function factorisedFactoryCall(
   const missing: number[] = [];
   const unresolved: number[] = [];
   const oversize: number[] = [];
-
-  // Positions in `order` are what gets packed and fetched; `order[pos]` is the caller's index.
-  const order: number[] = [];
-  for (let i = 0; i < elements.length; i++) {
-    if (solidity.maxItemBytes !== undefined && hexByteLength(elements[i]!) > solidity.maxItemBytes) oversize.push(i);
-    else order.push(i);
-  }
-  const at = (pos: number) => elements[order[pos]!]!;
-  const slice = (start: number, end: number) => order.slice(start, end).map((i) => elements[i]!);
-
-  const config = envelopeConfig(solidity);
-  const wrap = (start: number, end: number): Hex =>
+  const wrapAs = (start: number, end: number, compress: boolean): Hex =>
     wrapDeploylessFactoryCall(
-      { target, targetData: arrayToCalldata(solidity, slice(start, end)) },
-      { compress, config },
+      { target, targetData: arrayToWire(solidity.inputLayout, elements.slice(start, end)) },
+      { compress, config: envelopeConfig(solidity, compress) },
     );
+  const wrap = (start: number, end: number): Hex => wrapAs(start, end, compress);
 
   let referenceWrapped: Hex | undefined;
   const getReferenceWrapped = () => {
-    if (!referenceWrapped) referenceWrapped = wrap(0, order.length);
+    if (!referenceWrapped) referenceWrapped = wrap(0, elements.length);
     return referenceWrapped;
   };
 
-  // Static layouts contribute `layout.size` per element; dynamic ones an offset word plus their
+  // Static layouts contribute `layout.size` per element; dynamic ones a length word plus their
   // padded bytes. Both are multiples of 32, so the wrapper's own padding is a per-batch constant.
   const prefixBytes = [0];
-  for (let pos = 0; pos < order.length; pos++) {
-    const bytes = solidity.inputLayout.mode === "static" ? solidity.inputLayout.size : 32 + hexByteLength(at(pos));
+  for (let pos = 0; pos < elements.length; pos++) {
+    const bytes =
+      solidity.inputLayout.mode === "static" ? solidity.inputLayout.size : 32 + hexByteLength(elements[pos]!);
     prefixBytes.push(prefixBytes[pos]! + bytes);
   }
   let overheadBytes: number | undefined;
   const measureUncompressedBytes = (start: number, end: number) => {
-    overheadBytes ??= hexByteLength(getReferenceWrapped()) - prefixBytes[order.length]!;
+    overheadBytes ??=
+      hexByteLength(compress ? wrapAs(0, 1, false) : getReferenceWrapped()) -
+      prefixBytes[compress ? 1 : elements.length]!;
     return overheadBytes + prefixBytes[end]! - prefixBytes[start]!;
   };
   const measureWireBytes = compress
     ? (start: number, end: number) =>
-        hexByteLength(start === 0 && end === order.length ? getReferenceWrapped() : wrap(start, end))
+        hexByteLength(start === 0 && end === elements.length ? getReferenceWrapped() : wrap(start, end))
     : measureUncompressedBytes;
-  // The envelope stages one element (selector plus its bound) beside the input; a compressed
-  // call also keeps the compressed args resident while the decompressed copy is used.
-  const stagingBytes = 4 + solidity.inputBytes;
+  // A compressed call keeps the compressed args resident while the decompressed copy is used.
   const measureAllocBytes = (start: number, end: number, wireBytes: number) =>
-    measureUncompressedBytes(start, end) +
-    (compress ? wireBytes : 0) +
-    (end - start) * (solidity.outputBytes + ALLOC_BYTES_PER_ELEMENT) +
-    stagingBytes +
-    ALLOC_BYTES_FIXED;
+    measureUncompressedBytes(start, end) + (compress ? wireBytes : 0) + ALLOC_BYTES_FIXED;
 
   const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
   const fits = (start: number, end: number) => {
@@ -132,8 +118,8 @@ export async function factorisedFactoryCall(
     return wireBytes <= wireCap && measureAllocBytes(start, end, wireBytes) <= MAX_ALLOC_BYTES;
   };
 
-  const packed = packBatches({ count: order.length, maxItems: Infinity, fits });
-  for (const pos of packed.oversize) oversize.push(order[pos]!);
+  const packed = packBatches({ count: elements.length, maxItems: Infinity, fits });
+  oversize.push(...packed.oversize);
   missing.push(...oversize);
   const ranges = packed.ranges;
   const outputs = new Array<Hex>(elements.length);
@@ -198,6 +184,9 @@ export async function factorisedFactoryCall(
           cause: e,
         });
       }
+      if (isMalformedInputRevert(e)) {
+        throw new Error("[deployless] envelope rejected the input wire (codec bug)", { cause: e });
+      }
       if (isCounterfactualDeployFailedRevert(e)) {
         throw new Error(
           "[deployless] counterfactual deploy failed: target occupied, constructor reverted, or no code left",
@@ -218,8 +207,8 @@ export async function factorisedFactoryCall(
         return halve(timeoutSplitsRemaining - 1);
       }
       if (cause === "corpse" && count === 1) {
-        missing.push(order[start]!);
-        unresolved.push(order[start]!);
+        missing.push(start);
+        unresolved.push(start);
         return;
       }
       if (cause === null && corpseErrors.length < 3) corpseErrors.push(serializeError(e));
@@ -228,15 +217,6 @@ export async function factorisedFactoryCall(
 
     const page = hexToPage(solidity.outputLayout, returndata);
     const attempted = validatePage(page, count);
-    if (solidity.maxResultBytes !== undefined) {
-      for (const result of page.results) {
-        if (hexByteLength(result) > solidity.maxResultBytes) {
-          throw new Error(
-            `[deployless] fresh response element of ${hexByteLength(result)} bytes exceeds maxResultBytes=${solidity.maxResultBytes}`,
-          );
-        }
-      }
-    }
     facet?.stat("page_adjudicated", attempted);
     if (page.died === undefined && page.results.length === 0 && page.skipped.length > 0) pages.allSkipped += 1;
 
@@ -244,8 +224,8 @@ export async function factorisedFactoryCall(
     const entries: ResolvedElement[] = [];
     for (let i = 0, served = 0; i < attempted; i++) {
       if (i === page.died) continue;
-      if (declined.has(i)) missing.push(order[start + i]!);
-      else entries.push({ index: order[start + i]!, output: page.results[served++]! });
+      if (declined.has(i)) missing.push(start + i);
+      else entries.push({ index: start + i, output: page.results[served++]! });
     }
     await commit(entries);
 
@@ -256,8 +236,8 @@ export async function factorisedFactoryCall(
         pages.escalated += 1;
         nextWave.push([pos, pos + 1]);
       } else {
-        missing.push(order[pos]!);
-        unresolved.push(order[pos]!);
+        missing.push(pos);
+        unresolved.push(pos);
       }
     }
 
@@ -273,7 +253,7 @@ export async function factorisedFactoryCall(
     while (wave.length > 0) {
       pages.waves += 1;
       const nextWave: BatchRange[] = [];
-      const isWholeInput = wave.length === 1 && wave[0]![0] === 0 && wave[0]![1] === order.length;
+      const isWholeInput = wave.length === 1 && wave[0]![0] === 0 && wave[0]![1] === elements.length;
       await settleAll(
         wave.map((range) => fetchRecursive(range, nextWave, isWholeInput ? getReferenceWrapped() : undefined)),
       );
@@ -315,27 +295,14 @@ async function settleAll(promises: readonly Promise<void>[]): Promise<void> {
 }
 
 /**
- * Returns the number of elements the page adjudicated, rejecting responses that break the parts
- * of the lens contract visible in the tuple. The rest of the contract is not observable here.
- *
- * The `attempted >= 1` floor is what bounds the wave loop: without it a lens can stall forever.
- * A gas death is necessarily the page's last adjudicated element, so `died` must equal
- * `attempted - 1` and sit above every plain skip.
+ * Returns the number of elements the page adjudicated. The decoder has already bound every record
+ * to its ordinal; what only the request knows is the count, and the `attempted >= 1` floor is what
+ * bounds the wave loop: without it a lens could stall forever.
  */
 function validatePage({ results, skipped, died }: Page, count: number): number {
   const attempted = results.length + skipped.length + (died === undefined ? 0 : 1);
   if (attempted < 1 || attempted > count) {
     throw new Error(`paginated lens attempted ${attempted} of ${count} elements, expected 1..${count}`);
-  }
-  const plainLimit = died === undefined ? attempted : attempted - 1;
-  for (let k = 0; k < skipped.length; k++) {
-    const index = skipped[k]!;
-    if (index >= plainLimit || (k > 0 && index <= skipped[k - 1]!)) {
-      throw new Error(`paginated lens returned skipped indices that are not strictly increasing below ${plainLimit}`);
-    }
-  }
-  if (died !== undefined && died !== attempted - 1) {
-    throw new Error(`paginated lens reported a gas death at ${died} but adjudicated ${attempted} elements`);
   }
   return attempted;
 }

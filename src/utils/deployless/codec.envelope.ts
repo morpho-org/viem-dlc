@@ -4,7 +4,7 @@ import { decodeAbiParameters, deploylessCallViaFactoryBytecode, encodeAbiParamet
 import { causeChain } from "../errors.js";
 
 import type { ResolvedArrayFunction } from "./codec.inner.js";
-import { flzCompress } from "./flz.js";
+import { flzCompress, flzDecompress } from "./flz.js";
 
 /**
  * Viem's factory wrapper bytecode, lowercased to match normalized request hex.
@@ -20,50 +20,41 @@ import { flzCompress } from "./flz.js";
 const FACTORY_BYTECODE_RETURN_VIEM = deploylessCallViaFactoryBytecode.toLowerCase() as Hex;
 
 /**
- * Custom factory wrapper bytecode (REVERT-mode, no compression).
+ * The envelope: our factory wrapper bytecode, REVERT-mode exfiltration.
  *
  * Viem's constructor-arg shape plus a trailing config word — `(address target, bytes targetData,
- * address factory, bytes factoryData, uint256 config)`, see {@link envelopeConfig}. The envelope
- * paginates: it reads the element array out of `targetData` and calls the lens's per-item function
- * once per element in its own frame, depositing results into a `(U[] results, uint256[] skipped)`
- * slab that it exfiltrates via REVERT (prefixed with {@link OK_SENTINEL}), so results are not
- * subject to EIP-170's 24 KB and the frame's EIP-150 remainder never funds a copy.
+ * address factory, bytes factoryData, uint256 config)`, see {@link envelopeConfig}. `targetData` is
+ * the wire form {@link arrayToWire} builds, its body FastLZ-compressed when the config word says so.
+ * The envelope calls the lens's per-item function once per element in its own frame and appends one
+ * record per adjudicated element to an outcome stream that it exfiltrates via REVERT, prefixed with
+ * {@link OK_SENTINEL} — see {@link hexToPage} for the record format. Nothing is written before the
+ * attempt that needs it, and every memory expansion is admitted against the fee schedule first.
  *
- * Source: ./RevertEnvelope.yul. Regenerate with `pnpm build:RevertEnvelope` and paste the output here.
+ * Source: ./Envelope.yul. Regenerate with `pnpm build:Envelope` and paste the output here.
  *
  * Behavior:
  *   1. If `target` already has code, REVERT with `CounterfactualDeployFailed(bytes)` (selector
  *      0x101bb98d, viem's deployless failure selector): resident code cannot be checked against
  *      `factoryData`. Else CALL(factory, factoryData). Drained of gas → REVERT {@link OOG_SENTINEL};
  *      call failed OR `target` still has no code → `CounterfactualDeployFailed`.
- *   2. Per element: STATICCALL(target, selector || element). Returned → deposited; reverted →
- *      index in `skipped`; died of gas → `~index` closes `skipped` and the page stops.
- *   3. REVERT with OK_SENTINEL || (results, skipped), or with {@link MALFORMED_RESULT_SELECTOR} when
- *      a result does not fit the declared layout.
+ *   2. Per element: STATICCALL(target, selector || element). Returned → success record; reverted →
+ *      decline record; died of gas, or a dynamic result the frame cannot afford to keep → `~index`
+ *      closes the stream and the page stops.
+ *   3. REVERT with OK_SENTINEL || nA || records, with {@link MALFORMED_RESULT_SELECTOR} when a result
+ *      does not fit the declared layout, or with {@link MALFORMED_INPUT_SELECTOR} when the wire does.
  */
 export const FACTORY_BYTECODE_REVERT: Hex =
-  "0x620003bc60809080380390823980519060608101518101604082015190610026918461029b565b60208101518101906080015190805190604481015191810191601f19603f8401169460a086019163ffffffff60e01b86168352600160401b600190038660401c1695601f1987890160e3011696631580d19d60e01b885260048801604090528160de1c600116918360051b978884028a0160640197600160401b600190038316938360d91c602016850187028c019a8b016084015f9052601f0160051c600302601f850160051c86026003026101f40160061b01610190018c5260208c01996084018a5260640160408c015260200160608b015260808a01525f935f955f945b808610610139575b8a60208b8b8b8b8160051b8094518685015e6044860152848203916003198301602487015252010190fd5b9091929394966001810160c0028c51015a111561026e5761015c8289858f6102fe565b8015610259575a90868b891561022e5750505f809186885afa6101cc576020905b60061c015a11153d15166101a65760018189829360051b8d51015201975b019493929190610106565b945050505050602095965060019192198160051b86510152019085945f8080808061010e565b5096959760403d10610228573d601f19810160205f803e60205f511415601f821617878211176102225791600192918b60648f86956020863e8085036063190160059390931b01015201601f190199019661019b565b886103a6565b866103a6565b909186885afa6102405760209061017d565b50969597843d036102285760018581920199019661019b565b5060018189829360051b8d510152019761019b565b9694505050505060209596501561028c575b85945f8080808061010e565b90505f19835152600190610280565b9091813b156102bd575b63101bb98d60e01b5f5260206004525f60245260445ffd5b5f80915a9482602083519301915af19160051c5a11153d15168215166102ef573b1515166102ed578080806102a5565b565b633302f4d360e21b5f5260045ffd5b5f9194939260808201519360408301519060018660df1c165f1461037f579082916001606096959460051b83015183019687950151930190811061036e575b5050039260401c6001600160401b031683116103685750602484602060048596970152015e60240190565b93505050565b90915060051b810151015f8061033d565b50949560409490941c6001600160401b031694859491850201925060040190505e60040190565b63ace36ecd60e01b5f526004523d60245260445ffd";
-
-/**
- * Custom factory wrapper bytecode (REVERT-mode, FLZ input compression).
- *
- * Same constructor-arg shape, but `targetData` must be FLZ-compressed by the caller
- * (via {@link flzCompress} in ./flz.ts). The wrapper decompresses it, then runs the same page
- * loop as {@link FACTORY_BYTECODE_REVERT}; the response is not compressed.
- *
- * Source: ./RevertEnvelopeCompressed.yul. Regenerate with `pnpm build:RevertEnvelopeCompressed`.
- */
-export const FACTORY_BYTECODE_REVERT_COMPRESSED: Hex =
-  "0x6200047e60808138038101918183039082398051916100296060830151830160408401518561035d565b6020820151820190601f801991011691815160208084019185940101905b8181106102b957505060800151918060248101519203810191601f19601f8401169460a086019163ffffffff60e01b86168352600160401b600190038660401c1695601f1987890160e3011696631580d19d60e01b885260048801604090528160de1c600116918360051b978884028a0160640197600160401b600190038316938360d91c602016850187028c019a8b016084015f9052601f0160051c600302601f850160051c86026003026101f40160061b01610190018c5260208c01996084018a5260440160408c015260608b015260808a01525f935f955f945b808610610157575b8a60208b8b8b8b8160051b8094518685015e6044860152848203916003198301602487015252010190fd5b9091929394966001810160c0028c51015a111561028c5761017a8289858f6103c0565b8015610277575a90868b891561024c5750505f809186885afa6101ea576020905b60061c015a11153d15166101c45760018189829360051b8d51015201975b019493929190610124565b945050505050602095965060019192198160051b86510152019085945f8080808061012c565b5096959760403d10610246573d601f19810160205f803e60205f511415601f821617878211176102405791600192918b60648f86956020863e8085036063190160059390931b01015201601f19019901966101b9565b88610468565b86610468565b909186885afa61025e5760209061019b565b50969597843d03610246576001858192019901966101b9565b5060018189829360051b8d51015201976101b9565b969450505050506020959650156102aa575b85945f8080808061012c565b90505f1983515260019061029e565b8095949593919351805f1a918260051c9182156001146103425760078314928160011a600701811884021893611f008560020192856001011a9160081b160160018101908603906020811860208211021890815f5b8281015f190151818a01520183811061033b57505050506002929183910101920101925b90949394610047565b829061030e565b50826001939250818460029301518652010192010192610332565b9091813b1561037f575b63101bb98d60e01b5f5260206004525f60245260445ffd5b5f80915a9482602083519301915af19160051c5a11153d15168215166103b1573b1515166103af57808080610367565b565b633302f4d360e21b5f5260045ffd5b5f9194939260808201519360408301519060018660df1c165f14610441579082916001606096959460051b830151830196879501519301908110610430575b5050039260401c6001600160401b0316831161042a5750602484602060048596970152015e60240190565b93505050565b90915060051b810151015f806103ff565b50949560409490941c6001600160401b031694859491850201925060040190505e60040190565b63ace36ecd60e01b5f526004523d60245260445ffd";
+  "0x620005366080813803810191818303908239805190610029606082015182016040830151846104a9565b608081015190602081015101928351926020850151936040860151956060810191604081106104965760018660dd1c165f1461047657601f8501601f1916928892849283929101602001905b8181106103d257505003036103bf57935b60018460df1c1692831561038d575b601f19601f88880101169563f90a85b560e01b875260248701955f87526044880192838111610385575b5092975f9594602060da86901c1694600160de82901c16936001600160401b03808316861502946001600160e01b03198416949390929160409190911c16818e5b8c10610114575b8d808e8e60048301520390fd5b8a9b9c829b61034f575b8a8c019b818d016024018b8e8b8501602001838111610345575b5061c8c8905f908385119384610324575b5060230160051c60030201015a11156102ea575f601f198301526102e2575b508d818d60208501958b875280936102cf575b50602483918601015e019b888360045a9301818a5afa6001146101eb57602091925060061c015a11153d15166101bf576020818e60019352019c5b019a998e610100565b985050505050505050508495506001925060209150831981520191015f80808080808080808080610107565b508789156102bb575060403d106102b5573d91601f1983019260205f803e60205f511415601f8516176102af578201908b8211906103235f8e84610295575b508660051c60030201015a111561026957508360208085013e610260575b506001916020915b818460ff1b17815201019c6101b6565b99506001610248565b9d5050509950505050505050505050849550600192508319905291015f80808080808080808080610107565b61029f915061050c565b6102a88561050c565b038e61022a565b8f610520565b8d610520565b9150873d036102b557600191602091610250565b602493506020908185880152019261017b565b9a505f610168565b5050509c9b5050505050505050505050508293508015610315575b5f80808080808080808080610107565b505f1981526020016001610305565b60239192506103329061050c565b61033b8661050c565b039190508f610149565b925061c8c8610138565b83820385039b5060208c106103725781519b601f19018c11601f8d16171561011e575b8d633d62012160e21b5f5260045260245ffd5b92505f6100bf565b604085901c6001600160401b0316808804831190830288141517156100955750633d62012160e21b5f5260045260245ffd5b84633d62012160e21b5f5260045260245ffd5b91925092508051805f1a918260051c91821560011461045b5760078314928160011a600701811884021893611f008560020192856001011a9160081b160160018101908603906020811860208211021890815f5b8281015f190151818a01520183811061045457505050506002929183910101920101915b9188928492610075565b8290610426565b5082600193925081846002930151865201019201019161044a565b9050866040969296011461008657633d62012160e21b5f5260045260245ffd5b86633d62012160e21b5f5260045260245ffd5b9091813b156104cb575b63101bb98d60e01b5f5260206004525f60245260445ffd5b5f80915a9482602083519301915af19160051c5a11153d15168215166104fd573b1515166104fb578080806104b3565b565b633302f4d360e21b5f5260045ffd5b601f0160051c80800260091c906003020190565b63ace36ecd60e01b5f526004523d60245260445ffd";
 
 /** Every wrapper we emit. {@link FACTORY_BYTECODE_RETURN_VIEM} is inbound-only. */
-const OWN_FACTORY_BYTECODES = [FACTORY_BYTECODE_REVERT, FACTORY_BYTECODE_REVERT_COMPRESSED] as const;
+const OWN_FACTORY_BYTECODES = [FACTORY_BYTECODE_REVERT] as const;
 
 /**
- * 4-byte magic prefix on revert data that means "this revert is the lens's success payload,
- * not a real revert". Equal to `bytes4(keccak256("ViemDlcOk()"))`.
+ * 4-byte magic prefix on revert data that means "this revert is a page, not a real revert". Equal
+ * to `bytes4(keccak256("ViemDlcPage()"))`; it is also the response format's version, so a page in
+ * an older format is simply not recognised.
  */
-export const OK_SENTINEL: Hex = "0x1580d19d";
+export const OK_SENTINEL: Hex = "0xf90a85b5";
 
 /**
  * 4-byte revert data meaning "the counterfactual deploy ran out of gas". Equal to
@@ -83,6 +74,13 @@ export const OOG_SENTINEL: Hex = "0xcc0bd34c";
  */
 export const MALFORMED_RESULT_SELECTOR: Hex = "0xace36ecd";
 
+/**
+ * Selector of the envelope's `MalformedInput(uint256 index)` revert — the wire's element `index`
+ * (or, at `index == n`, the body as a whole) does not fit the layout the config word declares. The
+ * client wrote the wire, so this is a codec bug, never a decline.
+ */
+export const MALFORMED_INPUT_SELECTOR: Hex = "0xf5880484";
+
 /** Selector of `CounterfactualDeployFailed(bytes)`: `target` already had code, or the factory call failed (not of gas) or left no code. */
 export const COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR: Hex = "0x101bb98d";
 
@@ -96,16 +94,19 @@ export type DeploylessTarget = {
   factoryData: Hex;
 };
 
-/** A deployless factory call: its {@link DeploylessTarget} plus the per-call `targetData` bytes. */
+/** A deployless factory call: its {@link DeploylessTarget} plus the per-call `targetData` bytes (clear, never compressed). */
 export type DeploylessFactoryCall = {
   target: DeploylessTarget;
   targetData: Hex;
 };
 
+const COMPRESSED_BIT = 1n << 221n;
+
 /**
- * Reverses {@link wrapDeploylessFactoryCall} structurally (`targetData` comes back as sent, still
- * compressed for the compressed envelope), and also accepts the RETURN-mode form that viem's stock
- * `client.call({ factory, factoryData })` produces — see {@link FACTORY_BYTECODE_RETURN_VIEM}.
+ * Reverses {@link wrapDeploylessFactoryCall} structurally: `targetData` comes back as the clear wire
+ * form, decompressed when the config word's compression bit is set. Also accepts the RETURN-mode
+ * form that viem's stock `client.call({ factory, factoryData })` produces — see
+ * {@link FACTORY_BYTECODE_RETURN_VIEM} — whose `targetData` is the ABI-encoded array-shaped call.
  */
 export function unwrapDeploylessFactoryCall(data: Hex): DeploylessFactoryCall {
   const lower = data.toLowerCase();
@@ -116,43 +117,48 @@ export function unwrapDeploylessFactoryCall(data: Hex): DeploylessFactoryCall {
     const [address, targetData, factory, factoryData] = decodeAbiParameters(VIEM_CONSTRUCTOR_PARAMS, argsHex);
     return { target: { address, factory, factoryData }, targetData };
   }
-  const [address, targetData, factory, factoryData] = decodeAbiParameters(DEPLOYLESS_CONSTRUCTOR_PARAMS, argsHex);
+  const [address, wire, factory, factoryData, config] = decodeAbiParameters(DEPLOYLESS_CONSTRUCTOR_PARAMS, argsHex);
+  const targetData = config & COMPRESSED_BIT ? withBody(wire, flzDecompress(bodyOf(wire))) : wire;
   return { target: { address, factory, factoryData }, targetData };
 }
 
+const WIRE_HEADER_HEX = 2 + 64 * 2;
+const bodyOf = (wire: Hex) => `0x${wire.slice(WIRE_HEADER_HEX)}` as Hex;
+const withBody = (wire: Hex, body: Hex) => `${wire.slice(0, WIRE_HEADER_HEX)}${body.slice(2)}` as Hex;
+
 /**
- * The envelope's config word: the per-item selector in the top 32 bits, the input-dynamic and
- * output-dynamic bits at 223 and 222, the input element size at bit 64 and the output element
- * size at bit 0 (static strides, or declared maximum tail bytes for dynamic types).
+ * The envelope's config word: the per-item selector in the top 32 bits, the input-dynamic,
+ * output-dynamic and compressed bits at 223, 222 and 221, the input element stride at bit 64 and the
+ * output element stride at bit 0 (static sizes; zero for a dynamic type).
  */
-export function envelopeConfig(solidity: ResolvedArrayFunction): bigint {
-  const { inputLayout, outputLayout } = solidity;
-  const inputSize = inputLayout.mode === "dynamic" ? solidity.maxItemBytes! : inputLayout.size;
-  const outputSize = outputLayout.mode === "dynamic" ? solidity.maxResultBytes! : outputLayout.size;
+export function envelopeConfig({ itemSelector, inputLayout, outputLayout }: ResolvedArrayFunction, compress: boolean) {
   return (
-    (BigInt(solidity.itemSelector) << 224n) |
+    (BigInt(itemSelector) << 224n) |
     (BigInt(inputLayout.mode === "dynamic") << 223n) |
     (BigInt(outputLayout.mode === "dynamic") << 222n) |
-    (BigInt(inputSize) << 64n) |
-    BigInt(outputSize)
+    (compress ? COMPRESSED_BIT : 0n) |
+    (BigInt(inputLayout.mode === "static" ? inputLayout.size : 0) << 64n) |
+    BigInt(outputLayout.mode === "static" ? outputLayout.size : 0)
   );
 }
 
-/** Builds a deployless factory `eth_call` payload; `config` is {@link envelopeConfig}. */
+/**
+ * Builds a deployless factory `eth_call` payload from the clear wire form ({@link arrayToWire});
+ * `config` is {@link envelopeConfig}, and `compress` must match its bit.
+ */
 export function wrapDeploylessFactoryCall(
   { target, targetData }: DeploylessFactoryCall,
   { compress, config }: { compress: boolean; config: bigint },
 ) {
-  const prefix = compress ? FACTORY_BYTECODE_REVERT_COMPRESSED : FACTORY_BYTECODE_REVERT;
-  const encodedTargetData = compress ? flzCompress(targetData) : targetData;
+  const wire = compress ? withBody(targetData, flzCompress(bodyOf(targetData))) : targetData;
   const args = encodeAbiParameters(DEPLOYLESS_CONSTRUCTOR_PARAMS, [
     target.address,
-    encodedTargetData,
+    wire,
     target.factory,
     target.factoryData,
     config,
   ]);
-  return `${prefix}${args.slice(2)}` as Hex;
+  return `${FACTORY_BYTECODE_REVERT}${args.slice(2)}` as Hex;
 }
 
 /**
@@ -206,6 +212,11 @@ export function isOutOfGasRevert(e: unknown): boolean {
 /** True when `e` is the envelope's {@link MALFORMED_RESULT_SELECTOR} revert (selector plus two `uint256`s). */
 export function isMalformedResultRevert(e: unknown): boolean {
   return revertsWithSelector(e, MALFORMED_RESULT_SELECTOR, 2 + 8 + 128);
+}
+
+/** True when `e` is the envelope's {@link MALFORMED_INPUT_SELECTOR} revert (selector plus one `uint256`). */
+export function isMalformedInputRevert(e: unknown): boolean {
+  return revertsWithSelector(e, MALFORMED_INPUT_SELECTOR, 2 + 8 + 64);
 }
 
 /** True when `e` is the envelope's {@link COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR} revert. */

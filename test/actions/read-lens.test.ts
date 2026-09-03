@@ -1,4 +1,4 @@
-import type { Abi, AbiFunction, Address, Hex } from "viem";
+import type { Abi, AbiFunction, Hex } from "viem";
 import {
   createPublicClient,
   custom,
@@ -7,7 +7,6 @@ import {
   fromHex,
   pad,
   parseAbiParameters,
-  toFunctionSelector,
   toHex,
 } from "viem";
 import { describe, expect, it, vi } from "vitest";
@@ -21,7 +20,12 @@ import {
   OK_SENTINEL,
   unwrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
-import { arrayifiedAbi, resolveArrayFunction } from "../../src/utils/deployless/codec.inner.js";
+import {
+  arrayifiedAbi,
+  pageToWire,
+  resolveArrayFunction,
+  wireToArray,
+} from "../../src/utils/deployless/codec.inner.js";
 
 const ADDRESS = "0x1111111111111111111111111111111111111111" as const;
 const FACTORY = "0x2222222222222222222222222222222222222222" as const;
@@ -47,8 +51,7 @@ const lensAbi = [
 
 const itemAbi = lensAbi[0] as AbiFunction;
 const arrayAbi = arrayifiedAbi(itemAbi) as AbiFunction;
-const ARRAY_SELECTOR = toFunctionSelector(arrayAbi);
-const CONFIG = envelopeConfig(resolveArrayFunction(arrayAbi));
+const CONFIG = envelopeConfig(resolveArrayFunction(arrayAbi), false);
 
 const addr = (n: number) => pad(toHex(n), { size: 20 });
 
@@ -74,18 +77,17 @@ function mockEnvelope(decline: number) {
     const { target, targetData } = unwrapDeploylessFactoryCall(data);
 
     expect(target).toEqual({ address: ADDRESS, factory: FACTORY, factoryData: FACTORY_DATA });
-    expect(targetData.slice(0, 10)).toBe(ARRAY_SELECTOR);
     const [, , , , config] = decodeAbiParameters(
       parseAbiParameters("address, bytes, address, bytes, uint256"),
       `0x${data.slice(FACTORY_BYTECODE_REVERT.length)}` as Hex,
     );
     expect(config).toBe(CONFIG);
 
-    const [users] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
-    const results = (users as readonly Address[]).flatMap((u, i) => (i === decline ? [] : [BigInt(u)]));
+    const users = wireToArray({ mode: "static", size: 32 }, targetData);
+    const results = users.flatMap((u, i) => (i === decline ? [] : [u]));
 
     const err = new Error("execution reverted") as Error & { data: Hex };
-    err.data = `${OK_SENTINEL}${pageHex(results, [decline]).slice(2)}` as Hex;
+    err.data = `${OK_SENTINEL}${pageToWire({ results, skipped: [decline] }).slice(2)}` as Hex;
     throw err;
   });
 }
