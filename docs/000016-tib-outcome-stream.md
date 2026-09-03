@@ -276,11 +276,14 @@ Deliberately unchanged: `deploy`, `OOG_SENTINEL`, the death heuristic, `pageToHe
   `nA = i + 1`, and the same element alone succeeds. A callee reverting with data into a static
   out region followed by a success. The gas sweep `noCorpseAboveFirstPage` in both modes,
   with the first-page grant independent of the response's size (it still varies with the wire
-  bytes copied). **Boundary sweeps** at `need − 1 / need / need + 1` for every `Cpost` path —
-  empty out-of-gas tag, empty revert just outside `SLACK`, revert with data, static success,
-  static malformed, dynamic short and bad-head malformed, dynamic success copied, dynamic success
-  converted to a tag, and the head refusal at `i = 0` — these pin `Apre` and `Cpost` and fail the
-  build if a compiled path outgrows them.
+  bytes copied). **Boundary sweeps**: for each `Cpost` path — empty out-of-gas tag, empty revert,
+  revert with data, static success, static malformed, dynamic short and bad-head malformed,
+  dynamic success copied and converted to a tag, the head refusal at `i = 0`, and a callee that
+  returns with almost nothing left so the post-call path runs on the retained 1/64 alone — find
+  each grant at which one more element is adjudicated, then run every grant in a ±1,500 window
+  around it and require a well-formed page or protocol error. `Cpost` is pinned by the drained
+  callee: lowering it fails that sweep, and every other fixture passes with `Cpost` far too low
+  because a prompt return refunds what the post-call path needs.
 - **Vitest.** Decoder: every record kind, `~0`, non-final death, wrong-but-in-range ordinal,
   namespace `01`, zero or misaligned dynamic length, oversized `nA`, truncation exactly on a
   record boundary. `pageToWire ∘ hexToPage` round-trips including a death. `arrayToCalldata`

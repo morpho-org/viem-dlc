@@ -182,17 +182,6 @@ object "Envelope" {
                 }
             }
 
-            // A fully adjudicated compressed body must have been consumed exactly: no token, no
-            // pending byte, no logical byte left over.
-            if and(compressed(F), eq(i, n)) {
-                if or(
-                    iszero(eq(mload(add(F, 0xa0)), mload(add(F, 0x100)))),
-                    or(iszero(eq(mload(add(F, 0xc0)), mload(add(F, 0xe0)))), iszero(eq(mload(add(F, 0x120)), mload(add(F, 0x60)))))
-                ) {
-                    malformedInput(sub(n, 1))
-                }
-            }
-
             mstore(add(slab, 4), i)
             revert(slab, sub(P, slab))
         }
@@ -217,7 +206,7 @@ object "Envelope" {
                     materialize(F, 0x20, 0x00)
                     L := mload(0x00)
                 }
-                if or(and(L, 31), gt(L, sub(remaining, 0x20))) { malformedInput(mload(add(F, 0x140))) }
+                if or(or(iszero(L), and(L, 31)), gt(L, sub(remaining, 0x20))) { malformedInput(mload(add(F, 0x140))) }
             }
             let argsLen := add(add(4, mul(0x20, inDyn(F))), L)
             end := add(add(P, 0x20), argsLen)
@@ -245,7 +234,18 @@ object "Envelope" {
             }
             default {
                 materialize(F, L, dst)
-                mstore(add(F, 0x120), add(mload(add(F, 0x120)), add(mul(0x20, inDyn(F)), L)))
+                let consumedNow := add(mload(add(F, 0x120)), add(mul(0x20, inDyn(F)), L))
+                mstore(add(F, 0x120), consumedNow)
+                // The last element staged must exhaust the stream: no token, no pending byte, no
+                // logical byte left over.
+                if eq(add(mload(add(F, 0x140)), 1), mload(add(F, 0x20))) {
+                    if or(
+                        iszero(eq(mload(add(F, 0xa0)), mload(add(F, 0x100)))),
+                        or(iszero(eq(mload(add(F, 0xc0)), mload(add(F, 0xe0)))), iszero(eq(consumedNow, mload(add(F, 0x60)))))
+                    ) {
+                        malformedInput(mload(add(F, 0x140)))
+                    }
+                }
             }
             argsLen := sub(add(dst, L), add(P, 0x20))
         }

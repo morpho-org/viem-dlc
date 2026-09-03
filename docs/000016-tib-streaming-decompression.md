@@ -190,9 +190,14 @@ heuristic; everything caller-facing.
   second (record) `materialize` of one dynamic element. Hand-built streams: a literal and a match
   token each straddling a record boundary; a token running past `ipEnd`; a stream exhausting
   mid-record; a back-reference before the history; trailing compressed bytes after the last
-  record; `consumed ≠ bodyLen` — each `MalformedInput(i)`. The gas sweep in compressed mode, with the first-page grant independent of the unmaterialized bytes. Boundary sweeps
-  at `need − 1 / need / need + 1` driven by the two `tokenWork` witnesses, with and without a
-  rebase inside the admitted quantum; they pin `tokenWork`'s per-token cost in the Yul.
+  record; `consumed ≠ bodyLen`, a zero-length record — each `MalformedInput(i)`. A compressed singleton
+  refused at its admission floor reports `~0`, not a malformed stream. The gas sweep in
+  compressed mode, with the first-page grant independent of the unmaterialized bytes. Boundary
+  sweeps as in 000016-outcome-stream (±1,500-gas windows around each grant that adjudicates one
+  more element) over one-byte-literal and distance-one streams, the compression bomb across its
+  first rebase, and a 6 KiB one-byte-literal element — the one fixture whose materialization is
+  large enough to pin the per-byte term, since a pre-split shortfall reaches the retained gas at
+  1/64.
 - **Vitest.** The packer packs a compression bomb as one wire chunk followed by valid
   continuations; corpse tests become "deploy OOG throws a distinct error"; `MAX_ALLOC_BYTES` tests
   deleted.

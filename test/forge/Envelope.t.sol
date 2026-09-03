@@ -202,6 +202,20 @@ contract EnvelopeTest {
         require(malformedInputOf(ret) == 1, "MalformedInput(1)");
     }
 
+    function test_malformedInput_zeroLength() public {
+        bytes memory w = abi.encodePacked(uint256(1), uint256(32), uint256(0));
+        uint256 cfg = Env.config(DynInLens.item.selector, true, 0, false, 32, false);
+        bytes memory ret = runner.exec(Env.wrap(envelope, address(factory), type(DynInLens).creationCode, w, cfg));
+        require(malformedInputOf(ret) == 0, "MalformedInput(0)");
+    }
+
+    function test_malformedInput_zeroLength_compressed() public {
+        bytes memory w = Env.wireOf(1, 32, Env.flzLiterals(new bytes(32)));
+        uint256 cfg = Env.config(DynInLens.item.selector, true, 0, false, 32, true);
+        bytes memory ret = runner.exec(Env.wrap(envelope, address(factory), type(DynInLens).creationCode, w, cfg));
+        require(malformedInputOf(ret) == 0, "MalformedInput(0)");
+    }
+
     function test_malformedInput_truncatedRecord() public {
         bytes[] memory xs = new bytes[](1);
         xs[0] = hex"01";
@@ -640,11 +654,30 @@ contract EnvelopeTest {
         require(s.pages > 0 && s.maxAdjudicated == 4 && s.deaths > 0, "pages incl. deposit deaths");
     }
 
-    function test_boundarySweep_dynamicMalformed() public {
+    function test_boundarySweep_dynamicShortReturn() public {
         uint256[] memory xs = new uint256[](4);
-        (xs[0], xs[1], xs[2], xs[3]) = (5, 9, 10, 5);
+        (xs[0], xs[1], xs[2], xs[3]) = (5, 40, 9, 5);
         Sweep memory s = boundarySweep(dynOutIc(xs), 4);
         require(s.pages > 0 && s.malformed > 0, "pages then malformed");
+    }
+
+    function test_boundarySweep_dynamicBadHead() public {
+        uint256[] memory xs = new uint256[](4);
+        (xs[0], xs[1], xs[2], xs[3]) = (5, 40, 10, 5);
+        Sweep memory s = boundarySweep(dynOutIc(xs), 4);
+        require(s.pages > 0 && s.malformed > 0, "pages then malformed");
+    }
+
+    /// A compressed singleton refused at its admission floor is a head death, not a malformed stream.
+    function test_boundarySweep_compressedSingleton() public {
+        bytes[] memory xs = new bytes[](1);
+        xs[0] = new bytes(3_000);
+        uint256 cfg = Env.config(DynInLens.item.selector, true, 0, false, 32, true);
+        bytes memory ic = Env.wrap(envelope, address(factory), type(DynInLens).creationCode, Env.compress(Env.wireDyn(xs)), cfg);
+        Sweep memory s = boundarySweep(ic, 1);
+        require(s.pages > 0 && s.deaths > 0 && s.malformed == 0, "head death, never malformed");
+        Env.Page memory p = Env.page(runner.exec(ic));
+        require(p.results.length == 1 && Env.word(p.results[0], 0) == uint256(keccak256(new bytes(3_000))), "served alone");
     }
 
     function test_boundarySweep_dynamicInput() public {
