@@ -98,8 +98,10 @@ materialize(F, len, dst):
   mcopy(dst, cur, len);  cur += len
 ```
 
-Token structure and the copy loop are Solady's, as now; only the loop bound, the persistent
-cursors and the bounds checks change. The target is a *length relative to `cur`*, so a rebase —
+Token structure is Solady's; the loop bound, the persistent cursors and the bounds checks
+change, and a back-reference is copied by doubling `mcopy` rather than by a fixed stride: each
+round copies the whole periodic prefix written so far, so source and destination never overlap and
+the rounds are logarithmic in the match length. The target is a *length relative to `cur`*, so a rebase —
 which moves `cur` and `op` together — cannot leave it in stale coordinates. A token may cross a
 record boundary: the overshoot (≤ 263 bytes) stays pending in history and is the first thing the
 next `materialize` hands out. Flushing before a rebase is sound because everything pending
@@ -214,10 +216,20 @@ heuristic; everything caller-facing.
 - **Per-element overhead.** One `materialize` (two for dynamic input), one copy-out of `L`
   bytes, and the amortized rebase replace a one-pass copy, and the loop's invariants moved into a
   memory frame to keep the decompressor off a deep stack. Measured on 64-byte static elements
-  from a real compressor stream: ~8.0k gas per element against ~5.0k before this TIB, and ~2.3k
-  against ~1.8k on the clear path. Per token the resumable decoder costs ~250 gas where the
+  from a real compressor stream: ~4.5k gas per element against ~5.0k before this TIB, and ~2.3k
+  against ~1.8k on the clear path. Per token the resumable decoder costs ~230 gas where the
   one-pass decoder cost far less, because the optimizer inlines it among the loop's live
-  variables. A leaner decoder is a follow-up, not a correctness question.
+  variables; keeping it out of line by recursion was measured to recover a further ~10% but
+  was declined, since it rests on inliner heuristics and a recursive rebase bounds the element
+  size by the EVM stack rather than by gas. A leaner decoder is a follow-up, not a correctness
+  question.
+- **The reserve is bounded by output, not input.** `D(L)` charges the worst per-byte cost for
+  every byte of `L`, so a highly compressible large element reserves far more than producing it
+  costs, and a compression bomb's elements are refused at grants that could in fact serve them.
+  Every token consumes at least two compressed bytes, so token work is also bounded by a constant
+  times the compressed bytes remaining — under 48 KiB by EIP-3860 — and
+  `min(PB·L, C·remainingInput)` would tighten the reserve by orders of magnitude for such
+  elements. It needs its own witness sweep to pin `C`; a follow-up.
 
 ## Notes
 

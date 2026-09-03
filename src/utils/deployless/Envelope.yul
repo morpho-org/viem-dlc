@@ -122,11 +122,12 @@ object "Envelope" {
             mstore(P, 0)
             let hw := add(P, 0x20)
             let n := mload(add(F, 0x20))
+            let config := mload(add(F, 0x80))
 
             let i := 0
             for {} lt(i, n) { i := add(i, 1) } {
                 mstore(add(F, 0x140), i)
-                let L, end, need := prepare(F, P, hw)
+                let L, end, need := prepare(F, config, P, hw)
                 if iszero(gt(gas(), need)) {
                     if iszero(i) {
                         mstore(P, not(0))
@@ -137,14 +138,14 @@ object "Envelope" {
                 }
                 mstore(sub(end, 0x20), 0)
                 if gt(end, hw) { hw := end }
-                let argsLen := stage(F, P, L)
-                let outLen := mul(iszero(outDyn(F)), outSize(mload(add(F, 0x80))))
+                let argsLen := stage(F, config, P, L)
+                let outLen := mul(iszero(outDyn(config)), outSize(config))
 
                 let g := gas()
                 switch staticcall(gas(), mload(F), add(P, 0x20), argsLen, add(P, 0x20), outLen)
                 case 1 {
                     let Lout := outLen
-                    switch outDyn(F)
+                    switch outDyn(config)
                     case 0 {
                         if iszero(eq(returndatasize(), outLen)) { malformed(i) }
                     }
@@ -192,14 +193,13 @@ object "Envelope" {
         // longest path from the call's return to a valid exit. A compressed dynamic element's
         // length is in the stream, so it is produced first under a fixed reserve; below that,
         // `need` is unaffordable by construction.
-        function prepare(F, P, hw) -> L, end, need {
-            let config := mload(add(F, 0x80))
+        function prepare(F, config, P, hw) -> L, end, need {
             L := inSize(config)
             need := not(0)
-            if inDyn(F) {
-                let remaining := sub(mload(add(F, 0x60)), consumed(F))
+            if inDyn(config) {
+                let remaining := sub(mload(add(F, 0x60)), consumed(F, config))
                 if lt(remaining, 0x20) { malformedInput(mload(add(F, 0x140))) }
-                switch compressed(F)
+                switch compressed(config)
                 case 0 { L := mload(mload(add(F, 0xe0))) }
                 default {
                     if iszero(gt(gas(), add(add(dwork(0x20), apre(0x24)), mul(64, cpost())))) { leave }
@@ -208,33 +208,33 @@ object "Envelope" {
                 }
                 if or(or(iszero(L), and(L, 31)), gt(L, sub(remaining, 0x20))) { malformedInput(mload(add(F, 0x140))) }
             }
-            let argsLen := add(add(4, mul(0x20, inDyn(F))), L)
+            let argsLen := add(add(4, mul(0x20, inDyn(config))), L)
             end := add(add(P, 0x20), argsLen)
-            let outEnd := add(add(P, 0x20), mul(iszero(outDyn(F)), outSize(config)))
+            let outEnd := add(add(P, 0x20), mul(iszero(outDyn(config)), outSize(config)))
             if gt(outEnd, end) { end := outEnd }
             need := add(add(expansion(end, hw), apre(argsLen)), mul(64, cpost()))
-            if compressed(F) { need := add(need, dwork(L)) }
+            if compressed(config) { need := add(need, dwork(L)) }
         }
 
         // Writes `selector ‖ [0x20 ‖] element` at `P + 0x20` and returns its length, reading the
         // element in place or producing it from the stream.
-        function stage(F, P, L) -> argsLen {
-            mstore(add(P, 0x20), and(mload(add(F, 0x80)), shl(224, 0xffffffff)))
+        function stage(F, config, P, L) -> argsLen {
+            mstore(add(P, 0x20), and(config, shl(224, 0xffffffff)))
             let dst := add(P, 0x24)
             let cur := mload(add(F, 0xe0))
-            if inDyn(F) {
+            if inDyn(config) {
                 mstore(dst, 0x20)
                 dst := add(dst, 0x20)
                 cur := add(cur, 0x20)
             }
-            switch compressed(F)
+            switch compressed(config)
             case 0 {
                 mcopy(dst, cur, L)
                 mstore(add(F, 0xe0), add(cur, L))
             }
             default {
                 materialize(F, L, dst)
-                let consumedNow := add(mload(add(F, 0x120)), add(mul(0x20, inDyn(F)), L))
+                let consumedNow := add(mload(add(F, 0x120)), add(mul(0x20, inDyn(config)), L))
                 mstore(add(F, 0x120), consumedNow)
                 // The last element staged must exhaust the stream: no token, no pending byte, no
                 // logical byte left over.
@@ -251,15 +251,15 @@ object "Envelope" {
         }
 
         // Logical body bytes handed out so far.
-        function consumed(F) -> c {
-            switch compressed(F)
+        function consumed(F, config) -> c {
+            switch compressed(config)
             case 0 { c := sub(mload(add(F, 0xe0)), mload(add(F, 0x40))) }
             default { c := mload(add(F, 0x120)) }
         }
 
-        function inDyn(F) -> b { b := and(shr(223, mload(add(F, 0x80))), 1) }
-        function outDyn(F) -> b { b := and(shr(222, mload(add(F, 0x80))), 1) }
-        function compressed(F) -> b { b := and(shr(221, mload(add(F, 0x80))), 1) }
+        function inDyn(config) -> b { b := and(shr(223, config), 1) }
+        function outDyn(config) -> b { b := and(shr(222, config), 1) }
+        function compressed(config) -> b { b := and(shr(221, config), 1) }
 
         // The history: a FastLZ back-reference window, a growth zone of the same size so rebases
         // amortize, and headroom for the most a token's 32-byte-stride writes can overshoot.
@@ -303,16 +303,16 @@ object "Envelope" {
                     let l := add(2, xor(shr(5, ctrl), mul(g, xor(shr(5, ctrl), add(7, byte(1, mload(ip)))))))
                     let s := add(add(shl(8, and(0x1f, ctrl)), byte(add(1, g), mload(ip))), 1)
                     if gt(s, sub(op, add(F, 0x160))) { malformedInput(mload(add(F, 0x140))) }
-                    // Copy stride: min(s, 32). Uses 32-byte mstore for large distances.
-                    let f := xor(s, mul(gt(s, 0x20), xor(s, 0x20)))
-                    for { let j := 0 } 1 {} {
-                        mstore(add(op, j), mload(add(sub(op, s), j)))
-                        j := add(j, f)
-                        if lt(j, l) { continue }
-                        ip := add(ip, add(2, g))
-                        op := add(op, l)
-                        break
+                    // An overlapping copy by doubling: each round copies the whole periodic prefix
+                    // written so far, so source and destination never overlap and the copy is exact.
+                    for { let j := 0 } lt(j, l) {} {
+                        let c := add(s, j)
+                        if gt(c, sub(l, j)) { c := sub(l, j) }
+                        mcopy(add(op, j), sub(op, s), c)
+                        j := add(j, c)
                     }
+                    ip := add(ip, add(2, g))
+                    op := add(op, l)
                 }
             }
             mcopy(dst, cur, len)
@@ -322,9 +322,8 @@ object "Envelope" {
         }
 
         // Reserve for producing and copying out `L` bytes: the worst per-byte token cost (one-byte
-        // literals, ~250 gas each), the worst single token (a 264-byte distance-one match, produced
-        // but not yet requested), one rebase, and the copy-out. The per-byte term is pinned by
-        // test/forge's `test_boundarySweep_literalStream_large`.
+        // literals, ~230 gas each), then one overshooting token, one rebase and the copy-out with
+        // margin. The per-byte term is pinned by test/forge's `test_boundarySweep_literalStream_large`.
         function dwork(L) -> d { d := add(add(mul(300, L), mul(3, shr(5, add(L, 31)))), 9000) }
 
         // `cpost` is pinned by test/forge's `test_boundarySweep_returnsDrained*` (lowering it fails
