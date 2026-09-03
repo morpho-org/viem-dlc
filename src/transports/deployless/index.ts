@@ -12,9 +12,9 @@ type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 export const deploylessTransportKey = "viem-dlc-deployless" as const;
 
 /**
- * Creates a thin transport wrapper that chunks marked deployless `eth_call`s under the wire and
- * allocation byte budgets and aggregates the pages. No gas cap is configured: the lens adapts to
- * whatever frame each node grants.
+ * Creates a thin transport wrapper that chunks marked deployless `eth_call`s under the wire byte
+ * budget and aggregates the pages. No gas cap is configured: the lens adapts to whatever frame
+ * each node grants.
  *
  * Requests are only intercepted when they carry the `policy(...)` sentinel in `stateOverride`.
  * All other requests are forwarded unchanged.

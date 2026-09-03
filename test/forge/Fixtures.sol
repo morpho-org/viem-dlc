@@ -69,6 +69,38 @@ library Env {
         return abi.encodePacked(word(clearWire, 0), word(clearWire, 32), VM.ffi(cmd));
     }
 
+    /// A hand-built FastLZ stream for `word` repeated `n` times: one literal, then matches at distance 32.
+    function flzRepeat(bytes32 word_, uint256 n) internal pure returns (bytes memory out) {
+        out = abi.encodePacked(bytes1(uint8(31)), word_);
+        uint256 rem = 32 * n - 32;
+        while (rem >= 262) {
+            out = abi.encodePacked(out, bytes1(uint8(224)), bytes1(uint8(253)), bytes1(uint8(31)));
+            rem -= 262;
+        }
+        if (rem >= 9) out = abi.encodePacked(out, bytes1(uint8(224)), bytes1(uint8(rem - 9)), bytes1(uint8(31)));
+        else if (rem >= 3) out = abi.encodePacked(out, bytes1(uint8((rem - 2) << 5)), bytes1(uint8(31)));
+        else if (rem > 0) out = abi.encodePacked(out, bytes1(uint8(rem - 1)), slice(abi.encodePacked(word_), 0, rem));
+    }
+
+    /// `body` as one-byte literal tokens: the costliest stream per output byte.
+    function flzLiterals(bytes memory body) internal pure returns (bytes memory out) {
+        out = new bytes(2 * body.length);
+        for (uint256 i; i < body.length; i++) out[2 * i + 1] = body[i];
+    }
+
+    /// `body`, whose every 32-byte word must repeat one byte, as a literal plus a distance-one match
+    /// per word: the costliest tokens.
+    function flzDist1(bytes memory body) internal pure returns (bytes memory out) {
+        for (uint256 i; i < body.length; i += 32) {
+            out = abi.encodePacked(out, bytes1(0), body[i], bytes1(uint8(224)), bytes1(uint8(22)), bytes1(0));
+        }
+    }
+
+    /// `n ‖ bodyLen ‖ stream` for a hand-built stream.
+    function wireOf(uint256 n, uint256 bodyLen, bytes memory stream) internal pure returns (bytes memory) {
+        return abi.encodePacked(n, bodyLen, stream);
+    }
+
     /// `envelope || abi.encode(target, targetData, factory, factoryData, config)`, as the TS codec wraps.
     function wrap(bytes memory envelope, address factory, bytes memory initcode, bytes memory targetData, uint256 cfg)
         internal pure returns (bytes memory)
@@ -158,6 +190,19 @@ contract Factory {
 contract Runner {
     function exec(bytes memory initcode) external returns (bytes memory ret) {
         (, ret) = execMeasured(initcode);
+    }
+
+    /// The revert's selector, `nA` and length, without copying the page: for pages too large to
+    /// copy on the gas a capped frame has left.
+    function summary(bytes memory initcode) external returns (bytes4 sel, uint256 nA, uint256 len) {
+        assembly {
+            if create(0, add(initcode, 0x20), mload(initcode)) { revert(0, 0) }
+            len := returndatasize()
+            returndatacopy(0, 0, 0x24)
+            sel := mload(0)
+            nA := mload(4)
+            if lt(len, 0x24) { nA := 0 }
+        }
     }
 
     function execMeasured(bytes memory initcode) public returns (uint256 used, bytes memory ret) {

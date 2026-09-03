@@ -2,7 +2,7 @@ import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema } from
 
 import type { Facet } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
-import { isTimeoutLikeError, serializeError } from "../errors.js";
+import { isTimeoutLikeError } from "../errors.js";
 import type { Tail } from "../tuples.js";
 
 import {
@@ -18,17 +18,6 @@ import {
 import { arrayToWire, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
 
 type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
-
-/**
- * Most bytes of memory one chunk may make the envelope allocate before its first element — the
- * constructor args and, when compressed, the decompressed body. Memory expansion is quadratic, so
- * this caps the gas a chunk can spend in its prologue (~2M at the cap) against the smallest
- * `eth_call` gas cap the package supports, 10M; it is never tuned per lens, chain, or provider.
- */
-export const MAX_ALLOC_BYTES = 1 << 20;
-
-/** Envelope memory that does not scale with the chunk: scratch, headers, the page header. */
-const ALLOC_BYTES_FIXED = 1024;
 
 type FactorisedFactoryCallParams = {
   target: DeploylessTarget;
@@ -62,11 +51,10 @@ export type FactorisedFactoryCallResult = {
 };
 
 /**
- * Packs `elements` into deployless-factory `eth_call` chunks under two byte budgets — the wire
- * (`batch.batchSize`, at most EIP-3860's initcode cap) and {@link MAX_ALLOC_BYTES} — fetches them
- * in parallel, and returns per-element outputs aligned to `elements`. No gas is modelled: the
- * envelope reports how far it got, an element gas could not resolve is retried once alone, and
- * only a frame that dies without reporting (a prologue death) is halved.
+ * Packs `elements` into deployless-factory `eth_call` chunks under the wire budget
+ * (`batch.batchSize`, at most EIP-3860's initcode cap), fetches them in parallel, and returns
+ * per-element outputs aligned to `elements`. No gas is modelled: the envelope reports how far it
+ * got and an element gas could not resolve is retried once alone.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
@@ -76,12 +64,12 @@ export async function factorisedFactoryCall(
   const missing: number[] = [];
   const unresolved: number[] = [];
   const oversize: number[] = [];
-  const wrapAs = (start: number, end: number, compress: boolean): Hex =>
+  const config = envelopeConfig(solidity, compress);
+  const wrap = (start: number, end: number): Hex =>
     wrapDeploylessFactoryCall(
       { target, targetData: arrayToWire(solidity.inputLayout, elements.slice(start, end)) },
-      { compress, config: envelopeConfig(solidity, compress) },
+      { compress, config },
     );
-  const wrap = (start: number, end: number): Hex => wrapAs(start, end, compress);
 
   let referenceWrapped: Hex | undefined;
   const getReferenceWrapped = () => {
@@ -98,25 +86,16 @@ export async function factorisedFactoryCall(
     prefixBytes.push(prefixBytes[pos]! + bytes);
   }
   let overheadBytes: number | undefined;
-  const measureUncompressedBytes = (start: number, end: number) => {
-    overheadBytes ??=
-      hexByteLength(compress ? wrapAs(0, 1, false) : getReferenceWrapped()) -
-      prefixBytes[compress ? 1 : elements.length]!;
-    return overheadBytes + prefixBytes[end]! - prefixBytes[start]!;
-  };
   const measureWireBytes = compress
     ? (start: number, end: number) =>
         hexByteLength(start === 0 && end === elements.length ? getReferenceWrapped() : wrap(start, end))
-    : measureUncompressedBytes;
-  // A compressed call keeps the compressed args resident while the decompressed copy is used.
-  const measureAllocBytes = (start: number, end: number, wireBytes: number) =>
-    measureUncompressedBytes(start, end) + (compress ? wireBytes : 0) + ALLOC_BYTES_FIXED;
+    : (start: number, end: number) => {
+        overheadBytes ??= hexByteLength(getReferenceWrapped()) - prefixBytes[elements.length]!;
+        return overheadBytes + prefixBytes[end]! - prefixBytes[start]!;
+      };
 
   const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
-  const fits = (start: number, end: number) => {
-    const wireBytes = compress || wireCap !== Infinity ? measureWireBytes(start, end) : 0;
-    return wireBytes <= wireCap && measureAllocBytes(start, end, wireBytes) <= MAX_ALLOC_BYTES;
-  };
+  const fits = (start: number, end: number) => wireCap === Infinity || measureWireBytes(start, end) <= wireCap;
 
   const packed = packBatches({ count: elements.length, maxItems: Infinity, fits });
   oversize.push(...packed.oversize);
@@ -125,22 +104,15 @@ export async function factorisedFactoryCall(
   const outputs = new Array<Hex>(elements.length);
 
   facet?.set({ elements_requested: elements.length, nominal_batches: ranges.length });
-  // Sizes of the *initial* packing, to compare realized utilization against the two budgets.
+  // Sizes of the *initial* packing, to compare realized utilization against the wire budget.
   // Halved children and continuations are not resampled. Guarded rather than
   // `facet?.stat(...)` so unobserved calls skip re-measuring.
-  if (facet) {
-    for (const [start, end] of ranges) {
-      const wireBytes = measureWireBytes(start, end);
-      facet.stat("batch_bytes", wireBytes);
-      facet.stat("batch_alloc_bytes", measureAllocBytes(start, end, wireBytes));
-    }
-  }
+  if (facet) for (const [start, end] of ranges) facet.stat("batch_bytes", measureWireBytes(start, end));
   let fetched = 0;
-  const splits = { count: 0, size: 0, corpse: 0, timeout: 0, maxDepth: 0 };
+  const splits = { count: 0, size: 0, timeout: 0, maxDepth: 0 };
   // A lens stopping early is a continuation, a mid-page gas death an escalation; neither is a
-  // split, which now means only "the frame died without reporting".
+  // split, which means only "the provider refused the request's size or timed out".
   const pages = { continued: 0, waves: 0, escalated: 0, unresolvedAttempts: 0, allSkipped: 0 };
-  const corpseErrors: unknown[] = [];
 
   const commit = async (entries: readonly ResolvedElement[]) => {
     for (const { index, output } of entries) outputs[index] = output;
@@ -148,7 +120,7 @@ export async function factorisedFactoryCall(
     if (entries.length > 0) await onResolved?.(entries);
   };
 
-  /** Re-packs `[from, to)` under both budgets and an item cap the lens just demonstrated. */
+  /** Re-packs `[from, to)` under the wire budget and an item cap the lens just demonstrated. */
   const packRange = (from: number, to: number, maxItems: number): BatchRange[] =>
     packBatches({
       count: to - from,
@@ -195,10 +167,16 @@ export async function factorisedFactoryCall(
           },
         );
       }
+      if (isOutOfGasRevert(e)) {
+        throw new Error(
+          "[deployless] counterfactual deployment (factory or constructor) ran out of gas under this node's cap",
+          { cause: e },
+        );
+      }
       const cause = classifyChunkError(e);
-      if (cause !== null && cause !== "timeout" && count > 1) {
+      if (cause === "size" && count > 1) {
         splits.count += 1;
-        splits[cause] += 1;
+        splits.size += 1;
         return halve();
       }
       if (cause === "timeout" && count > 1 && timeoutSplitsRemaining > 0) {
@@ -206,12 +184,6 @@ export async function factorisedFactoryCall(
         splits.timeout += 1;
         return halve(timeoutSplitsRemaining - 1);
       }
-      if (cause === "corpse" && count === 1) {
-        missing.push(start);
-        unresolved.push(start);
-        return;
-      }
-      if (cause === null && corpseErrors.length < 3) corpseErrors.push(serializeError(e));
       throw e;
     }
 
@@ -264,7 +236,6 @@ export async function factorisedFactoryCall(
       elements_fetched: fetched,
       splits_count: splits.count,
       splits_size: splits.size,
-      splits_corpse: splits.corpse,
       splits_timeout: splits.timeout,
       splits_max_depth: splits.maxDepth,
       attempts_unresolved: pages.unresolvedAttempts,
@@ -276,7 +247,6 @@ export async function factorisedFactoryCall(
       elements_missing: missing.length,
       elements_unresolved: unresolved.length,
     });
-    for (const error of corpseErrors) facet?.push("corpse_errors", error, 3);
   }
 
   return {
@@ -387,23 +357,17 @@ function hexByteLength(hex: Hex): number {
  * doesn't get hammered with `2^depth` retries:
  *   - viem TimeoutError, HTTP 408 / 504 / 524, generic "timed out" / "timeout" messages
  *
- * `"corpse"` is a frame that died of gas without reporting — the envelope's deploy out-of-gas
- * marker ({@link isOutOfGasRevert}) or a provider's "out of gas" text for the envelope's own
- * prologue. Halving shrinks the prologue; alone, the element is unresolved.
- *
  * `"size"` covers errors that scale deterministically with batch size; bisecting always helps:
  *   - Calldata size:   HTTP 413; messages containing "too large" or "request size"
  *   - Initcode size (EIP-3860): "max initcode size exceeded" — matched by /code.*size/
  */
-function classifyChunkError(error: unknown): "corpse" | "size" | "timeout" | null {
+function classifyChunkError(error: unknown): "size" | "timeout" | null {
   if (isTimeoutLikeError(error)) return "timeout";
-  if (isOutOfGasRevert(error)) return "corpse";
 
   const e = error instanceof BaseError ? error.walk() : error;
   const status = (e as { status?: number }).status;
   const msg = (e as { message?: string }).message ?? "";
 
-  if (/out of gas/i.test(msg)) return "corpse";
   if (status === 413) return "size";
   if (/too large/i.test(msg) || /request.{0,10}size/i.test(msg) || /code.{0,10}size/i.test(msg)) {
     return "size";

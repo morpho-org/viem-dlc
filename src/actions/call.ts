@@ -29,7 +29,7 @@ export const MAX_INITCODE_SIZE = 49_152;
  * @param opts.abi The array-shaped fragment from `arrayifiedAbi`, built from the contract's real
  *   ABI: the per-item selector the envelope calls is derived from it.
  * @param opts.batch Optional batching config. Omit to send all elements in one upstream
- *   `eth_call`, still under the fixed allocation budget.
+ *   `eth_call`.
  * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk; elements
  *   are greedy-packed under it and fetched in parallel. {@link MAX_INITCODE_SIZE} is the usual value.
  * @param opts.batch.compress FastLZ-compress calldata on the wire so more elements fit per chunk,

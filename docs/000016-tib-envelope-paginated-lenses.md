@@ -14,6 +14,12 @@ related:
 > two envelopes, `RevertEnvelope.yul` and `RevertEnvelopeCompressed.yul` (now one
 > `Envelope.yul`); the note "Why the allocation budget must see the output stride"; and the
 > "Death-detection imprecision" risk, which now also covers the post-call deposit path.
+>
+> **Superseded in part by 000016-tib-streaming-decompression.md**: `MAX_ALLOC_BYTES` and the
+> allocation budget in "The client"; the corpse route in the outcome table (halving on the deploy
+> out-of-gas marker or a provider's "out of gas" text) and its facets `splits_corpse` /
+> `corpse_errors` (the marker is now a thrown error); and the "Cold-start latency" and
+> "`MAX_ALLOC_BYTES` sizing" open risks.
 
 The gas model survives pagination for exactly one reason: the prologue isn't paginated. Work
 proportional to the *sent* count — envelope decompression, calldata copy, output allocation —
