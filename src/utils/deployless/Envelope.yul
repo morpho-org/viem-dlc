@@ -119,12 +119,11 @@ object "Envelope" {
         // outcome stream.
         //
         // The slab starts at `slab`: OK_SENTINEL, nA (patched at exit), the four telemetry words
-        // (accumulated in place), then records. `P` is one
-        // past the last record; attempt `i` is staged at `P + 0x20`, where its record's bytes will
-        // go, so a static result lands on its own arguments and abandoned bytes lie at or past `P`,
-        // outside the reverted prefix. `hw` is the highest byte this frame has deliberately
-        // touched — never above the true high-water — so every admission prices memory expansion
-        // exactly or conservatively.
+        // (accumulated in place), then records. `P` is one past the last record; attempt `i` is
+        // staged at `P + 0x20`, where its record's bytes will go, so a static result lands on its
+        // own arguments and abandoned bytes lie at or past `P`, outside the reverted prefix. `hw`
+        // is the highest byte this frame has deliberately touched — never above the true
+        // high-water — so every admission prices memory expansion exactly or conservatively.
         function paginate(F, slab) {
             // OK_SENTINEL = bytes4(keccak256("ViemDlcPage2()")) = 0x1824683e
             mstore(slab, 0x1824683e00000000000000000000000000000000000000000000000000000000)

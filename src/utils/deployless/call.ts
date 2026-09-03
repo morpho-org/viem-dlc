@@ -107,8 +107,11 @@ export async function factorisedFactoryCall(
   const ranges = packed.ranges;
   const outputs = new Array<Hex>(elements.length);
 
-  facet?.set({ elements_requested: elements.length, nominal_batches: ranges.length });
-  if (itemsHint !== Infinity) facet?.set({ items_hint: itemsHint });
+  facet?.set({
+    elements_requested: elements.length,
+    nominal_batches: ranges.length,
+    ...(itemsHint === Infinity ? {} : { items_hint: itemsHint }),
+  });
   // Sizes of the *initial* packing, to compare realized utilization against the wire budget.
   // Halved children and continuations are not resampled. Guarded rather than
   // `facet?.stat(...)` so unobserved calls skip re-measuring.
@@ -136,8 +139,7 @@ export async function factorisedFactoryCall(
 
   const fetchRecursive = async (
     [start, end]: BatchRange,
-    /** Deferred to the next wave: unpacked continuation tails, and singleton escalations. */
-    nextWave: { tails: BatchRange[]; singletons: BatchRange[] },
+    nextWave: Deferred,
     precomputed?: Hex,
     timeoutSplitsRemaining = 1,
     depth = 0,
@@ -232,7 +234,7 @@ export async function factorisedFactoryCall(
   try {
     while (wave.length > 0) {
       pages.waves += 1;
-      const nextWave = { tails: [] as BatchRange[], singletons: [] as BatchRange[] };
+      const nextWave: Deferred = { tails: [], singletons: [] };
       const isWholeInput = wave.length === 1 && wave[0]![0] === 0 && wave[0]![1] === elements.length;
       await settleAll(
         wave.map((range) => fetchRecursive(range, nextWave, isWholeInput ? getReferenceWrapped() : undefined)),
@@ -295,7 +297,7 @@ const PACKING_SIGMAS = 2;
  * fits the budget. `Infinity` before any attempt has been costed.
  */
 function predictItems(gas: GasStats): number {
-  if (gas.served === 0n || gas.sum === 0n) return Infinity;
+  if (gas.served === 0n) return Infinity;
   const { mean, sigma, budget } = moments(gas);
   const z = PACKING_SIGMAS;
   const fits = (k: number) => k * mean + z * sigma * Math.sqrt(k) <= budget;
@@ -360,6 +362,9 @@ async function fetchChunk(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: He
 }
 
 type BatchRange = readonly [start: number, end: number];
+
+/** What a wave hands the next one: continuation tails, packed once the wave has settled, and singleton escalations. */
+type Deferred = { tails: BatchRange[]; singletons: BatchRange[] };
 
 type PackBatchesArgs = {
   count: number;
