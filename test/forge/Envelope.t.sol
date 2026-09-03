@@ -60,6 +60,12 @@ contract EnvelopeTest {
         for (uint256 i; i < n; i++) a[i] = i + 1;
     }
 
+    function summaryWithGas(bytes memory ic, uint256 g) internal returns (bool called, bytes4 sel, uint256 nA) {
+        bytes memory raw;
+        (called, raw) = address(runner).call{gas: g}(abi.encodeCall(Runner.summary, (ic)));
+        if (called) (sel, nA,) = abi.decode(raw, (bytes4, uint256, uint256));
+    }
+
     function execWithGas(bytes memory ic, uint256 g) internal returns (bool called, bytes memory ret) {
         bytes memory raw;
         (called, raw) = address(runner).call{gas: g}(abi.encodeCall(Runner.exec, (ic)));
@@ -196,6 +202,30 @@ contract EnvelopeTest {
         require(malformedInputOf(ret) == 1, "MalformedInput(1)");
     }
 
+    function test_malformedInput_zeroLength() public {
+        bytes memory w = abi.encodePacked(uint256(1), uint256(32), uint256(0));
+        uint256 cfg = Env.config(DynInLens.item.selector, true, 0, false, 32, false);
+        bytes memory ret = runner.exec(Env.wrap(envelope, address(factory), type(DynInLens).creationCode, w, cfg));
+        require(malformedInputOf(ret) == 0, "MalformedInput(0)");
+    }
+
+    function test_malformedInput_zeroLength_compressed() public {
+        bytes memory w = Env.wireOf(1, 32, Env.flzLiterals(new bytes(32)));
+        uint256 cfg = Env.config(DynInLens.item.selector, true, 0, false, 32, true);
+        bytes memory ret = runner.exec(Env.wrap(envelope, address(factory), type(DynInLens).creationCode, w, cfg));
+        require(malformedInputOf(ret) == 0, "MalformedInput(0)");
+    }
+
+    function test_malformedInput_trailingRecord() public {
+        bytes[] memory xs = new bytes[](2);
+        (xs[0], xs[1]) = (hex"01", hex"02");
+        bytes memory w = Env.wireDyn(xs);
+        // n claims one element; the body carries two
+        assembly { mstore(add(w, 0x20), 1) }
+        bytes memory ret = runner.exec(Env.wrap(envelope, address(factory), type(DynInLens).creationCode, w, Env.config(DynInLens.item.selector, true, 0, false, 32, false)));
+        require(malformedInputOf(ret) == 0, "MalformedInput(n - 1)");
+    }
+
     function test_malformedInput_truncatedRecord() public {
         bytes[] memory xs = new bytes[](1);
         xs[0] = hex"01";
@@ -316,6 +346,89 @@ contract EnvelopeTest {
         require(malformedInputOf(ret) == 3, "MalformedInput(n)");
     }
 
+    uint256 constant STATIC_CFG_Z = uint256(uint32(StaticLens.item.selector)) << 224 | 1 << 221 | 64 << 64 | 32;
+
+    function compressedStaticIc(bytes memory w) internal view returns (bytes memory) {
+        return Env.wrap(envelope, address(factory), type(StaticLens).creationCode, w, STATIC_CFG_Z);
+    }
+
+    /// 50,000 identical elements (3.2 MB of body, ~37 KiB of wire): a page under 2M, more under 10M.
+    function test_compressionBomb_pagesUnderAnyGrant() public {
+        bytes memory ic = compressedStaticIc(Env.wireOf(50_000, 50_000 * 64, Env.flzRepeat(bytes32(0), 100_000)));
+        (bool called, bytes4 sel, uint256 small) = summaryWithGas(ic, 2_000_000);
+        require(called && sel == OK && small >= 1, "page under 2M");
+        uint256 large;
+        (called, sel, large) = summaryWithGas(ic, 10_000_000);
+        require(called && sel == OK && large > small, "progress scales with gas");
+    }
+
+    /// 2,000 distinct compressible elements (128 KiB through the 16 KiB history) decode to the right values.
+    function test_compressed_rebase() public {
+        uint256 n = 2_000;
+        uint256[] memory a = new uint256[](n);
+        for (uint256 i; i < n; i++) a[i] = i % 128;
+        bytes memory w = Env.compress(staticInputs(a, modes(n)));
+        (uint256 used, bytes memory ret) = runner.execMeasured(compressedStaticIc(w));
+        Env.Page memory p = Env.page(ret);
+        uint256[] memory r = Env.uints(p);
+        require(p.nA == n && r.length == n, "full page");
+        for (uint256 i; i < n; i++) require(r[i] == 2 * (i % 128), "value");
+        require(used < 12_000_000, "gas");
+    }
+
+    /// Dynamic elements of ~12 KiB each: the length word and the record both materialize across rebases.
+    function test_compressed_rebaseInsideDynamicElement() public {
+        bytes[] memory xs = new bytes[](3);
+        (xs[0], xs[1], xs[2]) = (new bytes(12_000), hex"010203", new bytes(9_000));
+        bytes memory w = Env.compress(Env.wireDyn(xs));
+        uint256 cfg = Env.config(DynInLens.item.selector, true, 0, false, 32, true);
+        Env.Page memory p = Env.page(runner.exec(Env.wrap(envelope, address(factory), type(DynInLens).creationCode, w, cfg)));
+        uint256[] memory r = Env.uints(p);
+        require(r.length == 2 && p.skipped.length == 1 && p.skipped[0] == 1, "shape");
+        require(r[0] == uint256(keccak256(new bytes(12_000))) && r[1] == uint256(keccak256(new bytes(9_000))), "values");
+    }
+
+    function test_compressed_witnessStreamsDecode() public {
+        bytes memory body = staticInputs(values(3), modes(3));
+        Env.Page memory lit = Env.page(runner.exec(compressedStaticIc(Env.wireOf(3, body.length - 64, Env.flzLiterals(Env.slice(body, 64, body.length - 64))))));
+        uint256[] memory r = Env.uints(lit);
+        require(r.length == 3 && r[0] == 2 && r[1] == 4 && r[2] == 6, "literals");
+        bytes memory zeros = new bytes(3 * 64);
+        Env.Page memory d1 = Env.page(runner.exec(compressedStaticIc(Env.wireOf(3, zeros.length, Env.flzDist1(zeros)))));
+        require(Env.uints(d1).length == 3 && Env.uints(d1)[2] == 0, "dist1");
+    }
+
+    function test_malformedStream_tokenPastEnd() public {
+        bytes memory stream = Env.flzRepeat(bytes32(0), 4);
+        bytes memory ret = runner.exec(compressedStaticIc(Env.wireOf(2, 128, Env.slice(stream, 0, stream.length - 1))));
+        require(malformedInputOf(ret) == 0, "MalformedInput(0)");
+    }
+
+    function test_malformedStream_exhaustedMidRecord() public {
+        // Two 32-byte literals carry one element; the second element has no bytes at all.
+        bytes memory zeros = new bytes(64);
+        bytes memory ret = runner.exec(compressedStaticIc(Env.wireOf(2, 128, Env.flzLiterals(zeros))));
+        require(malformedInputOf(ret) == 1, "MalformedInput(1)");
+    }
+
+    function test_malformedStream_backReferenceBeforeHistory() public {
+        bytes memory stream = abi.encodePacked(bytes1(uint8(224)), bytes1(uint8(253)), bytes1(uint8(31)));
+        bytes memory ret = runner.exec(compressedStaticIc(Env.wireOf(1, 64, stream)));
+        require(malformedInputOf(ret) == 0, "MalformedInput(0)");
+    }
+
+    function test_malformedStream_trailingTokens() public {
+        bytes memory stream = abi.encodePacked(Env.flzRepeat(bytes32(0), 4), bytes1(0), bytes1(0));
+        bytes memory ret = runner.exec(compressedStaticIc(Env.wireOf(2, 128, stream)));
+        require(malformedInputOf(ret) == 1, "MalformedInput(n - 1)");
+    }
+
+    function test_malformedStream_overshootPastBody() public {
+        // The stream produces 160 bytes for a 128-byte body: the last token's surplus is left pending.
+        bytes memory ret = runner.exec(compressedStaticIc(Env.wireOf(2, 128, Env.flzRepeat(bytes32(0), 5))));
+        require(malformedInputOf(ret) == 1, "MalformedInput(n - 1)");
+    }
+
     /*//////////////////////////////////////////////////////////////
                               GAS SWEEPS
     //////////////////////////////////////////////////////////////*/
@@ -323,8 +436,12 @@ contract EnvelopeTest {
     /// The smallest grant (to 1k) at which the envelope produces a page.
     function firstPageGrant(bytes memory ic) internal returns (uint256 g) {
         for (g = 50_000; g < 5_000_000; g += 1_000) {
+            uint256 mark;
+            assembly { mark := mload(0x40) }
             (bool called, bytes memory ret) = execWithGas(ic, g);
-            if (called && bytes4(ret) == OK) return g;
+            bool done = called && bytes4(ret) == OK;
+            assembly { mstore(0x40, mark) }
+            if (done) return g;
         }
         revert("no page under 5M");
     }
@@ -338,29 +455,39 @@ contract EnvelopeTest {
     }
 
     /// Every grant in [lo, hi) is a prologue failure (only before the first page), a well-formed
-    /// page, or a protocol error — never an empty failure once a page has been seen.
+    /// page, or a protocol error — never an empty failure once a page has been seen. Iteration
+    /// memory is reused: a sweep is thousands of calls, each copying the initcode.
     function sweep(bytes memory ic, uint256 lo, uint256 hi, uint256 step) internal returns (Sweep memory s) {
         bool seenPage;
         for (uint256 g = lo; g < hi; g += step) {
+            uint256 mark;
+            assembly { mark := mload(0x40) }
             (bool called, bytes memory ret) = execWithGas(ic, g);
             bytes4 sel = called && ret.length >= 4 ? bytes4(ret) : bytes4(0);
             if (sel == MALFORMED) {
                 s.malformed++;
-                continue;
-            }
-            if (sel != OK) {
+            } else if (sel != OK) {
                 if (seenPage || (called && sel != OOG && sel != DEPLOY_FAILED && ret.length != 0)) {
                     revert(string.concat("corpse above first page at ", Env.VM.toString(g), " called=", called ? "1" : "0", " len=", Env.VM.toString(ret.length)));
                 }
-                continue;
+            } else {
+                seenPage = true;
+                Env.Page memory p = Env.page(ret);
+                s.pages++;
+                if (p.died) s.deaths++;
+                if (p.nA > s.maxAdjudicated) s.maxAdjudicated = p.nA;
+                if (p.results.length > s.maxResults) s.maxResults = p.results.length;
             }
-            seenPage = true;
-            Env.Page memory p = Env.page(ret);
-            s.pages++;
-            if (p.died) s.deaths++;
-            if (p.nA > s.maxAdjudicated) s.maxAdjudicated = p.nA;
-            if (p.results.length > s.maxResults) s.maxResults = p.results.length;
+            assembly { mstore(0x40, mark) }
         }
+    }
+
+    function merge(Sweep memory a, Sweep memory b) internal pure {
+        a.pages += b.pages;
+        a.deaths += b.deaths;
+        a.malformed += b.malformed;
+        if (b.maxAdjudicated > a.maxAdjudicated) a.maxAdjudicated = b.maxAdjudicated;
+        if (b.maxResults > a.maxResults) a.maxResults = b.maxResults;
     }
 
     function test_gasSweep_noCorpseAboveFirstPage() public {
@@ -386,27 +513,32 @@ contract EnvelopeTest {
         require(s.pages > 0 && s.maxAdjudicated == n, "sweep never completed a page");
     }
 
-    /// The smallest grant (to 1k) at or above `lo` whose page resolves `target` elements (served or
-    /// declined), or which ends in a protocol error.
+    /// The smallest grant (to 1k) at or above `lo` — itself at or above the first page — whose page
+    /// adjudicates `target` elements, or which ends in a protocol error. Any corpse on the way is a
+    /// failure: past the first page every grant must produce a page.
     function fullGrant(bytes memory ic, uint256 lo, uint256 target) internal returns (uint256 g) {
         for (g = lo; g < 5_000_000; g += 1_000) {
+            uint256 mark;
+            assembly { mark := mload(0x40) }
             (bool called, bytes memory ret) = execWithGas(ic, g);
-            if (!called || ret.length < 4) continue;
-            if (bytes4(ret) == MALFORMED) return g;
-            if (bytes4(ret) == OK) {
-                Env.Page memory p = Env.page(ret);
-                if (p.results.length + p.skipped.length >= target) return g;
-            }
+            if (!called || ret.length < 4) revert(string.concat("corpse above first page at ", Env.VM.toString(g)));
+            bool done = bytes4(ret) == MALFORMED || (bytes4(ret) == OK && Env.page(ret).nA >= target);
+            assembly { mstore(0x40, mark) }
+            if (done) return g;
         }
         revert("never full under 5M");
     }
 
-    /// Step-1 sweep from below the first page to past the grant resolving `target` elements, so
-    /// every gas phase of every post-call path is exercised. These pin `apre` and `cpost` in the Yul.
-    function boundarySweep(bytes memory ic, uint256 target) internal returns (Sweep memory) {
-        uint256 g0 = firstPageGrant(ic);
-        uint256 g1 = fullGrant(ic, g0, target);
-        return sweep(ic, g0 - 1_500, g1 + 1_000, 1);
+    /// Step-1 sweeps across a window around every transition grant — the first page, then each
+    /// further element adjudicated — so every gas phase of every post-call path is exercised.
+    /// These pin `apre`, `cpost` and `dwork` in the Yul.
+    function boundarySweep(bytes memory ic, uint256 target) internal returns (Sweep memory s) {
+        uint256 g = firstPageGrant(ic);
+        s = sweep(ic, g - 1_500, g + 1_500, 1);
+        for (uint256 k = 2; k <= target && s.malformed == 0; k++) {
+            g = fullGrant(ic, g, k);
+            merge(s, sweep(ic, g - 1_500, g + 1_500, 1));
+        }
     }
 
     function test_boundarySweep_staticSuccess() public {
@@ -414,10 +546,11 @@ contract EnvelopeTest {
         require(s.pages > 0 && s.maxAdjudicated == 4, "pages");
     }
 
-    /// An element that returns with ~120 gas left however much it was granted, followed by another,
-    /// so the post-call success path and the next admission's refusal run on the retained 1/64
-    /// alone: the fixture that pins `cpost`.
-    function test_boundarySweep_returnsDrained() public {
+    /// Adversaries pin constants: a lens built to be the worst case for one term, such that lowering
+    /// the term fails the sweep. This one returns with ~40 gas left however much it was granted, then
+    /// another element follows, so the post-call path and the next admission's refusal run on the
+    /// retained 1/64 alone. It pins `cpost`; every other fixture passes with `cpost` far too low.
+    function test_adversary_drainedCallee() public {
         uint256[] memory a = values(4);
         uint256[] memory m = modes(4);
         (a[2], m[2]) = (DRAIN_TO, 6);
@@ -425,7 +558,7 @@ contract EnvelopeTest {
         require(s.pages > 0 && s.maxResults >= 3, "drained element never served");
     }
 
-    function test_boundarySweep_returnsDrained_compressed() public {
+    function test_adversary_drainedCallee_compressed() public {
         uint256[] memory a = values(4);
         uint256[] memory m = modes(4);
         (a[2], m[2]) = (DRAIN_TO, 6);
@@ -435,11 +568,73 @@ contract EnvelopeTest {
         require(s.pages > 0 && s.maxResults >= 3, "drained element never served");
     }
 
-    function test_boundarySweep_returnsDrained_dynamic() public {
+    function test_adversary_drainedCallee_dynamic() public {
         uint256[] memory xs = new uint256[](4);
         (xs[0], xs[1], xs[2], xs[3]) = (5, 40, 11, 5);
         Sweep memory s = boundarySweep(dynOutIc(xs), 3);
-        require(s.pages > 0 && s.maxResults >= 3, "drained element never served");
+        // A drained dynamic result cannot be kept on the retained 1/64 alone, so it is a death, not a corpse.
+        require(s.pages > 0 && s.maxAdjudicated >= 3 && s.deaths > 0, "pages");
+    }
+
+    function test_boundarySweep_literalStream() public {
+        bytes memory body = staticInputs(values(4), modes(4));
+        bytes memory w = Env.wireOf(4, body.length - 64, Env.flzLiterals(Env.slice(body, 64, body.length - 64)));
+        Sweep memory s = boundarySweep(compressedStaticIc(w), 4);
+        require(s.pages > 0 && s.maxAdjudicated == 4, "pages");
+    }
+
+    /// A 6 KiB element as one-byte literals: producing it costs more than the exit reserve can
+    /// absorb (a pre-split shortfall reaches the reserve at 1/64), so this adversary pins `dwork`'s
+    /// per-byte term where small elements cannot.
+    function test_adversary_largeLiteralElement() public {
+        bytes[] memory xs = new bytes[](3);
+        (xs[0], xs[1], xs[2]) = (hex"01", new bytes(6_000), hex"02");
+        bytes memory w = Env.wireDyn(xs);
+        bytes memory stream = Env.flzLiterals(Env.slice(w, 64, w.length - 64));
+        uint256 cfg = Env.config(DynInLens.item.selector, true, 0, false, 32, true);
+        bytes memory ic = Env.wrap(envelope, address(factory), type(DynInLens).creationCode, Env.wireOf(3, w.length - 64, stream), cfg);
+        Sweep memory s = boundarySweep(ic, 3);
+        require(s.pages > 0 && s.maxResults == 3, "pages");
+    }
+
+    function test_boundarySweep_distanceOneStream() public {
+        bytes memory zeros = new bytes(4 * 64);
+        Sweep memory s = boundarySweep(compressedStaticIc(Env.wireOf(4, zeros.length, Env.flzDist1(zeros))), 4);
+        require(s.pages > 0 && s.maxAdjudicated == 4, "pages");
+    }
+
+    /// Step-1 sweep over the compression bomb around its first rebase (element 256), by summary:
+    /// the page is too large for a capped frame to copy back.
+    function test_boundarySweep_bombRebase() public {
+        bytes memory ic = compressedStaticIc(Env.wireOf(600, 600 * 64, Env.flzRepeat(bytes32(0), 1_200)));
+        uint256 g0;
+        uint256 g1;
+        for (uint256 g = 50_000; g < 5_000_000 && g1 == 0; g += 1_000) {
+            uint256 mark;
+            assembly { mark := mload(0x40) }
+            (bool called, bytes4 sel, uint256 nA) = summaryWithGas(ic, g);
+            assembly { mstore(0x40, mark) }
+            if (!called || sel != OK) continue;
+            if (nA >= 250 && g0 == 0) g0 = g;
+            if (nA >= 262) g1 = g;
+        }
+        require(g0 > 0 && g1 > g0, "window");
+        for (uint256 g = g0; g < g1 + 1_000; g++) {
+            uint256 mark;
+            assembly { mark := mload(0x40) }
+            (bool called, bytes4 sel, uint256 nA) = summaryWithGas(ic, g);
+            assembly { mstore(0x40, mark) }
+            require(called && sel == OK && nA >= 250, "corpse across the rebase");
+        }
+    }
+
+    function test_boundarySweep_compressedDynamic() public {
+        bytes[] memory xs = new bytes[](4);
+        (xs[0], xs[1], xs[2], xs[3]) = (hex"01", hex"010203", new bytes(700), new bytes(64));
+        uint256 cfg = Env.config(DynInLens.item.selector, true, 0, false, 32, true);
+        bytes memory ic = Env.wrap(envelope, address(factory), type(DynInLens).creationCode, Env.compress(Env.wireDyn(xs)), cfg);
+        Sweep memory s = boundarySweep(ic, 4);
+        require(s.pages > 0 && s.maxAdjudicated == 4, "pages");
     }
 
     function test_boundarySweep_emptyRevert() public {
@@ -459,7 +654,7 @@ contract EnvelopeTest {
     function test_boundarySweep_burnEverything() public {
         uint256[] memory m = modes(4);
         m[2] = 3;
-        Sweep memory s = boundarySweep(staticIc(values(4), m), 2);
+        Sweep memory s = boundarySweep(staticIc(values(4), m), 3);
         require(s.pages > 0 && s.deaths > 0 && s.maxAdjudicated == 3, "pages end at the burn");
     }
 
@@ -477,11 +672,30 @@ contract EnvelopeTest {
         require(s.pages > 0 && s.maxAdjudicated == 4 && s.deaths > 0, "pages incl. deposit deaths");
     }
 
-    function test_boundarySweep_dynamicMalformed() public {
+    function test_boundarySweep_dynamicShortReturn() public {
         uint256[] memory xs = new uint256[](4);
-        (xs[0], xs[1], xs[2], xs[3]) = (5, 9, 10, 5);
+        (xs[0], xs[1], xs[2], xs[3]) = (5, 40, 9, 5);
         Sweep memory s = boundarySweep(dynOutIc(xs), 4);
         require(s.pages > 0 && s.malformed > 0, "pages then malformed");
+    }
+
+    function test_boundarySweep_dynamicBadHead() public {
+        uint256[] memory xs = new uint256[](4);
+        (xs[0], xs[1], xs[2], xs[3]) = (5, 40, 10, 5);
+        Sweep memory s = boundarySweep(dynOutIc(xs), 4);
+        require(s.pages > 0 && s.malformed > 0, "pages then malformed");
+    }
+
+    /// A compressed singleton refused at its admission floor is a head death, not a malformed stream.
+    function test_boundarySweep_compressedSingleton() public {
+        bytes[] memory xs = new bytes[](1);
+        xs[0] = new bytes(3_000);
+        uint256 cfg = Env.config(DynInLens.item.selector, true, 0, false, 32, true);
+        bytes memory ic = Env.wrap(envelope, address(factory), type(DynInLens).creationCode, Env.compress(Env.wireDyn(xs)), cfg);
+        Sweep memory s = boundarySweep(ic, 1);
+        require(s.pages > 0 && s.deaths > 0 && s.malformed == 0, "head death, never malformed");
+        Env.Page memory p = Env.page(runner.exec(ic));
+        require(p.results.length == 1 && Env.word(p.results[0], 0) == uint256(keccak256(new bytes(3_000))), "served alone");
     }
 
     function test_boundarySweep_dynamicInput() public {

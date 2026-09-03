@@ -22,7 +22,6 @@ import { withLogging } from "../../src/observability.js";
 import { deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
-import { MAX_ALLOC_BYTES } from "../../src/utils/deployless/call.js";
 import {
   COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR,
   envelopeConfig,
@@ -264,7 +263,6 @@ describe("deployless", () => {
       expect(field("nominal_batches")).toBe(2);
       expect(field("splits_count")).toBe(0);
       expect(field("splits_size")).toBe(0);
-      expect(field("splits_corpse")).toBe(0);
       expect(field("splits_timeout")).toBe(0);
       expect(field("splits_max_depth")).toBe(0);
       expect(field("pages_waves")).toBe(1);
@@ -275,26 +273,18 @@ describe("deployless", () => {
       expect(field("elements_missing")).toBe(0);
       expect(field("elements_unresolved")).toBe(0);
 
-      // One sample per budget per batch, none exceeding the budget it was packed under.
+      // One sample per batch, none exceeding the budget it was packed under.
       expect(field("batch_bytes.count")).toBe(field("nominal_batches"));
       expect(field("batch_bytes.max")).toBeLessThanOrEqual(batchSize);
-      expect(field("batch_alloc_bytes.count")).toBe(field("nominal_batches"));
-      expect(field("batch_alloc_bytes.max")).toBeLessThanOrEqual(MAX_ALLOC_BYTES);
     });
 
-    it("splits on the allocation budget even when no batchSize is set", async () => {
-      // 32 input bytes per element put ~32k elements at the 1 MiB allocation cap; nothing else
-      // here bounds the chunk.
+    it("sends everything in one chunk when no batchSize is set", async () => {
       const requestFn = mockPagedFn();
       const transport = createTransport(requestFn);
-      const req = createRequest(addrs(40_000));
 
-      const { logger, events } = createStubLogger();
-      const result = await withLogging(() => transport.request(req), { logger });
-      const field = (name: string) => findDotted(events[0]!.context, "viem-dlc-deployless", `eth_call.${name}`);
+      const result = await transport.request(createRequest(addrs(40_000)));
 
-      expect(requestFn.mock.calls.length).toBeGreaterThan(1);
-      expect(field("batch_alloc_bytes.max")).toBeLessThanOrEqual(MAX_ALLOC_BYTES);
+      expect(requestFn).toHaveBeenCalledOnce();
       expect(decodeResults(result)).toHaveLength(40_000);
     });
 
@@ -320,20 +310,21 @@ describe("deployless", () => {
       expect(results).toHaveLength(40_000);
     });
 
-    it("packs pathologically compressible input under the allocation budget, not just wire bytes", async () => {
-      // One address repeated compresses to a few hundred bytes; only the decompressed size
-      // stops the chunk.
+    it("packs a compression bomb as one chunk under the wire cap alone", async () => {
+      // One address repeated compresses to a few hundred bytes; the decompressed size is the
+      // envelope's concern, element by element, not the packer's.
       const requestFn = mockPagedFn();
       const transport = createTransport(requestFn);
-      const req = createRequest(Array<Address>(40_000).fill(addrs(1)[0]!), { batch: { compress: true } });
+      const req = createRequest(Array<Address>(40_000).fill(addrs(1)[0]!), {
+        batch: { batchSize: MAX_INITCODE_SIZE, compress: true },
+      });
 
       const { logger, events } = createStubLogger();
       const result = await withLogging(() => transport.request(req), { logger });
       const field = (name: string) => findDotted(events[0]!.context, "viem-dlc-deployless", `eth_call.${name}`);
 
-      expect(requestFn.mock.calls.length).toBeGreaterThan(1);
+      expect(requestFn).toHaveBeenCalledOnce();
       expect(field("batch_bytes.max")).toBeLessThan(MAX_INITCODE_SIZE);
-      expect(field("batch_alloc_bytes.max")).toBeLessThanOrEqual(MAX_ALLOC_BYTES);
       expect(decodeResults(result)).toHaveLength(40_000);
     });
 
@@ -590,47 +581,17 @@ describe("deployless", () => {
       expect(requestFn).toHaveBeenCalledTimes(3); // 1 failed + 2 halves
       expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
       expect(field("splits_size")).toBe(1);
-      expect(field("splits_corpse")).toBe(0);
     });
 
-    it("bisects to singletons on the wrapper's out-of-gas marker", async () => {
-      // Stands in for a frame that died without reporting: every multi-element chunk comes back
-      // as a corpse, so the batcher must keep halving until each element is alone.
-      const accounts = addrs(4);
-      const requestFn = vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
-        const sent = decodeSentAddresses((args.params[0] as { data: Hex }).data);
-        if (sent.length > 1) throw revertRaw(OOG_SENTINEL);
-        throw pageRevert(sent.map((a) => BigInt(a)));
-      });
-      const transport = createTransport(requestFn);
-
-      const { logger, events } = createStubLogger();
-      const result = await withLogging(
-        () => transport.request(createRequest(accounts, { batch: { batchSize: 8192 } })),
-        { logger },
-      );
-      const field = (name: string) => findDotted(events[0]!.context, "viem-dlc-deployless", `eth_call.${name}`);
-
-      // 1 full batch + 2 halves + 4 singletons.
-      expect(requestFn).toHaveBeenCalledTimes(7);
-      expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
-      // A corpse is its own split reason; nothing about it is size-shaped.
-      expect(field("splits_corpse")).toBe(3);
-      expect(field("splits_size")).toBe(0);
-      expect(field("elements_unresolved")).toBe(0);
-    });
-
-    it("reports a lone element the frame could not resolve instead of throwing", async () => {
+    it("throws on the wrapper's out-of-gas marker instead of halving", async () => {
+      // The deploy is invariant across chunks, so a constructor the cap cannot fund is terminal.
       const requestFn = vi.fn().mockRejectedValue(revertRaw(OOG_SENTINEL));
       const transport = createTransport(requestFn);
 
-      const { logger, events } = createStubLogger();
-      const result = await withLogging(() => transport.request(createRequest([addr(1)])), { logger });
-      const field = (name: string) => findDotted(events[0]!.context, "viem-dlc-deployless", `eth_call.${name}`);
-
-      expect(decodePage(result)).toEqual({ results: [], skipped: [0] });
-      expect(field("elements_missing")).toBe(1);
-      expect(field("elements_unresolved")).toBe(1);
+      await expect(transport.request(createRequest(addrs(4), { batch: { batchSize: 8192 } }))).rejects.toThrow(
+        /ran out of gas under this node's cap/,
+      );
+      expect(requestFn).toHaveBeenCalledOnce();
     });
 
     it("does not treat lens revert data that merely starts with the marker as out-of-gas", async () => {
@@ -682,8 +643,7 @@ describe("deployless", () => {
 
       expect(error.message).toMatch("nonce too low");
       expect(requestFn).toHaveBeenCalledTimes(1);
-      // Unrecognized errors are sampled onto the event so an operator can see what came back.
-      expect(field("corpse_errors")).toHaveLength(1);
+      expect(field("splits_count")).toBe(0);
     });
 
     it.each([

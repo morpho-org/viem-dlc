@@ -55,8 +55,8 @@ emit at `error` level with the error attached via `withError`, so hosts that for
 
 Thin transport wrapper for deployless `eth_call` splitting. It only intercepts calls carrying
 the `policy(...)` sentinel in `stateOverride`, re-packs the marked input array into one or more
-deployless-factory calls under a byte budget (`batch.batchSize` on the wire, plus a fixed
-allocation budget), aggregates the pages that come back, and forwards everything else unchanged.
+deployless-factory calls under a wire byte budget (`batch.batchSize`), aggregates the pages that
+come back, and forwards everything else unchanged.
 There is no gas configuration: the envelope calls the lens's per-item function once per element
 in its own frame and reports how far it got, so a chunk adapts to whatever gas the node grants —
 see [Paginated lenses](#paginated-lenses). Most callers reach it through
@@ -91,13 +91,12 @@ If `policy.cache` is present, `deployless(...)` ignores it and still behaves as 
 Use `cache(...)` when you want the same marked calls to populate and read from a backing store.
 
 With observability enabled, batching reports `elements_requested` / `elements_fetched`,
-`nominal_batches`, `batch_bytes` and `batch_alloc_bytes` (sizes of the initial packing against
-the two budgets; halved and continued chunks are not resampled), and `splits_*` for chunks halved
-after an error: `splits_size` (413 / initcode-size errors), `splits_timeout`, and `splits_corpse`
-— a frame that died of gas without reporting, which the element loop never produces, so any
-non-zero value points at an envelope prologue too big for the node's cap: the counterfactual
-deploy (a constructor doing too much), decompression, or the slab (`corpse_errors` keeps up to
-three unrecognized provider errors). Pagination is normal rather than a failure and gets its own
+`nominal_batches` and `batch_bytes` (sizes of the initial packing against the wire budget;
+halved and continued chunks are not resampled), and `splits_*` for chunks halved after an
+error: `splits_size` (413 / initcode-size errors) and `splits_timeout`. Nothing in the envelope's
+prologue grows with the chunk, so a frame that dies without reporting is a constructor too heavy
+for the node's cap, surfaced as an error rather than halved. Pagination is normal rather than a
+failure and gets its own
 fields: `pages_continued` (responses that stopped early, each repacked into one or more requests),
 `pages_waves`, `page_adjudicated` (elements per page, as a stat — a lens yielding ~1 per page is
 pathological), `pages_all_skipped` (pages whose every element reverted — a per-item selector the
@@ -455,15 +454,14 @@ policy(opts: {
   fragment in the contract's real ABI: the transport derives the per-item selector from it, and a
   selector the lens does not implement fails as a page that skips every element.
 - **`opts.batch`** — optional batching config. Omit to send all elements in a single upstream
-  `eth_call`, still under the allocation budget below.
+  `eth_call`.
 - **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk; elements
   are greedy-packed under it and fetched in parallel. `MAX_INITCODE_SIZE` (EIP-3860's 49 152
-  bytes) is the usual value. Independently, every chunk fits a fixed 1 MiB allocation budget
-  (the input, plus its decompressed copy when compressed) that keeps envelope memory cheap on any
-  node cap the package supports. Neither budget is tuned per lens, chain, or provider.
+  bytes) is the usual value. The cap is not tuned per lens, chain, or provider.
 - **`opts.batch.compress`** — FastLZ-compress calldata on the wire, so more elements fit per
-  chunk at the cost of encoding time and decompression gas. An over-packed chunk pages and costs
-  one more round trip, never a bisection.
+  chunk at the cost of encoding time and decompression gas. The envelope decompresses element by
+  element as it attempts them, so a highly compressible chunk pages like any other and costs
+  nothing before its first element.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
   or when used with `deployless(...)`, `batch` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same
@@ -515,8 +513,8 @@ the largest frame a node can grant, and only if it dies there too does it land i
 `skipped`. Before each attempt the envelope also checks that the frame can pay for the memory the
 attempt would touch and still report an outcome, priced from the fee schedule; below that, it
 stops (or, for element 0, reports it unresolved without attempting).
-So a frame never dies mid-page; the only thing halving still cures is a prologue too large for a
-node's cap.
+So a frame never dies mid-page, and nothing in the prologue grows with the chunk; a constructor
+too heavy for a node's cap is reported as an error rather than halved.
 
 No element type needs a number from the author: static sizes come from the ABI, dynamic inputs
 carry their length on the wire, and dynamic results carry theirs in returndata. The envelope
@@ -526,8 +524,8 @@ refuses an ill-formed result (`MalformedResult`, surfaced as a protocol error ra
 deploy runs the constructor inside the same `eth_call`: immutables hold value types, and storage
 written in the constructor is readable from every per-item call. EIP-2929 warmth is per
 transaction, so the first element to touch a market's storage warms it for all later elements in
-the chunk. The constructor runs once per chunk in the prologue, so keep it bounded — halving
-shrinks the chunk, not the constructor.
+the chunk. The constructor runs once per chunk in the prologue, so keep it bounded: one that
+exhausts the node's cap fails the request outright.
 
 What the envelope cannot enforce, and the lens must still honor: **skips are deterministic** (a
 revert means invalid input or a permanently failing element, never something more gas would pass)

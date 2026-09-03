@@ -4,6 +4,7 @@ pragma solidity ^0.8.25;
 interface Vm {
     function ffi(string[] calldata) external returns (bytes memory);
     function readFile(string calldata) external view returns (string memory);
+    function writeFile(string calldata, string calldata) external;
     function toString(bytes calldata) external pure returns (string memory);
     function toString(uint256) external pure returns (string memory);
 }
@@ -61,12 +62,58 @@ library Env {
     }
 
     /// Replaces a clear wire's body with its FastLZ compression, using the package's own compressor.
+    /// The body travels through a file: a command-line argument is capped at 128 KiB on Linux.
     function compress(bytes memory clearWire) internal returns (bytes memory) {
+        bytes memory body_ = slice(clearWire, 64, clearWire.length - 64);
+        // Named by content: tests run in parallel and must not share a scratch file.
+        string memory file = string.concat("out/flz-", VM.toString(abi.encodePacked(keccak256(body_))), ".hex");
+        VM.writeFile(file, VM.toString(body_));
         string[] memory cmd = new string[](8);
         (cmd[0], cmd[1], cmd[2], cmd[3]) = ("pnpm", "-s", "--dir", "../..");
-        (cmd[4], cmd[5], cmd[6]) = ("exec", "tsx", "test/forge/flz-compress.ts");
-        cmd[7] = VM.toString(slice(clearWire, 64, clearWire.length - 64));
+        (cmd[4], cmd[5], cmd[6], cmd[7]) = ("exec", "tsx", "test/forge/flz-compress.ts", string.concat("test/forge/", file));
         return abi.encodePacked(word(clearWire, 0), word(clearWire, 32), VM.ffi(cmd));
+    }
+
+    /// A hand-built FastLZ stream for `word` repeated `n` times: one literal, then matches at
+    /// distance 32, written in place so a long stream costs linear memory.
+    function flzRepeat(bytes32 word_, uint256 n) internal pure returns (bytes memory out) {
+        uint256 rem = 32 * n - 32;
+        uint256 full = rem / 262;
+        uint256 last = rem % 262;
+        out = new bytes(33 + 3 * full + (last >= 9 ? 3 : last >= 3 ? 2 : last > 0 ? 1 + last : 0));
+        out[0] = bytes1(uint8(31));
+        for (uint256 i; i < 32; i++) out[1 + i] = word_[i];
+        uint256 at = 33;
+        for (uint256 i; i < full; i++) {
+            (out[at], out[at + 1], out[at + 2]) = (bytes1(uint8(224)), bytes1(uint8(253)), bytes1(uint8(31)));
+            at += 3;
+        }
+        if (last >= 9) (out[at], out[at + 1], out[at + 2]) = (bytes1(uint8(224)), bytes1(uint8(last - 9)), bytes1(uint8(31)));
+        else if (last >= 3) (out[at], out[at + 1]) = (bytes1(uint8((last - 2) << 5)), bytes1(uint8(31)));
+        else if (last > 0) {
+            out[at] = bytes1(uint8(last - 1));
+            for (uint256 i; i < last; i++) out[at + 1 + i] = word_[i];
+        }
+    }
+
+    /// `data` as one-byte literal tokens: the costliest stream per output byte.
+    function flzLiterals(bytes memory data) internal pure returns (bytes memory out) {
+        out = new bytes(2 * data.length);
+        for (uint256 i; i < data.length; i++) out[2 * i + 1] = data[i];
+    }
+
+    /// `data`, whose every 32-byte word must repeat one byte, as a literal plus a distance-one match
+    /// per word: the costliest tokens.
+    function flzDist1(bytes memory data) internal pure returns (bytes memory out) {
+        out = new bytes((data.length / 32) * 5);
+        for (uint256 i; i < data.length / 32; i++) {
+            (out[5 * i + 1], out[5 * i + 2], out[5 * i + 3]) = (data[32 * i], bytes1(uint8(224)), bytes1(uint8(22)));
+        }
+    }
+
+    /// `n ‖ bodyLen ‖ stream` for a hand-built stream.
+    function wireOf(uint256 n, uint256 bodyLen, bytes memory stream) internal pure returns (bytes memory) {
+        return abi.encodePacked(n, bodyLen, stream);
     }
 
     /// `envelope || abi.encode(target, targetData, factory, factoryData, config)`, as the TS codec wraps.
@@ -158,6 +205,19 @@ contract Factory {
 contract Runner {
     function exec(bytes memory initcode) external returns (bytes memory ret) {
         (, ret) = execMeasured(initcode);
+    }
+
+    /// The revert's selector, `nA` and length, without copying the page: for pages too large to
+    /// copy on the gas a capped frame has left.
+    function summary(bytes memory initcode) external returns (bytes4 sel, uint256 nA, uint256 len) {
+        assembly {
+            if create(0, add(initcode, 0x20), mload(initcode)) { revert(0, 0) }
+            len := returndatasize()
+            returndatacopy(0, 0, 0x24)
+            sel := mload(0)
+            nA := mload(4)
+            if lt(len, 0x24) { nA := 0 }
+        }
     }
 
     function execMeasured(bytes memory initcode) public returns (uint256 used, bytes memory ret) {

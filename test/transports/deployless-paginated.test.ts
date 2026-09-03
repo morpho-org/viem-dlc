@@ -109,8 +109,6 @@ type LensBehavior = {
   pageSize?: number;
   /** Address values the lens deterministically declines. */
   decline?: readonly number[];
-  /** Address values that exhaust the frame when attempted, taking the whole call with them. */
-  fatal?: readonly number[];
   /** Address values the lens reports a gas death on, ending the page at that index. */
   starve?: readonly number[];
   /** Whether a `starve` element resolves once it is the only element in the chunk. */
@@ -119,23 +117,15 @@ type LensBehavior = {
 
 /**
  * A conforming paginated lens: walks its input in index order, stops after `pageSize` attempts,
- * declines `decline` elements, reports a gas death on `starve` elements, and lets `fatal`
- * elements kill the frame without reporting (no per-element cap).
+ * declines `decline` elements and reports a gas death on `starve` elements (no per-element cap).
  */
-function mockPagedLens({
-  pageSize = Infinity,
-  decline = [],
-  fatal = [],
-  starve = [],
-  recoversAlone = false,
-}: LensBehavior = {}) {
+function mockPagedLens({ pageSize = Infinity, decline = [], starve = [], recoversAlone = false }: LensBehavior = {}) {
   return vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
     const addrs = sentAddresses((args.params[0] as { data: Hex }).data);
     const results: bigint[] = [];
     const skipped: number[] = [];
     for (let i = 0; i < addrs.length && i < pageSize; i++) {
       const value = addrValue(addrs[i]!);
-      if (fatal.includes(value)) throw revertWith(OOG_SENTINEL);
       if (starve.includes(value) && !(recoversAlone && addrs.length === 1)) {
         throw revertWithPage(results, skipped, i);
       }
@@ -235,17 +225,8 @@ describe("deployless (paginated)", () => {
     expect(asked).toContain(4);
   });
 
-  it("keeps sibling results when a single element exhausts the frame", async () => {
-    const requestFn = mockPagedLens({ fatal: [3] });
-    const transport = createTransport(requestFn);
-
-    const page = decodePage(await transport.request(createRequest([1, 2, 3, 4].map(addr))));
-
-    expect(page).toEqual({ results: [1n, 2n, 4n], skipped: [2] });
-  });
-
   it("reports every unservable element, in ascending order", async () => {
-    const requestFn = mockPagedLens({ decline: [2], fatal: [4] });
+    const requestFn = mockPagedLens({ decline: [2], starve: [4] });
     const transport = createTransport(requestFn);
 
     const page = decodePage(await transport.request(createRequest([1, 2, 3, 4].map(addr))));
@@ -274,7 +255,6 @@ describe("deployless (paginated)", () => {
     expect(field("attempts_unresolved")).toBe(0);
     // A lens stopping early is a continuation, not a bisect.
     expect(field("splits_count")).toBe(0);
-    expect(field("splits_corpse")).toBe(0);
     // Every page here served at least one element.
     expect(field("pages_all_skipped")).toBe(0);
   });
@@ -365,18 +345,14 @@ describe("deployless (paginated)", () => {
   });
 
   describe("frames that die without reporting", () => {
-    it("halves a corpse and gives up only once the element is alone", async () => {
-      const requestFn = mockPagedLens({ fatal: [3] });
+    it("throws on the deploy out-of-gas marker instead of halving it", async () => {
+      const requestFn = vi.fn().mockRejectedValue(revertWith(OOG_SENTINEL));
       const transport = createTransport(requestFn);
 
-      const { result, field } = await withFacet(() => transport.request(createRequest([1, 2, 3, 4].map(addr))));
-
-      expect(decodePage(result)).toEqual({ results: [1n, 2n, 4n], skipped: [2] });
-      expect(field("splits_corpse")).toBeGreaterThanOrEqual(1);
-      expect(field("splits_count")).toBe(field("splits_corpse"));
-      expect(field("splits_size")).toBe(0);
-      expect(field("elements_unresolved")).toBe(1);
-      expect(field("elements_missing")).toBe(1);
+      await expect(transport.request(createRequest([1, 2, 3, 4].map(addr)))).rejects.toThrow(
+        /ran out of gas under this node's cap/,
+      );
+      expect(requestFn).toHaveBeenCalledOnce();
     });
 
     it("throws a malformed-result revert instead of halving it", async () => {
