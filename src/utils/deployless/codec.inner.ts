@@ -25,6 +25,9 @@ export type ArrayifiedAbi<F extends AbiFunction> = Omit<F, "inputs" | "outputs">
  */
 export function arrayifiedAbi<const F extends AbiFunction>(item: F): ArrayifiedAbi<F> {
   if (item.type !== "function") throw new Error("arrayifiedAbi: expected a function fragment");
+  if (item.stateMutability !== "view" && item.stateMutability !== "pure") {
+    throw new Error(`arrayifiedAbi: ${item.name} must be view or pure`);
+  }
   const input = item.inputs[0];
   const output = item.outputs[0];
   if (item.inputs.length !== 1 || !input) {
@@ -114,6 +117,9 @@ export type ResolvedArrayFunction = {
 export function resolveArrayFunction(fragment: AbiFunction, bounds: ElementBounds = {}): ResolvedArrayFunction {
   if (fragment.type !== "function") {
     throw new Error("eth_call policy abi must be a function fragment");
+  }
+  if (fragment.stateMutability !== "view" && fragment.stateMutability !== "pure") {
+    throw new Error(`function ${fragment.name}: a lens is called with STATICCALL, so it must be view or pure`);
   }
   const input = fragment.inputs[0];
   const output = fragment.outputs[0];
@@ -410,7 +416,7 @@ function staticSizeOf(param: AbiParameter): number | null {
   const type = param.type;
 
   if (type === "bytes" || type === "string") return null;
-  if (/^u?int\d*$/.test(type) || type === "bool" || type === "address") return 32;
+  if (/^u?int\d*$/.test(type) || type === "bool" || type === "address" || type === "function") return 32;
   const bytesMatch = /^bytes(\d+)$/.exec(type);
   if (bytesMatch) {
     const n = Number(bytesMatch[1]);

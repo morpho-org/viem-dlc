@@ -100,11 +100,7 @@ export async function readLens(
       `readLens: ${candidates.length === 0 ? "no" : "more than one"} function named ${functionName} in the lens abi`,
     );
   }
-  const item = candidates[0]!;
-  if (item.stateMutability !== "view" && item.stateMutability !== "pure") {
-    throw new Error(`readLens: ${functionName} must be view or pure`);
-  }
-  const fragment = arrayifiedAbi(item);
+  const fragment = arrayifiedAbi(candidates[0]!);
   const paginated: readonly [typeof fragment] = [fragment];
   const block: { blockNumber: bigint } | { blockTag?: BlockTag } =
     blockNumber !== undefined ? { blockNumber } : { blockTag };
