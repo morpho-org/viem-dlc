@@ -13,6 +13,7 @@ export type EthCallPolicy = {
   batch?: {
     batchSize?: number;
     compress?: boolean;
+    itemsHint?: number;
   };
   cache?: {
     blobKey: string;

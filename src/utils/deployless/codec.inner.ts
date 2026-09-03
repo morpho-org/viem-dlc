@@ -142,6 +142,16 @@ export function hexToArray(layout: ElementLayout, encoded: Hex): readonly Hex[] 
   return sliceArray(layout, encoded, readUint256(encoded, 0), hexByteLength(encoded));
 }
 
+/** The envelope's gas telemetry for one page, ahead of its records — see {@link hexToPage}. */
+export type PageGas = {
+  /** What the loop could spend on attempts: the frame's gas at the loop's start, less the reserve every admission keeps. */
+  budget: bigint;
+  /** Over the per-attempt gas of every record but a death: the sum, the sum of squares, the maximum. */
+  sum: bigint;
+  sumSquares: bigint;
+  max: bigint;
+};
+
 /** A page: what one envelope call adjudicated, in the order it was attempted — see {@link hexToPage}. */
 export type Page = {
   /** Raw element bytes for the attempted-and-served items, in input order. */
@@ -153,27 +163,39 @@ export type Page = {
    * carried on the wire as `~index` in the stream's last record and never surfaced past the client.
    */
   died?: number;
+  gas: PageGas;
 };
 
+/** `nA` and the four {@link PageGas} words. */
+const PAGE_HEADER_BYTES = 160;
 const UINT256_MAX = (1n << 256n) - 1n;
 const SUCCESS_BIT = 1n << 255n;
 
 /**
- * Decodes the envelope's outcome stream: `nA`, then one record per adjudicated element in attempt
- * order — success `(1 << 255) | L ‖ L bytes of raw U`, decline `i`, death `~i` (last only). Every
- * record is bound to its ordinal and the payload must be consumed exactly, so anything this accepts
- * is a well-formed page; it is the protocol boundary for responses.
+ * Decodes the envelope's outcome stream: `nA`, the four gas words, then one record per adjudicated
+ * element in attempt order — success `(1 << 255) | L ‖ L bytes of raw U`, decline `i`, death `~i`
+ * (last only). Every record is bound to its ordinal, the payload must be consumed exactly, and the
+ * gas words must be consistent with each other, so anything this accepts is a well-formed page; it
+ * is the protocol boundary for responses.
  */
 export function hexToPage(layout: ElementLayout, encoded: Hex): Page {
   const totalBytes = hexByteLength(encoded);
-  if (totalBytes < 32) throw new Error("page shorter than its attempt count");
+  if (totalBytes < PAGE_HEADER_BYTES) throw new Error("page shorter than its header");
   const attempted = readUint256(encoded, 0);
   if (attempted < 1) throw new Error("page adjudicated no elements");
-  if (attempted > (totalBytes - 32) / 32) throw new Error(`page claims ${attempted} records in ${totalBytes} bytes`);
+  if (attempted > (totalBytes - PAGE_HEADER_BYTES) / 32) {
+    throw new Error(`page claims ${attempted} records in ${totalBytes} bytes`);
+  }
+  const gas: PageGas = {
+    budget: readWord(encoded, 32),
+    sum: readWord(encoded, 64),
+    sumSquares: readWord(encoded, 96),
+    max: readWord(encoded, 128),
+  };
   const results: Hex[] = [];
   const skipped: number[] = [];
   let died: number | undefined;
-  let at = 32;
+  let at = PAGE_HEADER_BYTES;
   for (let j = 0; j < attempted; j++) {
     if (at + 32 > totalBytes) throw new Error(`page record ${j} is missing`);
     const word = readWord(encoded, at);
@@ -204,18 +226,37 @@ export function hexToPage(layout: ElementLayout, encoded: Hex): Page {
     }
   }
   if (at !== totalBytes) throw new Error("page has trailing bytes");
-  return died === undefined ? { results, skipped } : { results, skipped, died };
+  checkPageGas(gas, BigInt(attempted - (died === undefined ? 0 : 1)));
+  return died === undefined ? { results, skipped, gas } : { results, skipped, died, gas };
+}
+
+/**
+ * The relations any sum, sum of squares and maximum of `served` non-negative samples satisfy:
+ * `sum² ≤ served·sumSquares` (Cauchy–Schwarz) and `max ≤ sum`, `sumSquares ≤ sum·max`. The sum may
+ * exceed the budget: the last attempt admitted can spend into the reserve.
+ */
+function checkPageGas({ sum, sumSquares, max }: PageGas, served: bigint): void {
+  const consistent =
+    served === 0n
+      ? sum === 0n && sumSquares === 0n && max === 0n
+      : sum > 0n && max <= sum && sum * sum <= served * sumSquares && sumSquares <= sum * max;
+  if (!consistent) throw new Error("page gas telemetry is inconsistent");
 }
 
 /** Inverse of {@link hexToPage}; builds envelope responses in tests and mocks. */
-export function pageToWire({ results, skipped, died }: Page): Hex {
+export function pageToWire({ results, skipped, died, gas }: Page): Hex {
   const attempted = results.length + skipped.length + (died === undefined ? 0 : 1);
   const declined = new Set(skipped);
   if (declined.size !== skipped.length || skipped.some((i) => i >= attempted || i === died)) {
     throw new Error("page skips an index it did not attempt");
   }
   if (died !== undefined && died !== attempted - 1) throw new Error("page death is not its last record");
-  let out = writeUint256(attempted);
+  let out =
+    writeUint256(attempted) +
+    writeWord(gas.budget) +
+    writeWord(gas.sum) +
+    writeWord(gas.sumSquares) +
+    writeWord(gas.max);
   for (let j = 0, served = 0; j < attempted; j++) {
     if (j === died) out += writeWord(BigInt(j) ^ UINT256_MAX);
     else if (declined.has(j)) out += writeUint256(j);

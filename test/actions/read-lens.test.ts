@@ -26,6 +26,7 @@ import {
   resolveArrayFunction,
   wireToArray,
 } from "../../src/utils/deployless/codec.inner.js";
+import { flatGas } from "../helpers/page.js";
 
 const ADDRESS = "0x1111111111111111111111111111111111111111" as const;
 const FACTORY = "0x2222222222222222222222222222222222222222" as const;
@@ -87,7 +88,8 @@ function mockEnvelope(decline: number) {
     const results = users.flatMap((u, i) => (i === decline ? [] : [u]));
 
     const err = new Error("execution reverted") as Error & { data: Hex };
-    err.data = `${OK_SENTINEL}${pageToWire({ results, skipped: [decline] }).slice(2)}` as Hex;
+    err.data =
+      `${OK_SENTINEL}${pageToWire({ results, skipped: [decline], gas: flatGas(users.length) }).slice(2)}` as Hex;
     throw err;
   });
 }

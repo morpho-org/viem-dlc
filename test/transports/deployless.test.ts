@@ -33,6 +33,7 @@ import {
 } from "../../src/utils/deployless/codec.envelope.js";
 import { arrayToWire, pageToWire, resolveArrayFunction, wireToArray } from "../../src/utils/deployless/codec.inner.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
+import { flatGas } from "../helpers/page.js";
 
 type EthCallRequest = EIP1193Parameters<import("viem").PublicRpcSchema, "eth_call">;
 
@@ -150,7 +151,13 @@ function revertRaw(data: Hex): Error & { data: Hex } {
 }
 
 function pageRevert(results: readonly bigint[], skipped: readonly number[] = []) {
-  return revertWithSentinel(pageToWire({ results: results.map((r) => `0x${word(r)}` as Hex), skipped }));
+  return revertWithSentinel(
+    pageToWire({
+      results: results.map((r) => `0x${word(r)}` as Hex),
+      skipped,
+      gas: flatGas(results.length + skipped.length),
+    }),
+  );
 }
 
 /** The wrapper always exfiltrates via REVERT, so a served page arrives as a sentinel-framed throw. */
@@ -295,7 +302,11 @@ describe("deployless", () => {
       const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
         const sent = decodeSentAddresses((args.params[0] as { data: Hex }).data);
         throw revertWithSentinel(
-          pageToWire({ results: sent.map((a) => `0x${word(a).repeat(8)}` as Hex), skipped: [] }),
+          pageToWire({
+            results: sent.map((a) => `0x${word(a).repeat(8)}` as Hex),
+            skipped: [],
+            gas: flatGas(sent.length),
+          }),
         );
       });
       const transport = createTransport(requestFn);
@@ -485,7 +496,7 @@ describe("deployless", () => {
     });
 
     it("decodes sentinel data from an intermediate BaseError", async () => {
-      const encoded = pageToWire({ results: [`0x${word(1)}`], skipped: [] });
+      const encoded = pageToWire({ results: [`0x${word(1)}`], skipped: [], gas: flatGas(1) });
       const dataError = Object.assign(new BaseError("rpc", { cause: new Error("inner") }), {
         data: `${OK_SENTINEL}${encoded.slice(2)}` as Hex,
       });

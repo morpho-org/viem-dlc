@@ -34,6 +34,9 @@ export const MAX_INITCODE_SIZE = 49_152;
  *   are greedy-packed under it and fetched in parallel. {@link MAX_INITCODE_SIZE} is the usual value.
  * @param opts.batch.compress FastLZ-compress calldata on the wire so more elements fit per chunk,
  *   at the cost of encoding time and decompression gas.
+ * @param opts.batch.itemsHint Elements per chunk in the opening wave; later waves size themselves
+ *   from what the pages report. Too high costs one continuation wave, too low costs extra parallel
+ *   requests. Read `items_hint_suggested` off the wide event to set it.
  * @param opts.cache Optional cache config. Honored by the `cache` transport only; if omitted,
  *   or when used with `deployless`, `batch` is still honored without caching.
  * @param opts.cache.blobKey Identifies the backing cache blob. Requests with the same

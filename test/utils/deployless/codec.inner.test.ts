@@ -18,11 +18,13 @@ import {
   hexToPage,
   itemFragmentOf,
   type Page,
+  type PageGas,
   pageToHex,
   pageToWire,
   resolveArrayFunction,
   wireToArray,
 } from "../../../src/utils/deployless/codec.inner.js";
+import { flatGas } from "../../helpers/page.js";
 
 const DYNAMIC = { mode: "dynamic" } as const;
 const STATIC = { mode: "static", size: 32 } as const;
@@ -36,8 +38,13 @@ const wordHex = (n: number | bigint) => `0x${word(n)}` as Hex;
 
 /** A success record: `(1 << 255) | L` then the `L` raw bytes. */
 const success = (element: Hex) => word((1n << 255n) | BigInt((element.length - 2) / 2)) + element.slice(2);
-/** An outcome stream: `nA` then the records verbatim. */
-const stream = (...records: string[]) => `0x${word(records.length)}${records.join("")}` as Hex;
+/** The four telemetry words as they sit on the wire. */
+const header = ({ budget, sum, sumSquares, max }: PageGas) => word(budget) + word(sum) + word(sumSquares) + word(max);
+/** An outcome stream: `nA`, flat telemetry for every record but a death, then the records verbatim. */
+const stream = (...records: string[]) => {
+  const served = records.filter((r) => !r.startsWith("ffff")).length;
+  return `0x${word(records.length)}${header(flatGas(served))}${records.join("")}` as Hex;
+};
 
 /** Encodes `(U[] results, uint256[] skipped)` the way a real lens would, via viem. */
 function encodePage(types: string, results: readonly unknown[], skipped: readonly (number | bigint)[]): Hex {
@@ -272,7 +279,8 @@ describe("hexToPage", () => {
     ],
   ])("round-trips %s through the stream and encodes as viem does", (_name, types, results, skipped, died) => {
     const layout = layoutOf(types);
-    const page: Page = { results: elementsOf(types, results), skipped, ...(died === undefined ? {} : { died }) };
+    const gas = flatGas(results.length + skipped.length);
+    const page: Page = { results: elementsOf(types, results), skipped, gas, ...(died === undefined ? {} : { died }) };
     const decoded = hexToPage(layout, pageToWire(page));
 
     expect(decoded).toEqual(page);
@@ -282,13 +290,18 @@ describe("hexToPage", () => {
 
   it("reads records in attempt order and binds each to its ordinal", () => {
     const encoded = stream(success(wordHex(7)), word(1), success(wordHex(9)), word(tag(3)));
-    expect(hexToPage(STATIC, encoded)).toEqual({ results: [wordHex(7), wordHex(9)], skipped: [1], died: 3 });
+    expect(hexToPage(STATIC, encoded)).toEqual({
+      results: [wordHex(7), wordHex(9)],
+      skipped: [1],
+      died: 3,
+      gas: flatGas(3),
+    });
   });
 
   it.each([
-    ["a payload shorter than the attempt count", "0x00", /shorter than its attempt count/],
+    ["a payload shorter than its header", `0x${word(1)}${word(0).repeat(3)}`, /shorter than its header/],
     ["a page that adjudicated nothing", stream(), /adjudicated no elements/],
-    ["more records than the payload can hold", `0x${word(2)}${word(0)}`, /claims 2 records in 64 bytes/],
+    ["more records than the payload can hold", `0x${word(2)}${word(0).repeat(5)}`, /claims 2 records in 192 bytes/],
     ["a decline bound to another ordinal", stream(word(1), word(1)), /record 0 declines element 1/],
     ["a repeated decline", stream(word(0), word(0)), /record 1 declines element 0/],
     ["a death that is not last", stream(word(tag(0)), word(1)), /record 0 of 2 reports a gas death at 0/],
@@ -306,7 +319,7 @@ describe("hexToPage", () => {
     ["a misaligned dynamic result", stream(success(`0x${"00".repeat(33)}`)), /33-byte result/],
     [
       "a success running past the payload",
-      `0x${word(1)}${word((1n << 255n) | 64n)}${word(0)}`,
+      `0x${word(1)}${header(flatGas(1))}${word((1n << 255n) | 64n)}${word(0)}`,
       /runs past the payload/,
     ],
   ])("rejects %s", (_name, encoded, expected) => {
@@ -314,13 +327,31 @@ describe("hexToPage", () => {
   });
 
   it("accepts a lone death at index 0", () => {
-    expect(hexToPage(STATIC, stream(word(tag(0))))).toEqual({ results: [], skipped: [], died: 0 });
+    expect(hexToPage(STATIC, stream(word(tag(0))))).toEqual({ results: [], skipped: [], died: 0, gas: flatGas(0) });
+  });
+
+  const telemetry = (gas: Partial<PageGas>, ...records: string[]) =>
+    `0x${word(records.length)}${header({ ...flatGas(records.length), ...gas })}${records.join("")}` as Hex;
+
+  it.each([
+    ["a served attempt costing nothing", telemetry({ sum: 0n, sumSquares: 0n, max: 0n }, word(0))],
+    ["a maximum above the sum", telemetry({ max: 1_001n }, word(0))],
+    ["a sum of squares below the mean's", telemetry({ sumSquares: 1_999_999n }, word(0), word(1))],
+    ["a sum of squares above the sum times the maximum", telemetry({ sumSquares: 2_000_001n }, word(0), word(1))],
+    ["cost charged to a lone death", telemetry(flatGas(1), word(tag(0)))],
+  ])("rejects %s", (_name, encoded) => {
+    expect(() => hexToPage(STATIC, encoded)).toThrow(/telemetry is inconsistent/);
+  });
+
+  it("accepts a sum above the budget: the last attempt admitted may spend into the reserve", () => {
+    const gas = { ...flatGas(1), budget: 999n };
+    expect(hexToPage(STATIC, telemetry(gas, word(0))).gas).toEqual(gas);
   });
 });
 
 describe("pageToWire", () => {
-  it("emits nA then one record per attempt", () => {
-    const wire = pageToWire({ results: [wordHex(7)], skipped: [1], died: 2 });
+  it("emits nA, the telemetry, then one record per attempt", () => {
+    const wire = pageToWire({ results: [wordHex(7)], skipped: [1], died: 2, gas: flatGas(2) });
     expect(wire).toBe(stream(success(wordHex(7)), word(1), word(tag(2))));
   });
 
