@@ -82,17 +82,17 @@ library Env {
         else if (rem > 0) out = abi.encodePacked(out, bytes1(uint8(rem - 1)), slice(abi.encodePacked(word_), 0, rem));
     }
 
-    /// `body` as one-byte literal tokens: the costliest stream per output byte.
-    function flzLiterals(bytes memory body) internal pure returns (bytes memory out) {
-        out = new bytes(2 * body.length);
-        for (uint256 i; i < body.length; i++) out[2 * i + 1] = body[i];
+    /// `data` as one-byte literal tokens: the costliest stream per output byte.
+    function flzLiterals(bytes memory data) internal pure returns (bytes memory out) {
+        out = new bytes(2 * data.length);
+        for (uint256 i; i < data.length; i++) out[2 * i + 1] = data[i];
     }
 
-    /// `body`, whose every 32-byte word must repeat one byte, as a literal plus a distance-one match
+    /// `data`, whose every 32-byte word must repeat one byte, as a literal plus a distance-one match
     /// per word: the costliest tokens.
-    function flzDist1(bytes memory body) internal pure returns (bytes memory out) {
-        for (uint256 i; i < body.length; i += 32) {
-            out = abi.encodePacked(out, bytes1(0), body[i], bytes1(uint8(224)), bytes1(uint8(22)), bytes1(0));
+    function flzDist1(bytes memory data) internal pure returns (bytes memory out) {
+        for (uint256 i; i < data.length; i += 32) {
+            out = abi.encodePacked(out, bytes1(0), data[i], bytes1(uint8(224)), bytes1(uint8(22)), bytes1(0));
         }
     }
 

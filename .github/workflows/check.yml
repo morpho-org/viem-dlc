@@ -37,6 +37,8 @@ jobs:
         run: pnpm test
 
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.5.1
       - name: Install solc
         run: |
           curl -sSL https://github.com/ethereum/solidity/releases/download/v0.8.34/solc-static-linux -o "$RUNNER_TEMP/solc"

@@ -3,6 +3,7 @@ src = "."
 test = "."
 libs = []
 evm_version = "cancun"
+solc = "0.8.34"
 ffi = true
 fs_permissions = [{ access = "read", path = "../../src/utils/deployless/codec.envelope.ts" }]
 gas_limit = "18446744073709551615"
