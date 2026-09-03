@@ -154,6 +154,23 @@ describe("arrayifiedAbi", () => {
     );
   });
 
+  it("rejects a function that is not view or pure", () => {
+    expect(() => arrayifiedAbi(item("function poke(address a) returns (uint256 r)"))).toThrow(
+      /poke must be view or pure/,
+    );
+  });
+
+  it("lays out an external function value as one static word", () => {
+    const f: AbiFunction = {
+      type: "function",
+      name: "hookOf",
+      stateMutability: "view",
+      inputs: [{ type: "address" }],
+      outputs: [{ type: "function" }],
+    };
+    expect(resolveArrayFunction(arrayifiedAbi(f) as AbiFunction).outputLayout).toEqual({ mode: "static", size: 32 });
+  });
+
   it("resolves to the per-item selector the envelope has to call", () => {
     const f = item("function healthOf(address user) view returns (uint256 health)");
     expect(resolveArrayFunction(arrayifiedAbi(f) as AbiFunction).itemSelector).toBe(toFunctionSelector(f));
