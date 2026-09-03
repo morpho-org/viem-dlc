@@ -371,7 +371,7 @@ export function wireToArray(layout: ElementLayout, wire: Hex): readonly Hex[] {
   const out: Hex[] = new Array(n);
   let at = 64;
   for (let i = 0; i < n; i++) {
-    let length = 0;
+    let length: number;
     if (layout.mode === "static") length = layout.size;
     else {
       if (at + 32 > totalBytes) throw new Error(`wire element ${i} has no length word`);

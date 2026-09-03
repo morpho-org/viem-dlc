@@ -144,13 +144,6 @@ export async function factorisedFactoryCall(
     try {
       returndata = await fetchChunk(requestFn, wrapped, restOfEthCallParams);
     } catch (e) {
-      const halve = (nextBudget = timeoutSplitsRemaining) => {
-        const mid = start + Math.floor(count / 2);
-        return settleAll([
-          fetchRecursive([start, mid], nextWave, undefined, nextBudget, depth + 1),
-          fetchRecursive([mid, end], nextWave, undefined, nextBudget, depth + 1),
-        ]);
-      };
       if (isMalformedResultRevert(e)) {
         throw new Error("[deployless] lens returned a per-item result that does not fit its declared layout", {
           cause: e,
@@ -161,7 +154,7 @@ export async function factorisedFactoryCall(
       }
       if (isCounterfactualDeployFailedRevert(e)) {
         throw new Error(
-          "[deployless] counterfactual deploy failed: target occupied, constructor reverted, or no code left",
+          "[deployless] counterfactual deploy failed: target occupied, constructor reverted, or no code",
           {
             cause: e,
           },
@@ -169,10 +162,19 @@ export async function factorisedFactoryCall(
       }
       if (isOutOfGasRevert(e)) {
         throw new Error(
-          "[deployless] counterfactual deployment (factory or constructor) ran out of gas under this node's cap",
-          { cause: e },
+          "[deployless] counterfactual deploy (factory or constructor) ran out of gas under this node's cap",
+          {
+            cause: e,
+          },
         );
       }
+      const halve = (nextBudget = timeoutSplitsRemaining) => {
+        const mid = start + Math.floor(count / 2);
+        return settleAll([
+          fetchRecursive([start, mid], nextWave, undefined, nextBudget, depth + 1),
+          fetchRecursive([mid, end], nextWave, undefined, nextBudget, depth + 1),
+        ]);
+      };
       const cause = classifyChunkError(e);
       if (cause === "size" && count > 1) {
         splits.count += 1;
