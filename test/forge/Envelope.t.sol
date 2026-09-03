@@ -216,6 +216,16 @@ contract EnvelopeTest {
         require(malformedInputOf(ret) == 0, "MalformedInput(0)");
     }
 
+    function test_malformedInput_trailingRecord() public {
+        bytes[] memory xs = new bytes[](2);
+        (xs[0], xs[1]) = (hex"01", hex"02");
+        bytes memory w = Env.wireDyn(xs);
+        // n claims one element; the body carries two
+        assembly { mstore(add(w, 0x20), 1) }
+        bytes memory ret = runner.exec(Env.wrap(envelope, address(factory), type(DynInLens).creationCode, w, Env.config(DynInLens.item.selector, true, 0, false, 32, false)));
+        require(malformedInputOf(ret) == 0, "MalformedInput(n - 1)");
+    }
+
     function test_malformedInput_truncatedRecord() public {
         bytes[] memory xs = new bytes[](1);
         xs[0] = hex"01";

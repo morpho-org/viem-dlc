@@ -112,9 +112,9 @@ replaces the offset table with records:
 L₀ ‖ E₀ ‖ L₁ ‖ E₁ ‖ …        Eᵢ = the padded ABI tail hexToArray returns today; Lᵢ its length
 ```
 
-`Lᵢ` is a multiple of 32. Validation is in subtraction form so nothing can wrap: with
-`remaining = bodyLen − consumed`, require `remaining ≥ 32`, `L % 32 == 0`, `L ≤ remaining − 32`. A
-violation is `MalformedInput(i)` (`bytes4(keccak256("MalformedInput(uint256)")) = 0xf5880484`),
+`Lᵢ` is a non-zero multiple of 32. Validation is in subtraction form so nothing can wrap: with
+`remaining = bodyLen − consumed`, require `remaining ≥ 32`, `L % 32 == 0`, `L ≠ 0`,
+`L ≤ remaining − 32`, and the last element must end the body. A violation is `MalformedInput(i)` (`bytes4(keccak256("MalformedInput(uint256)")) = 0xf5880484`),
 a protocol error: the client wrote the wire, so this is a codec bug, never a decline. Element
 bytes are identical in both forms, so cache keys and values do not move, and the packer's
 per-element wire measure (`32 + L`) is unchanged.

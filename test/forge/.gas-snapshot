@@ -1,2 +1,2 @@
-GasTest:test_gas_clear_100elements() (gas: 1170588)
-GasTest:test_gas_compressed_100elements() (gas: 1453815)
+GasTest:test_gas_clear_100elements() (gas: 1180094)
+GasTest:test_gas_compressed_100elements() (gas: 1456255)

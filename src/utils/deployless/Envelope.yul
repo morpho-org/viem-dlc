@@ -236,6 +236,12 @@ object "Envelope" {
             case 0 {
                 mcopy(dst, cur, L)
                 mstore(add(F, 0xe0), add(cur, L))
+                // The last element must end the body: no bytes left over.
+                if eq(add(mload(add(F, 0x140)), 1), mload(add(F, 0x20))) {
+                    if iszero(eq(add(cur, L), add(mload(add(F, 0x40)), mload(add(F, 0x60))))) {
+                        malformedInput(mload(add(F, 0x140)))
+                    }
+                }
             }
             default {
                 materialize(F, L, dst)
