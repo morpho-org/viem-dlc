@@ -5,6 +5,9 @@ libs = []
 evm_version = "cancun"
 solc = "0.8.34"
 ffi = true
-fs_permissions = [{ access = "read", path = "../../src/utils/deployless/codec.envelope.ts" }]
+fs_permissions = [
+  { access = "read", path = "../../src/utils/deployless/codec.envelope.ts" },
+  { access = "read-write", path = "out" },
+]
 gas_limit = "18446744073709551615"
 memory_limit = 1073741824

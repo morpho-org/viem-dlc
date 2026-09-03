@@ -610,14 +610,20 @@ contract EnvelopeTest {
         uint256 g0;
         uint256 g1;
         for (uint256 g = 50_000; g < 5_000_000 && g1 == 0; g += 1_000) {
+            uint256 mark;
+            assembly { mark := mload(0x40) }
             (bool called, bytes4 sel, uint256 nA) = summaryWithGas(ic, g);
+            assembly { mstore(0x40, mark) }
             if (!called || sel != OK) continue;
             if (nA >= 250 && g0 == 0) g0 = g;
             if (nA >= 262) g1 = g;
         }
         require(g0 > 0 && g1 > g0, "window");
         for (uint256 g = g0; g < g1 + 1_000; g++) {
+            uint256 mark;
+            assembly { mark := mload(0x40) }
             (bool called, bytes4 sel, uint256 nA) = summaryWithGas(ic, g);
+            assembly { mstore(0x40, mark) }
             require(called && sel == OK && nA >= 250, "corpse across the rebase");
         }
     }

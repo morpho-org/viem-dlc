@@ -4,6 +4,7 @@ pragma solidity ^0.8.25;
 interface Vm {
     function ffi(string[] calldata) external returns (bytes memory);
     function readFile(string calldata) external view returns (string memory);
+    function writeFile(string calldata, string calldata) external;
     function toString(bytes calldata) external pure returns (string memory);
     function toString(uint256) external pure returns (string memory);
 }
@@ -61,11 +62,15 @@ library Env {
     }
 
     /// Replaces a clear wire's body with its FastLZ compression, using the package's own compressor.
+    /// The body travels through a file: a command-line argument is capped at 128 KiB on Linux.
     function compress(bytes memory clearWire) internal returns (bytes memory) {
+        bytes memory body_ = slice(clearWire, 64, clearWire.length - 64);
+        // Named by content: tests run in parallel and must not share a scratch file.
+        string memory file = string.concat("out/flz-", VM.toString(abi.encodePacked(keccak256(body_))), ".hex");
+        VM.writeFile(file, VM.toString(body_));
         string[] memory cmd = new string[](8);
         (cmd[0], cmd[1], cmd[2], cmd[3]) = ("pnpm", "-s", "--dir", "../..");
-        (cmd[4], cmd[5], cmd[6]) = ("exec", "tsx", "test/forge/flz-compress.ts");
-        cmd[7] = VM.toString(slice(clearWire, 64, clearWire.length - 64));
+        (cmd[4], cmd[5], cmd[6], cmd[7]) = ("exec", "tsx", "test/forge/flz-compress.ts", string.concat("test/forge/", file));
         return abi.encodePacked(word(clearWire, 0), word(clearWire, 32), VM.ffi(cmd));
     }
 
