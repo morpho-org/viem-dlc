@@ -285,10 +285,10 @@ function pool(stats: GasStats | undefined, page: PageGas, served: number): GasSt
 }
 
 /**
- * Deviations of headroom a predicted chunk keeps below the budget. Item costs are neither
- * independent nor normal, so the only distribution-free reading is Cantelli's: a chunk overshoots
- * with probability at most `1 / (1 + z²)`, one in five at `z = 2`. An overshoot costs one
- * continuation, packed from more data.
+ * Deviations of headroom a predicted chunk keeps below the budget. Were attempt costs uncorrelated,
+ * a chunk's deviation would be `σ·√k` and Cantelli would bound overshoot at `1 / (1 + z²)`, one in
+ * five at `z = 2`; warm storage and ordering correlate them, so this is a target, not a bound. An
+ * overshoot costs one continuation, packed from more data.
  */
 const PACKING_SIGMAS = 2;
 

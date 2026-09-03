@@ -74,9 +74,10 @@ callee adversary now fails at 1,100 and passes at 1,200, and `cpost` is 1,400.
 ### The decoder
 
 `Page` gains `gas: { budget, sum, sumSquares, max }`. `hexToPage` reads the four words and
-rejects telemetry that no set of `served` non-negative samples could produce: with `served = 0`,
-all three must be zero; otherwise `sum > 0`, `max ≤ sum`, `sum² ≤ served·sumSquares` and
-`sumSquares ≤ sum·max`. The sum may exceed the budget: the last attempt admitted may spend into
+rejects telemetry that violates the relations any `served` non-negative samples satisfy: with
+`served = 0`, all three must be zero; otherwise `sum > 0`, `max ≤ sum`, `sum² ≤ served·sumSquares`
+and `sumSquares ≤ sum·max`. Necessary conditions, not a certificate: a tuple can pass them and
+still correspond to no integer samples. The sum may exceed the budget: the last attempt admitted may spend into
 the reserve, and does whenever the callee drains its frame.
 
 ### Packing
@@ -88,8 +89,8 @@ continuation's cap is `predictItems`: the largest `k` with
 k·μ + z·σ·√k ≤ budget        μ = sum / served,  σ² = (served·sumSquares − sum²) / served²
 ```
 
-A chunk's cost is a sum of `k` attempt costs, so its deviation grows as `√k`, and the margin is
-a shrinking fraction of a large chunk. `z = PACKING_SIGMAS = 2`. Tails are packed only after the
+A chunk's cost is a sum of `k` attempt costs; were they uncorrelated its deviation would be
+`σ·√k`, a shrinking fraction of a large chunk. `z = PACKING_SIGMAS = 2`. Tails are packed only after the
 whole wave has settled, so every tail of a wave sees the same pool. Escalation singletons and
 halving are unchanged. A page that dies no longer punishes the tail behind it: the tail is packed
 from what the page reported about the elements it did serve.
@@ -143,8 +144,10 @@ undershoots shows `pages_continued` at zero with the suggestion above the hint.
   smallest.
 - **The death is still censored.** Its cost is unknown by definition, and the only element whose
   cost the pool never sees is the one that mattered most on that page.
-- **`z` is a tuned constant.** Costs are neither independent nor normal, so the bound is
-  Cantelli's: overshoot at most `1/(1+z²)` per chunk. It buys a probability, not a guarantee.
+- **`z` is a tuned constant, and the `√k` scaling assumes uncorrelated costs.** Under that
+  assumption Cantelli bounds overshoot at `1/(1+z²)` per chunk; warm storage and ordering
+  correlate costs and widen a chunk's deviation, so the figure is a target the operator can read
+  against `pages_continued`, not a bound.
 - **`Σg²` is unbounded by the envelope.** `g` is below `2⁶⁴` on any node and `n` is bounded by
   initcode, which keeps it far under `2²⁵⁶`, but nothing checks.
 
@@ -167,8 +170,8 @@ undershoots shows `pages_continued` at zero with the suggestion above the hint.
   completion-order prefix of the pool, and two tails in the same wave would be packed to
   different estimates of the same lens.
 - **Why `z = 2`.** An overshoot costs one continuation, packed from more data; an undershoot costs
-  extra parallel requests. One sigma leaves a coin flip under Cantelli; two leaves one in five,
-  and the `√k` scaling makes the margin a few percent of a large chunk.
+  extra parallel requests. Under uncorrelated costs one sigma leaves a coin flip and two leaves one
+  in five, and the `√k` scaling makes the margin a few percent of a large chunk.
 
 ## Derivation
 

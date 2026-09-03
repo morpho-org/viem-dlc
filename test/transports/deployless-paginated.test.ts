@@ -125,8 +125,10 @@ type LensBehavior = {
   recoversAlone?: boolean;
   /** Gas an attempt on the element with this address value costs; flat when omitted. */
   itemGas?: (value: number) => number;
-  /** What the lens's frame can spend on attempts; by default exactly `pageSize` flat attempts. */
-  budget?: number;
+  /** What the lens's frame can spend on attempts, per chunk by its first address value; by default exactly `pageSize` flat attempts. */
+  budget?: number | ((firstValue: number) => number);
+  /** Milliseconds a chunk's response waits, by its first address value; to reorder completions. */
+  delay?: (firstValue: number) => number;
 };
 
 /**
@@ -140,22 +142,26 @@ function mockPagedLens({
   recoversAlone = false,
   itemGas = () => 1_000,
   budget = pageSize === Infinity ? 10_000_000 : pageSize * 1_000,
+  delay = () => 0,
 }: LensBehavior = {}) {
   return vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
     const addrs = sentAddresses((args.params[0] as { data: Hex }).data);
+    const first = addrValue(addrs[0]!);
+    const frame = typeof budget === "number" ? budget : budget(first);
+    await new Promise((resolve) => setTimeout(resolve, delay(first)));
     const results: bigint[] = [];
     const skipped: number[] = [];
     const costs: number[] = [];
     for (let i = 0; i < addrs.length && i < pageSize; i++) {
       const value = addrValue(addrs[i]!);
       if (starve.includes(value) && !(recoversAlone && addrs.length === 1)) {
-        throw revertWithPage(results, skipped, gasOf(costs, budget), i);
+        throw revertWithPage(results, skipped, gasOf(costs, frame), i);
       }
       costs.push(itemGas(value));
       if (decline.includes(value)) skipped.push(i);
       else results.push(BigInt(value));
     }
-    throw revertWithPage(results, skipped, gasOf(costs, budget));
+    throw revertWithPage(results, skipped, gasOf(costs, frame));
   });
 }
 
@@ -421,6 +427,13 @@ describe("deployless (paginated)", () => {
       expect(error.message).toMatch(expected);
     });
 
+    it("propagates a page in the previous format as an ordinary revert", async () => {
+      const previous = `0xf90a85b5${word(1)}${success(1n)}` as Hex;
+      const requestFn = vi.fn().mockRejectedValue(revertWith(previous));
+
+      await expect(createTransport(requestFn).request(createRequest([addr(1)]))).rejects.toThrow(/execution reverted/);
+    });
+
     it("throws a malformed-input revert instead of halving it", async () => {
       const requestFn = vi.fn().mockRejectedValue(revertWith(`${MALFORMED_INPUT_SELECTOR}${"00".repeat(32)}` as Hex));
       const transport = createTransport(requestFn);
@@ -518,6 +531,33 @@ describe("packing from telemetry", () => {
     await createTransport(requestFn).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8].map(addr), { itemsHint: 4 }));
 
     expect(requestedIndices(requestFn)).toEqual([[1, 2, 3, 4], [5, 6, 7, 8], [3], [4], [7], [8]]);
+  });
+
+  it("packs the same tails whichever chunk settles first", async () => {
+    const cheapFirst = mockPagedLens({ pageSize: 2, budget: 6_000, itemGas: (v) => (v <= 4 ? 1_000 : 3_000) });
+    const dearFirst = mockPagedLens({
+      pageSize: 2,
+      budget: 6_000,
+      itemGas: (v) => (v <= 4 ? 1_000 : 3_000),
+      delay: (first) => (first <= 4 ? 20 : 0),
+    });
+    const eight = [1, 2, 3, 4, 5, 6, 7, 8].map(addr);
+
+    await createTransport(cheapFirst).request(createRequest(eight, { itemsHint: 4 }));
+    await createTransport(dearFirst).request(createRequest(eight, { itemsHint: 4 }));
+
+    expect(requestedIndices(dearFirst).slice(2).sort()).toEqual(requestedIndices(cheapFirst).slice(2).sort());
+  });
+
+  it("takes the smallest frame seen as the request's budget", async () => {
+    const requestFn = mockPagedLens({ pageSize: 2, budget: (first) => (first <= 2 ? 5_000 : 3_000) });
+
+    const { field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest([1, 2, 3, 4].map(addr), { itemsHint: 2 })),
+    );
+
+    expect(field("frame_gas")).toBe(3_000);
+    expect(field("items_hint_suggested")).toBe(3);
   });
 
   it("packs a wide spread more conservatively than a flat one with the same mean", async () => {

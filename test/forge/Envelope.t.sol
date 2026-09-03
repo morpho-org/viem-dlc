@@ -131,6 +131,8 @@ contract EnvelopeTest {
         (uint256 used110, bytes memory ret) = runner.execMeasured(staticIc(values(110), modes(110)));
         Env.Page memory p = Env.page(ret);
         require(consistent(p, 110) && p.budget > p.sum, "relations");
+        (, bytes memory capped) = execWithGas(staticIc(values(3), modes(3)), 2_000_000);
+        require(Env.page(capped).budget < 2_000_000, "budget under the grant");
         uint256 marginal = (used110 - used10) / 100;
         uint256 mean = p.sum / 110;
         require(mean * 100 > marginal * 90 && mean * 100 < marginal * 110, "mean within 10% of marginal");
@@ -150,6 +152,19 @@ contract EnvelopeTest {
         (, bytes memory ret) = execWithGas(staticIc(new uint256[](3), m), 3_000_000);
         Env.Page memory p = Env.page(ret);
         require(p.died && p.diedAt == 0 && p.budget > 0 && consistent(p, 0), "budget only");
+    }
+
+    /// The first page a rising grant produces is a head refusal: nothing attempted, nothing charged.
+    function test_telemetry_headRefusalChargesNothing() public {
+        bytes memory ic = staticIc(values(3), modes(3));
+        for (uint256 g = 150_000; g < 600_000; g += 2_000) {
+            (bool called, bytes memory ret) = execWithGas(ic, g);
+            if (!called || bytes4(ret) != OK) continue;
+            Env.Page memory p = Env.page(ret);
+            require(p.nA == 1 && p.died && p.diedAt == 0 && consistent(p, 0), "[~0] uncharged");
+            return;
+        }
+        revert("no page under 600k");
     }
 
     /// A page that dies at 4 charges the same as a page over its first four elements alone.
