@@ -4,7 +4,7 @@ One file per feature, in the order the [README](../README.md) introduces them. E
 self-contained — copy one file and run it — so the transport composition being demonstrated is
 visible in the file rather than hidden in a helper.
 
-Morpho Blue on Base is the running domain example (`06-paged-lens-blue` reads Blue on Robinhood Chain, `07-paged-lens-midnight` reads Midnight). The lens contracts used by the deployless
+Morpho Blue on Base is the running domain example (`06-paginated-lens-blue` reads Blue on Robinhood Chain, `07-paginated-lens-midnight` reads Midnight). The lens contracts used by the deployless
 examples are written inline with [`soltag`](https://github.com/haydenshively/soltag) and compiled
 on the fly.
 
@@ -22,8 +22,8 @@ will throttle them. Everything else queries a recent window and finishes in seco
 
 | Env | Used by | |
 | --- | --- | --- |
-| `RPC_URL` | all but `06-paged-lens-blue` | Base JSON-RPC endpoint |
-| `ROBINHOOD_RPC_URL` | `06-paged-lens-blue` | Robinhood Chain endpoint; defaults to the chain's public RPC |
+| `RPC_URL` | all but `06-paginated-lens-blue` | Base JSON-RPC endpoint |
+| `ROBINHOOD_RPC_URL` | `06-paginated-lens-blue` | Robinhood Chain endpoint; defaults to the chain's public RPC |
 | `RPC_URL_FALLBACK` | `08` | second provider; defaults to `RPC_URL` |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | `09` | attaches an Upstash tier when set |
 | `BLOB_READ_WRITE_TOKEN` | `09` | attaches a Vercel Blob tier when set |
@@ -39,10 +39,10 @@ workspace TypeScript version for inline Solidity diagnostics.
 | `01-logs-divider.ts` | chunked `eth_getLogs` with alignment, retry, and `onLogsResponse` progress | [`logsDivider`](../README.md#logsdivider) |
 | `02-cache-logs.ts` | the all-in-one `cache` transport; cold vs. warm, LRU over disk | [`cache`](../README.md#cache) |
 | `03-search-and-reduce.ts` | narrowing a shared cache to one account: filter vs. `reduce` vs. `search` + `reduce` | [`getLogs2`](../README.md#getlogs2) |
-| `04-deployless-batching.ts` | `deployless` + `policy({ batch })` through an inline lens | [`deployless`](../README.md#deployless) |
-| `05-deployless-cache.ts` | per-element `eth_call` caching with `blobKey`, `ttl`, `delta` | [`policy`](../README.md#eth_call-policy) |
-| `06-paged-lens-blue.ts` | a Morpho Blue borrower-health paged lens on Robinhood Chain (accrued debt vs. oracle-priced capacity); candidates from the GraphQL API, re-read on-chain; un-created markets land in `skipped` | [Paged lenses](../README.md#paged-lenses) |
-| `07-paged-lens-midnight.ts` | the same shape for Midnight on Base, with liquidatability (maturity, lock); candidates from the liquidation-candidates API | [Paged lenses](../README.md#paged-lenses) |
+| `04-deployless-batching.ts` | `deployless` + `readLens` over an inline per-item lens | [`deployless`](../README.md#deployless) |
+| `05-deployless-cache.ts` | `readLens` with per-element `eth_call` caching: `blobKey`, `ttl`, `delta` | [`policy`](../README.md#eth_call-policy) |
+| `06-paginated-lens-blue.ts` | a Morpho Blue borrower-health paginated lens on Robinhood Chain (accrued debt vs. oracle-priced capacity); candidates from the GraphQL API, re-read on-chain; un-created markets land in `skipped` | [Paginated lenses](../README.md#paginated-lenses) |
+| `07-paginated-lens-midnight.ts` | the same shape for Midnight on Base, with liquidatability (maturity, lock); candidates from the liquidation-candidates API | [Paginated lenses](../README.md#paginated-lenses) |
 | `08-failover.ts` | two providers with their own limits sharing one store; custom `shouldThrow` | [`failover`](../README.md#failover) |
 | `09-stores.ts` | `HierarchicalStore` / `TtlStore` / `CompressedStore` / `NodeFsStore`, optional remote tiers | [Stores](../README.md#stores) |
 | `10-observability.ts` | `withLogging` with a real LogLayer; one wide event per call | [Observability](../README.md#observability-optional) |

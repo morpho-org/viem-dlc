@@ -29,7 +29,6 @@ const transport = cache(http(rpcUrl), [
     binSize: 10_000,
     store: new LruStore({ maxBytes: 100_000_000 }),
     invalidationStrategy: createSimpleInvalidation(),
-    gasLimit: 30_000_000,
   },
   { maxBlockRange: 100_000 },
   { retryCount: 3, retryDelay: 1_000, blockTimestamp: false },

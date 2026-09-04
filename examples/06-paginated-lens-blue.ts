@@ -1,20 +1,21 @@
 /**
- * `policy({ paged: true })`: a lens that reports how far it got instead of being bisected into.
+ * A paginated lens: the envelope calls the lens's per-item function once per element in its own
+ * frame, so the page reports how far it got instead of being bisected into, and an element that
+ * runs out of gas is reported in-band rather than killing the page.
  *
  * The lens measures Morpho Blue borrower health on Robinhood Chain — accrued debt against
  * oracle-priced borrow capacity, the way `_isHealthy()` does — for a batch of `(market, borrower)`
- * pairs. It stops when gas runs low (the transport retries the tail) and declines pairs whose
- * market was never created. Those land in `skipped`, rebased onto the caller's input. A partial
- * result is a successful response; check `skipped` yourself.
+ * pairs. The envelope stops when gas runs low (the transport retries the tail); the per-item
+ * function declines pairs whose market was never created. Those land in `skipped`, rebased onto
+ * the caller's input. A partial result is a successful response; check `skipped` yourself.
  *
  * Candidates come from Morpho's GraphQL API, ordered by health factor. The API is a coverage source,
  * never a correctness dependency: every pair is re-read on-chain by the lens.
  */
-import { MAX_INITCODE_SIZE, policy } from "@morpho-org/viem-dlc/actions";
+import { MAX_INITCODE_SIZE, readLens } from "@morpho-org/viem-dlc/actions";
 import { deployless } from "@morpho-org/viem-dlc/transports";
 import { sol } from "soltag";
-import { type Address, createPublicClient, getAbiItem, getAddress, type Hex, http, keccak256, toHex } from "viem";
-import { readContract } from "viem/actions";
+import { type Address, createPublicClient, getAddress, type Hex, http, keccak256, toHex } from "viem";
 import { robinhood } from "viem/chains";
 
 const rpcUrl = process.env.ROBINHOOD_RPC_URL ?? robinhood.rpcUrls.default.http[0];
@@ -75,21 +76,18 @@ const IMorpho = `
   interface IOracle { function price() external view returns (uint256); }
 `;
 
-// Index order, single pass, element 0 always attempted; stop on low gas (retryable tail), skip on
-// a condition that will decline identically next time (the market was never created). Oracle and
-// IRM reverts fail the frame rather than masquerading as skips.
-const healthLens = sol("BlueHealthPagedLens")`
+// The per-item function reverts on a condition that will decline identically next time (the
+// market was never created); the envelope records that as a skip. Oracle and IRM reverts revert
+// the item too — the envelope cannot tell a deliberate decline from a broken dependency, so keep
+// per-item reverts to conditions that are genuinely permanent.
+const healthLens = sol("BlueHealthLens")`
   pragma solidity ^0.8.24;
   ${IMorpho}
-  contract BlueHealthPagedLens {
+  contract BlueHealthLens {
     uint256 constant WAD = 1e18;
     uint256 constant ORACLE_PRICE_SCALE = 1e36;
     uint256 constant VIRTUAL_SHARES = 1e6;
     uint256 constant VIRTUAL_ASSETS = 1;
-    // Measured on Robinhood Chain via eth_estimateGas: a served element costs ~36k (up to ~68k
-    // when it is the first touch of its market's storage), a skipped one ~10k.
-    uint256 constant PER_ELEMENT_ESTIMATE = 80_000;
-    uint256 constant RETURN_RESERVE = 30_000;
 
     IMorpho immutable morpho;
     constructor(IMorpho _morpho) { morpho = _morpho; }
@@ -100,23 +98,10 @@ const healthLens = sol("BlueHealthPagedLens")`
       uint256 maxBorrow; // collateral * price / SCALE * lltv / WAD
     }
 
-    function page(Input[] calldata inputs)
-      external view returns (Health[] memory results, uint256[] memory skipped)
-    {
-      results = new Health[](inputs.length);
-      skipped = new uint256[](inputs.length);
-      uint256 nResults;
-      uint256 nSkipped;
-      for (uint256 i = 0; i < inputs.length; i++) {
-        if (i > 0 && gasleft() < RETURN_RESERVE + PER_ELEMENT_ESTIMATE) break;
-        Market memory m = morpho.market(inputs[i].id);
-        if (m.lastUpdate == 0) { skipped[nSkipped++] = i; continue; }
-        results[nResults++] = _health(inputs[i].id, m, inputs[i].borrower);
-      }
-      assembly {
-        mstore(results, nResults)
-        mstore(skipped, nSkipped)
-      }
+    function healthOf(Input calldata x) external view returns (Health memory) {
+      Market memory m = morpho.market(x.id);
+      require(m.lastUpdate != 0);
+      return _health(x.id, m, x.borrower);
     }
 
     // Mirrors _isHealthy(): accrue interest since lastUpdate the way _accrueInterest() does
@@ -145,7 +130,7 @@ const healthLens = sol("BlueHealthPagedLens")`
 
 const client = createPublicClient({
   chain: robinhood,
-  transport: deployless(http(rpcUrl), { gasLimit: 50_000_000 }),
+  transport: deployless(http(rpcUrl)),
 });
 
 const candidates = await fetchCandidates(1.5);
@@ -162,27 +147,22 @@ const inputs = candidates.flatMap(({ id, borrower }, i) =>
     : [{ id, borrower }],
 );
 
-const [results, skipped] = await readContract(client, {
+const { results, skipped } = await readLens(client, {
   ...healthLens.with(MORPHO),
-  functionName: "page",
-  args: [inputs],
-  stateOverride: [
-    policy({
-      abi: getAbiItem({ abi: healthLens.abi, name: "page" }),
-      paged: true,
-      // eth_estimateGas on Robinhood Chain fits ~853k + 36k·N for this lens (the constant is mostly
-      // the counterfactual deploy); padded ~25%. An over-packed chunk costs one more round trip, not
-      // a bisection, so the model only needs to be a sane opening guess. Uncompressed, the 49,152-byte
-      // initcode cap binds first (~704 borrowers/call at 64 B each); `compress` shrinks the ABI-padded
-      // input ~9× on the wire, so gas binds instead — ~1,700 fully served in one call at this cap,
-      // with a hard wrapper-phase OOG (not a paged stop) just past it, which the padding keeps clear of.
-      batch: { batchSize: MAX_INITCODE_SIZE, compress: true, gas: { constant: 900_000, linear: 45_000, quadratic: 0 } },
-    }),
-  ],
+  functionName: "healthOf",
+  args: inputs,
+  // Uncompressed, the 49,152-byte initcode cap binds first (~700 pairs/call at 64 B each);
+  // `compress` shrinks the ABI-padded input several-fold on the wire, so a chunk carries far more
+  // pairs than one frame can serve and the envelope pages: an over-packed chunk costs one more
+  // round trip, never a bisection. `pageSizeHint` sizes the opening wave so that round trip is
+  // spent only on inputs past the hint — the value is `page_size_suggested`, read off the wide
+  // event (10-observability) of a run without it.
+  batch: { batchSize: MAX_INITCODE_SIZE, compress: true, pageSizeHint: 2_000 },
 });
 
 console.log(`${inputs.length} inputs → ${results.length} results, ${skipped.length} skipped`);
-console.log(`every skipped input is the bogus market: ${skipped.every((i) => inputs[Number(i)]?.id === bogusMarket)}`);
+const planted = skipped.filter((i) => inputs[i]?.id === bogusMarket).length;
+console.log(`of the skips, ${planted} are the planted bogus market`);
 
 // Blue liquidates any unhealthy position: borrowed > maxBorrow.
 const borrowers = results.filter((h) => h.borrowed > 0n);

@@ -40,7 +40,7 @@ export function createBenchClient(rpcUrl: string) {
     new NodeFsStore({ directory: FIXTURES_DIR }),
   ]);
   const transport = cache(http(rpcUrl), [
-    { binSize: 10_000, store, invalidationStrategy: createSimpleInvalidation(), gasLimit: 30_000_000 },
+    { binSize: 10_000, store, invalidationStrategy: createSimpleInvalidation() },
     { maxBlockRange: 100_000 },
     { retryCount: 3, retryDelay: 1_000, blockTimestamp: false },
     { maxBytes: 8_192 },

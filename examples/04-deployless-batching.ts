@@ -1,9 +1,11 @@
 /**
- * `deployless` + `policy({ batch })`: read thousands of positions through a lens contract that is
- * never deployed. The lens is written inline with soltag; `policy` tells the transport how to
- * split the input array across upstream `eth_call`s under a byte budget and a gas budget.
+ * `deployless` + `readLens`: read thousands of positions through a lens contract that is never
+ * deployed. The lens is one per-item view function written inline with soltag; `readLens` splits
+ * the input array across upstream `eth_call`s under a byte budget, and the envelope calls the lens
+ * once per element in its own frame. No gas budget exists anywhere: the envelope reports how far
+ * it got, so a chunk adapts to whatever gas the node grants.
  */
-import { MAX_INITCODE_SIZE, policy } from "@morpho-org/viem-dlc/actions";
+import { MAX_INITCODE_SIZE, readLens } from "@morpho-org/viem-dlc/actions";
 import { deployless } from "@morpho-org/viem-dlc/transports";
 import { sol } from "soltag";
 import {
@@ -11,13 +13,12 @@ import {
   type Chain,
   type Client,
   createPublicClient,
-  getAbiItem,
   type Hex,
   http,
   parseAbiItem,
   type Transport,
 } from "viem";
-import { getBlockNumber, getLogs, readContract } from "viem/actions";
+import { getBlockNumber, getLogs } from "viem/actions";
 import { base } from "viem/chains";
 
 const rpcUrl = process.env.RPC_URL;
@@ -50,7 +51,8 @@ const IMorpho = `
   }
 `;
 
-// One dynamic-array input, one dynamic-array output, same length and order — the shape `policy` requires.
+// A lens is one function over one element; the transport calls it once per element in its own
+// frame and paginates. Nothing here knows about batching.
 const positionsLens = sol("MorphoPositionsLens")`
   pragma solidity ^0.8.24;
   ${IMorpho}
@@ -58,39 +60,31 @@ const positionsLens = sol("MorphoPositionsLens")`
     IMorpho constant MORPHO = IMorpho(0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb);
     struct Input { bytes32 id; address user; }
 
-    function positions(Input[] calldata inputs) external view returns (IMorpho.Position[] memory out) {
-      out = new IMorpho.Position[](inputs.length);
-      for (uint256 i = 0; i < inputs.length; i++) {
-        out[i] = MORPHO.position(inputs[i].id, inputs[i].user);
-      }
+    function positionOf(Input calldata x) external view returns (IMorpho.Position memory) {
+      return MORPHO.position(x.id, x.user);
     }
   }
 `;
 
 const client = createPublicClient({
   chain: base,
-  transport: deployless(http(rpcUrl), { gasLimit: 30_000_000 }),
+  transport: deployless(http(rpcUrl)),
 });
 
 const toBlock = await getBlockNumber(client);
 const inputs = await discoverPositions(client, { fromBlock: toBlock - 9_000n, toBlock });
 console.log(`${inputs.length} distinct (market, borrower) pairs in the last 9 000 blocks\n`);
 
-const positions = await measure("positions(inputs)", () =>
-  readContract(client, {
+const { results: positions, skipped } = await measure("positionOf × inputs", () =>
+  readLens(client, {
     ...positionsLens.with(),
-    functionName: "positions",
-    args: [inputs],
-    stateOverride: [
-      policy({
-        abi: getAbiItem({ abi: positionsLens.abi, name: "positions" }),
-        // eth_estimateGas on Base fits ~336k + 27k·N for this lens (the constant is mostly the
-        // counterfactual deploy); padded ~25%.
-        batch: { batchSize: MAX_INITCODE_SIZE, gas: { constant: 350_000, linear: 35_000, quadratic: 0 } },
-      }),
-    ],
+    functionName: "positionOf",
+    args: inputs,
+    batch: { batchSize: MAX_INITCODE_SIZE },
   }),
 );
 
 const borrowing = positions.filter((p) => p.borrowShares > 0n).length;
-console.log(`\n${positions.length} positions returned, ${borrowing} with outstanding borrow shares`);
+console.log(
+  `\n${positions.length} positions returned (${skipped.length} skipped), ${borrowing} with outstanding borrow shares`,
+);
