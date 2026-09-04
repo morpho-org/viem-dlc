@@ -28,7 +28,8 @@ export type ThrottledStoreOptions = {
 /**
  * A store that rate-limits, concurrency-limits, and coalesces writes to an underlying store.
  *
- * - `get` is passed through without throttling.
+ * - `get` is not throttled, and serves the latest pending `set`/`delete` for the key, so a read never
+ *   observes a value older than a write this store has already accepted.
  * - `set` and `delete` record the op and return immediately, so callers are never
  *   blocked by the rate limiter. {@link ThrottledStore.flush} is the only durability
  *   barrier; write failures surface through `onWriteError`, never as a rejection.
@@ -62,6 +63,8 @@ export class ThrottledStore implements Store {
   }
 
   get(key: string) {
+    const entry = this.pending.get(key);
+    if (entry !== undefined) return entry.op.kind === "set" ? entry.op.value : null;
     return this.store.get(key);
   }
 

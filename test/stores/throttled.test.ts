@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { MemoryStore } from "../../src/stores/index.js";
+import { HierarchicalStore, LruStore, MemoryStore, TtlStore } from "../../src/stores/index.js";
 import { ThrottledStore, type ThrottledStoreOptions } from "../../src/stores/throttled.js";
 import { sleep } from "../../src/utils/sleep.js";
 
@@ -28,6 +28,55 @@ describe("ThrottledStore", () => {
       const underlying = new MemoryStore();
       const store = createStore(underlying);
       expect(await store.get("missing")).toBeNull();
+    });
+
+    it("serves a pending set while the upstream write is still in flight", async () => {
+      const underlying = new MemoryStore();
+      underlying.set("key", [Buffer.from("v1")]);
+      const originalSet = underlying.set.bind(underlying);
+      const setSpy = vi.spyOn(underlying, "set");
+
+      let resolveGate!: () => void;
+      const gate = new Promise<void>((r) => {
+        resolveGate = r;
+      });
+      setSpy.mockImplementationOnce(async (key, value) => {
+        await gate;
+        originalSet(key, value);
+      });
+
+      const store = createStore(underlying);
+      store.set("key", [Buffer.from("v2")]);
+      await sleep(1);
+
+      // Upstream still holds v1 — a passthrough read here would hand it to a cache-aside tier above.
+      expect(underlying.get("key")).toEqual([Buffer.from("v1")]);
+      expect(await store.get("key")).toEqual([Buffer.from("v2")]);
+
+      resolveGate();
+      await store.flush();
+      expect(await store.get("key")).toEqual([Buffer.from("v2")]);
+    });
+
+    it("serves a pending delete as a miss", async () => {
+      const underlying = new MemoryStore();
+      underlying.set("key", [Buffer.from("v1")]);
+
+      const store = createStore(underlying);
+      store.delete("key");
+
+      expect(await store.get("key")).toBeNull();
+    });
+
+    it("falls back to the underlying store once the pending op settles", async () => {
+      const underlying = new MemoryStore();
+      const store = createStore(underlying);
+
+      store.set("key", [Buffer.from("v1")]);
+      await store.flush();
+
+      underlying.set("key", [Buffer.from("external")]);
+      expect(await store.get("key")).toEqual([Buffer.from("external")]);
     });
   });
 
@@ -633,5 +682,45 @@ describe("ThrottledStore", () => {
       expect(setSpy).toHaveBeenCalledTimes(2);
       expect(elapsed).toBeGreaterThanOrEqual(80); // ~100ms for second token
     });
+  });
+});
+
+// The composition the optimized factories ship: a TTL-bounded memory tier over a throttled remote.
+// An expiring memory entry must not let a cache-aside backfill reinstate a value this store has
+// already accepted a newer write for but not yet persisted.
+describe("ThrottledStore under a TTL-bounded memory tier", () => {
+  it("does not resurrect the pre-write remote value on a miss backfill", async () => {
+    const remote = new MemoryStore();
+    remote.set("key", [Buffer.from("v1")]);
+
+    const originalSet = remote.set.bind(remote);
+    const setSpy = vi.spyOn(remote, "set");
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      resolveGate = r;
+    });
+    setSpy.mockImplementationOnce(async (key, value) => {
+      await gate;
+      originalSet(key, value);
+    });
+
+    const throttled = createStore(remote);
+    const store = new HierarchicalStore([new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1 }), throttled], {
+      populateOnMiss: true,
+    });
+
+    await store.set("key", [Buffer.from("v2")]);
+
+    // Memory copy expires while the upstream write is still gated, so the read falls through.
+    await sleep(5);
+    expect(remote.get("key")).toEqual([Buffer.from("v1")]);
+    expect(await store.get("key")).toEqual([Buffer.from("v2")]);
+
+    // ...and the backfill that read triggered must not have stamped v1 into the memory tier.
+    expect(await store.get("key")).toEqual([Buffer.from("v2")]);
+
+    resolveGate();
+    await store.flush();
+    expect(remote.get("key")).toEqual([Buffer.from("v2")]);
   });
 });
