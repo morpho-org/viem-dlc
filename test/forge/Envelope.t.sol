@@ -3,7 +3,6 @@ pragma solidity ^0.8.25;
 
 import { DynInLens, DynOutLens, EchoLens, Env, Factory, HungryLens, Runner, StaticLens, WideLens } from "./Fixtures.sol";
 
-bytes4 constant OK = 0x1824683e;
 bytes4 constant OOG = 0xcc0bd34c;
 bytes4 constant DEPLOY_FAILED = 0x101bb98d;
 bytes4 constant MALFORMED = 0xace36ecd;
@@ -160,7 +159,7 @@ contract EnvelopeTest {
         bytes memory ic = staticIc(values(3), modes(3));
         for (uint256 g = 150_000; g < 600_000; g += 2_000) {
             (bool called, bytes memory ret) = execWithGas(ic, g);
-            if (!called || bytes4(ret) != OK) continue;
+            if (!called || bytes4(ret) != Env.OK) continue;
             Env.Page memory p = Env.page(ret);
             require(p.nA == 1 && p.died && p.diedAt == 0 && consistent(p, 0), "[~0] uncharged");
             require(p.budget < g, "budget saturates");
@@ -358,7 +357,7 @@ contract EnvelopeTest {
         for (; g < 6_000_000 && !seenDeath; g += 7) {
             (bool called, bytes memory ret) = execWithGas(ic, g);
             require(called, "corpse above first page");
-            if (bytes4(ret) != OK) continue;
+            if (bytes4(ret) != Env.OK) continue;
             Env.Page memory p = Env.page(ret);
             if (p.died && p.diedAt == 1) {
                 require(p.nA == 2 && p.results.length == 1, "death at 1");
@@ -431,10 +430,10 @@ contract EnvelopeTest {
     function test_compressionBomb_pagesUnderAnyGrant() public {
         bytes memory ic = compressedStaticIc(Env.wireOf(50_000, 50_000 * 64, Env.flzRepeat(bytes32(0), 100_000)));
         (bool called, bytes4 sel, uint256 small) = summaryWithGas(ic, 2_000_000);
-        require(called && sel == OK && small >= 1, "page under 2M");
+        require(called && sel == Env.OK && small >= 1, "page under 2M");
         uint256 large;
         (called, sel, large) = summaryWithGas(ic, 10_000_000);
-        require(called && sel == OK && large > small, "progress scales with gas");
+        require(called && sel == Env.OK && large > small, "progress scales with gas");
     }
 
     /// 2,000 distinct compressible elements (128 KiB through the 16 KiB history) decode to the right values.
@@ -514,7 +513,7 @@ contract EnvelopeTest {
             uint256 mark;
             assembly { mark := mload(0x40) }
             (bool called, bytes memory ret) = execWithGas(ic, g);
-            bool done = called && bytes4(ret) == OK;
+            bool done = called && bytes4(ret) == Env.OK;
             assembly { mstore(0x40, mark) }
             if (done) return g;
         }
@@ -541,7 +540,7 @@ contract EnvelopeTest {
             bytes4 sel = called && ret.length >= 4 ? bytes4(ret) : bytes4(0);
             if (sel == MALFORMED) {
                 s.malformed++;
-            } else if (sel != OK) {
+            } else if (sel != Env.OK) {
                 if (seenPage || (called && sel != OOG && sel != DEPLOY_FAILED && ret.length != 0)) {
                     revert(string.concat("corpse above first page at ", Env.VM.toString(g), " called=", called ? "1" : "0", " len=", Env.VM.toString(ret.length)));
                 }
@@ -597,7 +596,7 @@ contract EnvelopeTest {
             assembly { mark := mload(0x40) }
             (bool called, bytes memory ret) = execWithGas(ic, g);
             if (!called || ret.length < 4) revert(string.concat("corpse above first page at ", Env.VM.toString(g)));
-            bool done = bytes4(ret) == MALFORMED || (bytes4(ret) == OK && Env.page(ret).nA >= target);
+            bool done = bytes4(ret) == MALFORMED || (bytes4(ret) == Env.OK && Env.page(ret).nA >= target);
             assembly { mstore(0x40, mark) }
             if (done) return g;
         }
@@ -689,7 +688,7 @@ contract EnvelopeTest {
             assembly { mark := mload(0x40) }
             (bool called, bytes4 sel, uint256 nA) = summaryWithGas(ic, g);
             assembly { mstore(0x40, mark) }
-            if (!called || sel != OK) continue;
+            if (!called || sel != Env.OK) continue;
             if (nA >= 250 && g0 == 0) g0 = g;
             if (nA >= 262) g1 = g;
         }
@@ -699,7 +698,7 @@ contract EnvelopeTest {
             assembly { mark := mload(0x40) }
             (bool called, bytes4 sel, uint256 nA) = summaryWithGas(ic, g);
             assembly { mstore(0x40, mark) }
-            require(called && sel == OK && nA >= 250, "corpse across the rebase");
+            require(called && sel == Env.OK && nA >= 250, "corpse across the rebase");
         }
     }
 

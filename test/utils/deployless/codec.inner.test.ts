@@ -309,6 +309,11 @@ describe("hexToPage", () => {
     ["two deaths", stream(word(tag(0)), word(tag(1))), /record 0 of 2 reports a gas death at 0/],
     ["the unused record namespace", stream(word(1n << 254n)), /neither a success, a decline nor a death/],
     ["a static result of the wrong size", stream(success("0x0102")), /2-byte result/],
+    [
+      "a record the payload does not hold",
+      `0x${word(2)}${header(flatGas(2))}${success(wordHex(7))}`,
+      /record 1 is missing/,
+    ],
     ["trailing bytes", `${stream(word(0))}00`, /trailing bytes/],
   ])("rejects %s", (_name, encoded, expected) => {
     expect(() => hexToPage(STATIC, encoded as Hex)).toThrow(expected);
@@ -361,13 +366,13 @@ describe("pageToWire", () => {
     ["a skip at the death", { results: [], skipped: [1], died: 1 }, /did not attempt/],
     ["a death that is not last", { results: [wordHex(7)], skipped: [], died: 0 }, /not its last record/],
   ])("rejects a page with %s", (_name, page, expected) => {
-    expect(() => pageToWire(page as Page)).toThrow(expected);
+    expect(() => pageToWire({ gas: flatGas(0), ...page } as Page)).toThrow(expected);
   });
 });
 
 describe("pageToHex", () => {
   it("matches viem for an entirely empty page", () => {
-    const page: Page = { results: [], skipped: [] };
+    const page: Pick<Page, "results" | "skipped"> = { results: [], skipped: [] };
     expect(pageToHex(DYNAMIC, page)).toBe(encodePage("string[]", [], []));
     expect(pageToHex(STATIC, page)).toBe(encodePage("uint256[]", [], []));
   });

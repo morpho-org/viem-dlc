@@ -551,6 +551,25 @@ describe("packing from telemetry", () => {
     expect(requestedIndices(dearFirst).slice(2).sort()).toEqual(requestedIndices(cheapFirst).slice(2).sort());
   });
 
+  it("never packs below one element, however small the smallest frame", async () => {
+    const requestFn = mockPagedLens({ pageSize: 2, budget: (first) => (first <= 4 ? 5_000 : 500) });
+
+    const { field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8].map(addr), { pageSizeHint: 4 })),
+    );
+
+    expect(requestedIndices(requestFn)).toEqual([[1, 2, 3, 4], [5, 6, 7, 8], [3], [4], [7], [8]]);
+    expect(field("page_size_suggested")).toBe(1);
+  });
+
+  it("packs a tail whole while no attempt has been costed", async () => {
+    const requestFn = mockPagedLens({ starve: [1], recoversAlone: true });
+
+    await createTransport(requestFn).request(createRequest([1, 2, 3, 4].map(addr)));
+
+    expect(requestedIndices(requestFn)).toEqual([[1, 2, 3, 4], [1], [2, 3, 4]]);
+  });
+
   it("takes the smallest frame seen as the request's budget", async () => {
     const requestFn = mockPagedLens({ pageSize: 2, budget: (first) => (first <= 2 ? 5_000 : 3_000) });
 

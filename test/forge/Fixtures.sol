@@ -53,18 +53,18 @@ library Env {
     /// The wire for a static `T[]`, from `abi.encode(array)`: `n ‖ bodyLen ‖ strides`.
     function wire(bytes memory encodedArray) internal pure returns (bytes memory) {
         uint256 n = word(encodedArray, 32);
-        bytes memory body = slice(encodedArray, 64, encodedArray.length - 64);
-        return abi.encodePacked(n, body.length, body);
+        bytes memory strides = slice(encodedArray, 64, encodedArray.length - 64);
+        return abi.encodePacked(n, strides.length, strides);
     }
 
     /// The wire for a dynamic `T[]`: `n ‖ bodyLen ‖ (L ‖ tail)*`, each tail the padded ABI tail of `abi.encode(x)`.
     function wireDyn(bytes[] memory xs) internal pure returns (bytes memory) {
-        bytes memory body;
+        bytes memory acc;
         for (uint256 i; i < xs.length; i++) {
             bytes memory tail = slice(abi.encode(xs[i]), 32, 32 + ((xs[i].length + 31) / 32) * 32);
-            body = abi.encodePacked(body, tail.length, tail);
+            acc = abi.encodePacked(acc, tail.length, tail);
         }
-        return abi.encodePacked(xs.length, body.length, body);
+        return abi.encodePacked(xs.length, acc.length, acc);
     }
 
     /// Replaces a clear wire's body with its FastLZ compression, using the package's own compressor.

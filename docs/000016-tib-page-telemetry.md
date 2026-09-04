@@ -68,8 +68,8 @@ After the sentinel: `nA ‖ budget ‖ Σg ‖ Σg² ‖ gmax ‖ records`. Four
 `paginate` writes `budget` before the loop and stores the gas level in scratch `0x20`. The three
 accumulators live in their own slab header slots and are updated by `account(slab)` from the
 loop's post block, which a `break` — a death or an admission refusal — skips. Fresh memory zeroes
-the slots. The accounting adds about 250 gas per element to both paths (the snapshot moved from
-1,367,470 to 1,392,641 and from 1,632,345 to 1,658,019 per hundred elements) and 73 bytes of
+the slots. The telemetry adds about 250 gas per element to both paths (the snapshot moved from
+1,367,470 to 1,392,843 and from 1,632,345 to 1,658,221 per hundred elements) and 81 bytes of
 initcode. It runs after the call, so its cost is post-split and bears on `cpost`: the drained
 callee adversary now fails at 1,100 and passes at 1,200, and `cpost` is 1,400.
 

@@ -483,8 +483,7 @@ the error path of `observe` captures them.
 2. **Client.** `arrayifiedAbi` / `itemFragmentOf` in `codec.inner.ts`; `config` packing in
    `codec.envelope.ts`; `CounterfactualDeployFailed` as a thrown protocol error in `call.ts`
    (`OOG_SENTINEL` keeps its corpse classification); `pages_all_skipped`; the `readLens` action.
-3. **Consumers.** Examples 04-07 as bare per-item functions read through `readLens`; README;
-   the "paginated" vocabulary throughout exported surfaces.
+3. **Consumers.** README; the "paginated" vocabulary throughout exported surfaces.
 
 Phases 1-2 of the superseded revision — the tag-aware codec, bytes-only packing, singleton
 escalation, the facet set, the deletions, and the removal of the unpaginated path — landed in
@@ -568,10 +567,9 @@ successful response, same ABI, same merge); and the handler's rebasing machinery
 - Packing: pathologically-compressible input packs under the allocation budget, not just wire
   bytes; a wide-output-stride lens packs smaller chunks than a narrow one at equal input
   stride.
-- Real node: examples 06/07 end-to-end, including a replicated input large enough to force
-  several pages, with every element accounted for and no corpse.
-- `pnpm exec vitest run`, `pnpm typecheck`, `pnpm typecheck:examples`,
-  `pnpm exec biome check .`
+- Real node: a lens end-to-end, including a replicated input large enough to force several
+  pages, with every element accounted for and no corpse.
+- `pnpm exec vitest run`, `pnpm typecheck`, `pnpm exec biome check .`
 
 ## Open risks
 

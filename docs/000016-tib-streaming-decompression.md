@@ -8,6 +8,9 @@ related:
 
 # TIB — Streaming decompression: the compressed path without a prologue
 
+> **Superseded in part by 000016-tib-page-telemetry.md**: the slab carries four gas words between
+> `nA` and the records, so the records begin at `slab + 0xa4`.
+
 After TIB 000016-outcome-stream the envelope expands memory only with progress on the
 uncompressed path. The compressed path still decompresses its whole body before the loop: FastLZ
 turns 48 KiB of wire into as many bytes as the input repeats, and memory expansion is quadratic,

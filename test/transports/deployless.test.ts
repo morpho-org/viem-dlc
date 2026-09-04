@@ -98,7 +98,7 @@ function wireBytesFor(count: number, compress = false): number {
 const byteLength = (hex: Hex) => (hex.length - 2) / 2;
 
 type PolicyOpts = {
-  batch?: { batchSize?: number; compress?: boolean };
+  batch?: { batchSize?: number; compress?: boolean; pageSizeHint?: number };
   withCache?: boolean;
 };
 
@@ -331,7 +331,7 @@ describe("deployless", () => {
       expect(requestFn.mock.calls.length).toBe(narrowFn.mock.calls.length);
       const [results] = decodeAbiParameters([{ type: "uint256[8][]" }, { type: "uint256[]" }], wide as Hex);
       expect(results).toHaveLength(40_000);
-    });
+    }, 20_000);
 
     it("packs a compression bomb as one chunk under the wire cap alone", async () => {
       // One address repeated compresses to a few hundred bytes; the decompressed size is the

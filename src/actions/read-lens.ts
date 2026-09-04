@@ -49,7 +49,7 @@ export type ReadLensParameters<abi extends Abi, functionName extends LensFunctio
   functionName: functionName;
   /** One entry per element; each becomes its own per-item call. */
   args: readonly ItemInput<abi, functionName>[];
-  /** Deployless-factory descriptor, as `lens.with(...)` produces. */
+  /** The lens's counterfactual address: what `factory` deploys when called with `factoryData`. */
   address: Address;
   factory: Address;
   factoryData: Hex;
