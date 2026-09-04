@@ -71,10 +71,12 @@ intrinsic(bytes) + fixed + k·avg + z·stddev·√k ≤ gasLimit
 
 with `z = PACKING_SIGMAS` and `intrinsic` what the node deducts before the envelope runs: the
 transaction and creation base, calldata by byte (EIP-2028) and initcode by word (EIP-3860),
-computed from the chunk's exact bytes (prefix sums of zero and non-zero bytes on the clear path;
-the compressed path measures the wrapped chunk it already builds). The greedy packer's binary
-search finds `k`. With either the cap or the cost missing or unusable, the opening wave packs by
-bytes alone. Continuations are unchanged: `predictItems` over the request's pool, against the
+computed from the chunk's exact bytes (prefix sums of zero and non-zero bytes on the clear path,
+plus the four wrapper words whose zero bytes depend on the chunk; the compressed path measures the
+wrapped chunk it already builds). The greedy packer's binary search finds `k`. A lone element
+always fits the prediction: the estimate may shorten a chunk but never withhold an element, so the
+envelope decides what is served. With either the cap or the cost missing or unusable, the opening
+wave packs by bytes alone. Continuations are unchanged: `predictItems` over the request's pool, against the
 smallest `budget` seen.
 
 ### Observability
@@ -108,10 +110,12 @@ a `gas_limit` above `gas_limit_observed` reads as a cap the provider has since l
   110-element page, and `fixed + budget` is under the grant. The adversaries and sweeps pin
   `cpost` as before.
 - Vitest: the opening wave is sized from the cap and the cost; the fixed cost, the stated spread
-  and the calldata's intrinsic gas each reduce it; it recovers the cold-start wave on a
-  three-per-page lens and degrades to bytes when the cost is understated; either side missing, or
-  any unusable figure, leaves bytes-only packing; `fixed_gas` and `gas_limit_observed` are
-  stamped, the latter reconstructing the mock's cap from the request actually sent.
+  and the calldata's intrinsic gas each reduce it, the last to within one gas of the request
+  actually sent; a cost above the cap sends every element alone rather than withholding it; it
+  recovers the cold-start wave on a three-per-page lens and degrades to bytes when the cost is
+  understated; either side missing, or any unusable or malformed figure, leaves bytes-only
+  packing; `fixed_gas` and `gas_limit_observed` are stamped, the latter reconstructing the mock's
+  cap from the request actually sent.
 
 ## Open risks
 
@@ -123,6 +127,10 @@ a `gas_limit` above `gas_limit_observed` reads as a cap the provider has since l
 - **Composition and route** carry over from the page-telemetry TIB: `avg` depends on which
   elements share a frame, and a request served by several nodes behind one URL observes the
   smallest cap.
+- **The compressed path's intrinsic gas is not monotone in `k`**: a longer prefix can compress to
+  fewer or more zero bytes. Each element adds at least `avg` to the prediction, so the total only
+  fails to be monotone for an `avg` below the wobble of a few dozen gas, and the packer's linear
+  shrink already tolerates a measure that is not perfectly monotone.
 
 ## Notes
 
@@ -133,7 +141,10 @@ a `gas_limit` above `gas_limit_observed` reads as a cap the provider has since l
   wave for many parallel requests. Using the mean and deviation gives the opening wave exactly the
   headroom continuations get, from one constant.
 - **The intrinsic gas is computed exactly** because it is cheap, the bytes are known, and it is
-  the one term whose approximation would bias every opening chunk the same way.
+  the one term whose approximation would bias every opening chunk the same way. It includes the 2
+  gas of the `gas()` that samples the arrival, so `gas_limit_observed` is the cap itself.
+- **A singleton is never refused by the prediction.** An estimate that could withhold an element
+  would be load-bearing; the byte cap alone can, and that is a wire limit rather than a guess.
 - **The cap lives on the transport** because the policy travels with the request across every
   `failover` branch; a per-provider figure cannot ride on it.
 

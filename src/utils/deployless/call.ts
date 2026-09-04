@@ -108,25 +108,29 @@ export async function factorisedFactoryCall(
     : (start: number, end: number): WireSize => {
         if (overhead === undefined) {
           const whole = wireSize(getReferenceWrapped());
+          const n = elements.length;
           overhead = {
-            bytes: whole.bytes - prefixBytes[elements.length]!,
-            zeros: whole.zeros - prefixZeros[elements.length]!,
+            bytes: whole.bytes - prefixBytes[n]!,
+            zeros: whole.zeros - prefixZeros[n]! - countingWordZeros(n, prefixBytes[n]!),
           };
         }
+        const body = prefixBytes[end]! - prefixBytes[start]!;
         return {
-          bytes: overhead.bytes + prefixBytes[end]! - prefixBytes[start]!,
-          zeros: overhead.zeros + prefixZeros[end]! - prefixZeros[start]!,
+          bytes: overhead.bytes + body,
+          zeros: overhead.zeros + prefixZeros[end]! - prefixZeros[start]! + countingWordZeros(end - start, body),
         };
       };
 
   const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
   const opening = openingBudget(gasLimit, batch?.gas);
+  // The prediction only ever shortens a chunk: a lone element is sent whatever it is predicted to
+  // cost, so the envelope, not the estimate, decides whether it is served.
   const fits = (start: number, end: number) => {
     if (wireCap === Infinity && opening === undefined) return true;
     const size = measureWire(start, end);
     if (size.bytes > wireCap) return false;
-    if (opening === undefined) return true;
     const k = end - start;
+    if (opening === undefined || k === 1) return true;
     return intrinsicGas(size) + opening.fixed + chunkCost(k, opening.avg, opening.stddev) <= opening.gasLimit;
   };
 
@@ -322,10 +326,10 @@ function pool(stats: GasStats | undefined, page: PageGas, served: number, intrin
 
 /** `gasLimit` and `batch.gas` as the opening wave uses them, or nothing when either is missing or unusable. */
 function openingBudget(gasLimit: number | undefined, gas: LensGas | undefined) {
-  if (gasLimit === undefined || gas === undefined) return undefined;
+  if (gasLimit === undefined || typeof gas !== "object" || gas === null) return undefined;
   const fixed = gas.fixed;
-  const avg = gas.item?.avg;
-  const stddev = gas.item?.stddev ?? 0;
+  const avg = typeof gas.item === "object" && gas.item !== null ? gas.item.avg : undefined;
+  const stddev = (typeof gas.item === "object" && gas.item !== null ? gas.item.stddev : undefined) ?? 0;
   const usable =
     Number.isSafeInteger(gasLimit) &&
     gasLimit > 0 &&
@@ -335,7 +339,7 @@ function openingBudget(gasLimit: number | undefined, gas: LensGas | undefined) {
     avg > 0 &&
     Number.isFinite(stddev) &&
     stddev >= 0;
-  return usable ? { gasLimit, fixed, avg, stddev } : undefined;
+  return usable && avg !== undefined ? { gasLimit, fixed, avg, stddev } : undefined;
 }
 
 type WireSize = { bytes: number; zeros: number };
@@ -345,12 +349,21 @@ function wireSize(hex: Hex): WireSize {
 }
 
 /**
- * What a node deducts from its cap before a contract-creation `eth_call` runs: the transaction and
- * creation base, calldata by byte (EIP-2028) and initcode by word (EIP-3860). Ethereum's schedule;
- * a chain that prices differently shifts `gas_limit_observed` by the difference.
+ * What a node deducts from its cap before the envelope's first `gas()` returns: the transaction and
+ * creation base, calldata by byte (EIP-2028), initcode by word (EIP-3860) and that opcode's own 2.
+ * Ethereum's schedule; a chain that prices differently shifts `gas_limit_observed` by the difference.
  */
 function intrinsicGas({ bytes, zeros }: WireSize): number {
-  return 21_000 + 32_000 + 4 * zeros + 16 * (bytes - zeros) + 2 * Math.ceil(bytes / 32);
+  return 21_000 + 32_000 + 4 * zeros + 16 * (bytes - zeros) + 2 * Math.ceil(bytes / 32) + 2;
+}
+
+/**
+ * Zero bytes in the four words of a clear chunk's wrapper that count its `k` elements and `body`
+ * bytes: the wire's `n` and `bodyLen`, the ABI length of the wire (`64 + body`) and the offset of
+ * `factoryData` behind it (`256 + body`). Everything else in the wrapper is the same for every chunk.
+ */
+function countingWordZeros(k: number, body: number): number {
+  return 128 - nonzeroBytesOf(k) - nonzeroBytesOf(body) - nonzeroBytesOf(64 + body) - nonzeroBytesOf(256 + body);
 }
 
 function zeroBytes(hex: Hex): number {

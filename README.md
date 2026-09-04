@@ -57,9 +57,10 @@ Thin transport wrapper for deployless `eth_call` splitting. It only intercepts c
 the `policy(...)` sentinel in `stateOverride`, re-packs the marked input array into one or more
 deployless-factory calls under a wire byte budget (`batch.batchSize`), aggregates the pages that
 come back, and forwards everything else unchanged.
-There is no gas configuration: the envelope calls the lens's per-item function once per element
+No gas figure is load-bearing: the envelope calls the lens's per-item function once per element
 in its own frame and reports how far it got, so a chunk adapts to whatever gas the node grants —
-see [Paginated lenses](#paginated-lenses). Most callers reach it through
+see [Paginated lenses](#paginated-lenses). An optional `gasLimit` only lets the opening wave
+anticipate the grant. Most callers reach it through
 [`readLens`](#readlens) rather than building the call by hand.
 
 ```ts
@@ -179,9 +180,9 @@ Two invalidation strategies are provided:
 ### `failover`
 
 Request-level fallback dispatcher for fronting multiple RPC providers with provider-specific
-limits. Each branch is a fully-built per-provider stack carrying its own `maxBlockRange`; nothing
-gas-related is configured per branch, since deployless lenses adapt to each node's grant on their
-own. Branches are constructed once at composition time, so stateful inner transports
+limits. Each branch is a fully-built per-provider stack carrying its own `maxBlockRange` and,
+optionally, its own `gasLimit`; deployless lenses adapt to each node's grant on their own, and the
+cap only sizes the opening wave. Branches are constructed once at composition time, so stateful inner transports
 (coalescing mutexes, rate-limiter token buckets) persist across requests instead of being
 rebuilt per call — unlike viem's stock `fallback`, which rebuilds the active branch on every
 request and effectively disables those features.

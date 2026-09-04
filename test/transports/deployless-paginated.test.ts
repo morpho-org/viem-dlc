@@ -184,7 +184,7 @@ function intrinsicGasOf(data: Hex): number {
   const bytes = (data.length - 2) / 2;
   let zeros = 0;
   for (let i = 2; i < data.length; i += 2) if (data.slice(i, i + 2) === "00") zeros++;
-  return 53_000 + 4 * zeros + 16 * (bytes - zeros) + 2 * Math.ceil(bytes / 32);
+  return 53_000 + 4 * zeros + 16 * (bytes - zeros) + 2 * Math.ceil(bytes / 32) + 2;
 }
 
 function decodeResults(result: unknown): bigint[] {
@@ -520,6 +520,45 @@ describe("opening wave", () => {
     ]);
   });
 
+  it("prices a chunk's calldata to the gas of the request it actually sends", async () => {
+    // A cap of exactly three one-gas elements plus their chunk's intrinsic gas fits three, not four.
+    const probe = mockPagedLens();
+    await createTransport(probe).request(createRequest([1, 2, 3].map(addr)));
+    const sent = (probe.mock.calls[0]![0] as EthCallRequest).params[0].data as Hex;
+    const batch = { gas: { fixed: 0, item: { avg: 1 } } };
+    const exact = mockPagedLens();
+    const overByOne = mockPagedLens();
+
+    await createTransport(exact, { gasLimit: intrinsicGasOf(sent) + 3 }).request(
+      createRequest([1, 2, 3, 4, 5, 6].map(addr), batch),
+    );
+    await createTransport(overByOne, { gasLimit: intrinsicGasOf(sent) + 2 }).request(
+      createRequest([1, 2, 3, 4, 5, 6].map(addr), batch),
+    );
+
+    expect(requestedIndices(exact)).toEqual([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
+    expect(requestedIndices(overByOne)).toEqual([
+      [1, 2],
+      [3, 4],
+      [5, 6],
+    ]);
+  });
+
+  it("sends an element alone rather than withholding it when the stated cost exceeds the cap", async () => {
+    const requestFn = mockPagedLens();
+    const batch = { gas: { fixed: 0, item: { avg: 10_000_000 } } };
+
+    const { result } = await withFacet(() =>
+      createTransport(requestFn, { gasLimit: 1_000_000 }).request(createRequest([1, 2, 3].map(addr), batch)),
+    );
+
+    expect(requestedIndices(requestFn)).toEqual([[1], [2], [3]]);
+    expect(decodePage(result)).toEqual({ results: [1n, 2n, 3n], skipped: [] });
+  });
+
   it("recovers the wave a bytes-only opening always pays on a multi-page input", async () => {
     const nine = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(addr);
     const blind = mockPagedLens({ pageSize: 3 });
@@ -581,6 +620,10 @@ describe("opening wave", () => {
     ["a zero item cost", 1_500_000, { fixed: 0, item: { avg: 0 } }],
     ["a non-numeric item cost", 1_500_000, { fixed: 0, item: { avg: "1000000" } }],
     ["a negative spread", 1_500_000, { fixed: 0, item: { avg: 1_000_000, stddev: -1 } }],
+    ["a null cost", 1_500_000, null],
+    ["a cost that is not an object", 1_500_000, "cheap"],
+    ["a cost without an item", 1_500_000, { fixed: 0 }],
+    ["a null item", 1_500_000, { fixed: 0, item: null }],
   ])("ignores %s", async (_name, gasLimit, gas) => {
     const requestFn = mockPagedLens();
 
