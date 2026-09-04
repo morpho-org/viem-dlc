@@ -117,7 +117,7 @@ export function cache(
     LogsSieveConfig,
     RateLimiterConfig,
   ],
-): Transport<typeof cacheTransportKey, { store: Store }, EIP1193RequestFn<CacheSchema>> {
+): Transport<typeof cacheTransportKey, { store: Store; gasLimit?: number }, EIP1193RequestFn<CacheSchema>> {
   const facetId = createFacetId(cacheTransportKey);
 
   return (params) => {
@@ -169,7 +169,7 @@ export function cache(
         retryCount: 0,
         type: cacheTransportKey,
       },
-      { store },
+      { store, gasLimit },
     );
   };
 }
