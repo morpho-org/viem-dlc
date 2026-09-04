@@ -45,9 +45,9 @@ git history. It describes the system as it stands.
   set — a provider's cap and a lens's measured cost — size the opening wave and nothing else.
 - **Every served attempt is an observation.** Whether or not it stopped for gas, a page reports
   the budget its frame had, what the frame spent before its first attempt, and the sum, sum of
-  squares and maximum of per-attempt gas over every element but a death. Waves after the first are packed from the request's own
-  pooled observations, never from the count of one parent page; the opening wave is packed by the
-  same estimator from the stated figures.
+  squares and maximum of per-attempt gas over every element but a death. Waves after the first are
+  packed from the request's own pooled observations, never from the count of one parent page; the
+  opening wave is packed by the same estimator from the stated figures.
 - **The value for every figure the caller can set is readable off any observed request**, in the
   units it is set in, on the wide event.
 - **The caller's response does not change.** `readLens` and `readContract` receive
