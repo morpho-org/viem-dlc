@@ -26,7 +26,7 @@ type FactorisedFactoryCallParams = {
   batch?: {
     batchSize?: number;
     compress?: boolean;
-    itemsHint?: number;
+    pageSizeHint?: number;
   };
   restOfEthCallParams: RestOfEthCallParams;
   /**
@@ -53,7 +53,7 @@ export type FactorisedFactoryCallResult = {
 
 /**
  * Packs `elements` into deployless-factory `eth_call` chunks under the wire budget
- * (`batch.batchSize`, at most EIP-3860's initcode cap) and, for the opening wave, `batch.itemsHint`
+ * (`batch.batchSize`, at most EIP-3860's initcode cap) and, for the opening wave, `batch.pageSizeHint`
  * elements; fetches them in parallel; returns per-element outputs aligned to `elements`. Every
  * page reports how far it got and what its attempts cost, so the waves after the first are packed
  * by {@link predictItems} and an element gas could not resolve is retried once alone.
@@ -98,10 +98,10 @@ export async function factorisedFactoryCall(
 
   const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
   const fits = (start: number, end: number) => wireCap === Infinity || measureWireBytes(start, end) <= wireCap;
-  const hint = batch?.itemsHint;
-  const itemsHint = hint !== undefined && Number.isSafeInteger(hint) && hint > 0 ? hint : Infinity;
+  const hint = batch?.pageSizeHint;
+  const pageSizeHint = hint !== undefined && Number.isSafeInteger(hint) && hint > 0 ? hint : Infinity;
 
-  const packed = packBatches({ count: elements.length, maxItems: itemsHint, fits });
+  const packed = packBatches({ count: elements.length, maxItems: pageSizeHint, fits });
   oversize.push(...packed.oversize);
   missing.push(...oversize);
   const ranges = packed.ranges;
@@ -110,7 +110,7 @@ export async function factorisedFactoryCall(
   facet?.set({
     elements_requested: elements.length,
     nominal_batches: ranges.length,
-    ...(itemsHint === Infinity ? {} : { items_hint: itemsHint }),
+    ...(pageSizeHint === Infinity ? {} : { page_size_hint: pageSizeHint }),
   });
   // Sizes of the *initial* packing, to compare realized utilization against the wire budget.
   // Halved children and continuations are not resampled. Guarded rather than
@@ -326,7 +326,7 @@ function gasFields(gas: GasStats): Record<string, number> {
     item_gas_avg: mean,
     item_gas_stddev: sigma,
     item_gas_max: Number(gas.max),
-    items_hint_suggested: predictItems(gas),
+    page_size_suggested: predictItems(gas),
   };
 }
 

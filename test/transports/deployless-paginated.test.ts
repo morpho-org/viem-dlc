@@ -444,19 +444,19 @@ describe("deployless (paginated)", () => {
   });
 });
 
-describe("itemsHint", () => {
+describe("pageSizeHint", () => {
   it("caps the opening wave at the hint", async () => {
     const requestFn = mockPagedLens();
     const transport = createTransport(requestFn);
 
     const { result, field } = await withFacet(() =>
-      transport.request(createRequest([1, 2, 3, 4, 5].map(addr), { itemsHint: 2 })),
+      transport.request(createRequest([1, 2, 3, 4, 5].map(addr), { pageSizeHint: 2 })),
     );
 
     expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n, 5n]);
     expect(requestedIndices(requestFn)).toEqual([[1, 2], [3, 4], [5]]);
     expect(field("pages_waves")).toBe(1);
-    expect(field("items_hint")).toBe(2);
+    expect(field("page_size_hint")).toBe(2);
   });
 
   it("recovers the wave a bytes-only opening always pays on a multi-page input", async () => {
@@ -465,7 +465,7 @@ describe("itemsHint", () => {
     const hinted = mockPagedLens({ pageSize: 3 });
 
     const a = await withFacet(() => createTransport(blind).request(createRequest(nine)));
-    const b = await withFacet(() => createTransport(hinted).request(createRequest(nine, { itemsHint: 3 })));
+    const b = await withFacet(() => createTransport(hinted).request(createRequest(nine, { pageSizeHint: 3 })));
 
     expect(decodeResults(a.result)).toEqual(decodeResults(b.result));
     expect(requestedIndices(blind)).toEqual([
@@ -486,7 +486,9 @@ describe("itemsHint", () => {
     const nine = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(addr);
     const requestFn = mockPagedLens({ pageSize: 3 });
 
-    const { field } = await withFacet(() => createTransport(requestFn).request(createRequest(nine, { itemsHint: 10 })));
+    const { field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest(nine, { pageSizeHint: 10 })),
+    );
 
     expect(requestedIndices(requestFn)).toEqual([
       [1, 2, 3, 4, 5, 6, 7, 8, 9],
@@ -496,15 +498,15 @@ describe("itemsHint", () => {
     expect(field("pages_waves")).toBe(2);
   });
 
-  it.each([0, -1, 2.5, "3"])("ignores an unusable hint (%j)", async (itemsHint) => {
+  it.each([0, -1, 2.5, "3"])("ignores an unusable hint (%j)", async (pageSizeHint) => {
     const requestFn = mockPagedLens();
 
     const { field } = await withFacet(() =>
-      createTransport(requestFn).request(createRequest([1, 2, 3].map(addr), { itemsHint })),
+      createTransport(requestFn).request(createRequest([1, 2, 3].map(addr), { pageSizeHint })),
     );
 
     expect(requestFn).toHaveBeenCalledOnce();
-    expect(field("items_hint")).toBeUndefined();
+    expect(field("page_size_hint")).toBeUndefined();
   });
 });
 
@@ -528,7 +530,7 @@ describe("packing from telemetry", () => {
     // cheap chunk would have asked for six.
     const requestFn = mockPagedLens({ pageSize: 2, budget: 6_000, itemGas: (v) => (v <= 4 ? 1_000 : 3_000) });
 
-    await createTransport(requestFn).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8].map(addr), { itemsHint: 4 }));
+    await createTransport(requestFn).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8].map(addr), { pageSizeHint: 4 }));
 
     expect(requestedIndices(requestFn)).toEqual([[1, 2, 3, 4], [5, 6, 7, 8], [3], [4], [7], [8]]);
   });
@@ -543,8 +545,8 @@ describe("packing from telemetry", () => {
     });
     const eight = [1, 2, 3, 4, 5, 6, 7, 8].map(addr);
 
-    await createTransport(cheapFirst).request(createRequest(eight, { itemsHint: 4 }));
-    await createTransport(dearFirst).request(createRequest(eight, { itemsHint: 4 }));
+    await createTransport(cheapFirst).request(createRequest(eight, { pageSizeHint: 4 }));
+    await createTransport(dearFirst).request(createRequest(eight, { pageSizeHint: 4 }));
 
     expect(requestedIndices(dearFirst).slice(2).sort()).toEqual(requestedIndices(cheapFirst).slice(2).sort());
   });
@@ -553,11 +555,11 @@ describe("packing from telemetry", () => {
     const requestFn = mockPagedLens({ pageSize: 2, budget: (first) => (first <= 2 ? 5_000 : 3_000) });
 
     const { field } = await withFacet(() =>
-      createTransport(requestFn).request(createRequest([1, 2, 3, 4].map(addr), { itemsHint: 2 })),
+      createTransport(requestFn).request(createRequest([1, 2, 3, 4].map(addr), { pageSizeHint: 2 })),
     );
 
     expect(field("frame_gas")).toBe(3_000);
-    expect(field("items_hint_suggested")).toBe(3);
+    expect(field("page_size_suggested")).toBe(3);
   });
 
   it("packs a wide spread more conservatively than a flat one with the same mean", async () => {
@@ -583,7 +585,7 @@ describe("packing from telemetry", () => {
     expect(field("item_gas_avg")).toBe(1_000);
     expect(field("item_gas_stddev")).toBe(0);
     expect(field("item_gas_max")).toBe(1_000);
-    expect(field("items_hint_suggested")).toBe(5);
+    expect(field("page_size_suggested")).toBe(5);
   });
 
   it("stamps only the frame when nothing was served", async () => {
@@ -593,7 +595,7 @@ describe("packing from telemetry", () => {
 
     expect(field("frame_gas")).toBe(10_000_000);
     expect(field("item_gas_avg")).toBeUndefined();
-    expect(field("items_hint_suggested")).toBeUndefined();
+    expect(field("page_size_suggested")).toBeUndefined();
   });
 });
 

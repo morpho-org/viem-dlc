@@ -17,7 +17,7 @@ construction. The envelope already observes the gas of every attempt. This TIB h
 aggregates per page — the frame's usable budget and the sum, sum of squares and maximum of the
 per-attempt cost — so that a page that fully served is as informative as one that stopped. The
 client pools them over the request and packs every later wave to a prediction with a stated
-exceedance bound; the caller can size the opening wave with `batch.itemsHint`; and the number to
+exceedance bound; the caller can size the opening wave with `batch.pageSizeHint`; and the number to
 give it is stamped on the wide event of every request. No state survives a request, and nothing
 the earlier TIBs guarantee about admission changes.
 
@@ -97,7 +97,7 @@ from what the page reported about the elements it did serve.
 
 ### The hint
 
-`batch.itemsHint` caps the opening wave's chunks at that many elements, beside the wire cap. It
+`batch.pageSizeHint` caps the opening wave's chunks at that many elements, beside the wire cap. It
 is a count, not a gas figure: before the first response the client has no budget to divide by.
 Anything but a positive safe integer is ignored, as a non-positive `batchSize` is. Overshoot
 costs one continuation wave; undershoot costs more parallel requests; neither is a failure.
@@ -105,9 +105,9 @@ costs one continuation wave; undershoot costs more parallel requests; neither is
 ### Observability
 
 On every request that reached the packer: `frame_gas` (the smallest budget seen), `item_gas_avg`,
-`item_gas_stddev`, `item_gas_max`, `items_hint_suggested` (`predictItems` of the pool) and, when
-one applied, `items_hint`. A full cache hit and an empty input never reach the packer and carry
-none of these. A stale hint reads as `items_hint` far from `items_hint_suggested`; one that
+`item_gas_stddev`, `item_gas_max`, `page_size_suggested` (`predictItems` of the pool) and, when
+one applied, `page_size_hint`. A full cache hit and an empty input never reach the packer and carry
+none of these. A stale hint reads as `page_size_hint` far from `page_size_suggested`; one that
 undershoots shows `pages_continued` at zero with the suggestion above the hint.
 
 ## Scope & files
@@ -115,7 +115,7 @@ undershoots shows `pages_continued` at zero with the suggestion above the hint.
 - `src/utils/deployless/Envelope.yul`: header words, `account`, scratch `0x20`, sentinel, `cpost`.
 - `src/utils/deployless/codec.envelope.ts`: the pasted constant, `OK_SENTINEL`.
 - `src/utils/deployless/codec.inner.ts`: `PageGas`, `Page.gas`, `hexToPage`, `pageToWire`.
-- `src/utils/deployless/call.ts`: `itemsHint`, the pool, `predictItems`, wave-level packing, fields.
+- `src/utils/deployless/call.ts`: `pageSizeHint`, the pool, `predictItems`, wave-level packing, fields.
 - `src/transports/state-overrides.ts`, `src/actions/call.ts`: the option and its documentation.
 - `test/forge`: `Env.page`, the `OK` constants, telemetry cases, regenerated `.gas-snapshot`.
 - `test/helpers/page.ts` and the page-building mocks: every mocked page reports telemetry.
@@ -189,7 +189,7 @@ undershoots shows `pages_continued` at zero with the suggestion above the hint.
   who wants a representative rate shuffles and a caller who wants warm state groups.
 - **A probing knob** (ignore or scale the hint on a sampled fraction of requests) was declined: the
   hint is the opening item cap, so `(Math.random() < p ? 2 : 1) * hint` at the callsite is the
-  knob, and `items_hint` on the wide event marks the probed requests.
+  knob, and `page_size_hint` on the wide event marks the probed requests.
 - **Mean-only packing** was declined as the default: it overshoots about half the time on
   heterogeneous input, which is the case the prediction exists for.
 - **Predicting against the raw frame gas** was caught in review: every admission requires the

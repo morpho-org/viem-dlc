@@ -285,13 +285,13 @@ describe("deployless", () => {
       expect(field("batch_bytes.max")).toBeLessThanOrEqual(batchSize);
     });
 
-    it("lets the smaller of itemsHint and batchSize bind the opening wave", async () => {
+    it("lets the smaller of pageSizeHint and batchSize bind the opening wave", async () => {
       const batchSize = wireBytesFor(3);
       const hinted = mockPagedFn();
       const capped = mockPagedFn();
 
-      await createTransport(hinted).request(createRequest(addrs(5), { batch: { batchSize, itemsHint: 2 } }));
-      await createTransport(capped).request(createRequest(addrs(5), { batch: { batchSize, itemsHint: 4 } }));
+      await createTransport(hinted).request(createRequest(addrs(5), { batch: { batchSize, pageSizeHint: 2 } }));
+      await createTransport(capped).request(createRequest(addrs(5), { batch: { batchSize, pageSizeHint: 4 } }));
 
       expect(hinted.mock.calls.length).toBe(3);
       expect(capped.mock.calls.length).toBe(2);

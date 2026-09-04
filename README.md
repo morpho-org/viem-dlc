@@ -109,8 +109,8 @@ the subset another provider with a higher cap might still serve.
 
 Every page also reports what its attempts cost, and the request pools it: `frame_gas` (the gas a
 frame had for attempts, on the smallest frame seen), `item_gas_avg` / `item_gas_stddev` /
-`item_gas_max` per attempt, and `items_hint_suggested`, the chunk size the transport would open
-with given those numbers — the value for `batch.itemsHint`, which is stamped as `items_hint` when
+`item_gas_max` per attempt, and `page_size_suggested`, the chunk size the transport would open
+with given those numbers — the value for `batch.pageSizeHint`, which is stamped as `page_size_hint` when
 set. To pick a hint, run without one under observability and take the median suggestion over a
 representative window; a hint far from the suggestion is stale, and `pages_continued` at zero
 with the suggestion above the hint means it undershoots. To keep learning once a hint is set,
@@ -454,7 +454,7 @@ policy(opts: {
   batch?: {
     batchSize?: number
     compress?: boolean
-    itemsHint?: number
+    pageSizeHint?: number
   }
   cache?: {
     blobKey: string
@@ -476,10 +476,10 @@ policy(opts: {
   chunk at the cost of encoding time and decompression gas. The envelope decompresses element by
   element as it attempts them, so a highly compressible chunk pages like any other and costs
   nothing before its first element.
-- **`opts.batch.itemsHint`** — elements per chunk in the opening wave, beside the byte budget.
+- **`opts.batch.pageSizeHint`** — elements per chunk in the opening wave, beside the byte budget.
   Later waves size themselves from what the pages report, so this only matters before the first
   response: too high costs one continuation wave, too low costs extra parallel requests. Read
-  `items_hint_suggested` off the wide event of a request made without it.
+  `page_size_suggested` off the wide event of a request made without it.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
   or when used with `deployless(...)`, `batch` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same

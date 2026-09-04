@@ -104,7 +104,7 @@ function wireBytesFor(count: number): number {
 }
 
 type PolicyOpts = {
-  batch?: { batchSize?: number; compress?: boolean; itemsHint?: number };
+  batch?: { batchSize?: number; compress?: boolean; pageSizeHint?: number };
 };
 
 function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
@@ -448,11 +448,11 @@ describe("handleEthCall", () => {
       expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
     });
 
-    it("itemsHint caps the opening wave's chunks", async () => {
+    it("pageSizeHint caps the opening wave's chunks", async () => {
       const requestFn = mockPagedFn();
       const accounts = addrs(5);
 
-      const result = await handleEthCall(ctx(requestFn), createRequest(accounts, { batch: { itemsHint: 2 } }));
+      const result = await handleEthCall(ctx(requestFn), createRequest(accounts, { batch: { pageSizeHint: 2 } }));
 
       expect(requestFn.mock.calls.length).toBe(3);
       expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
