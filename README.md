@@ -371,11 +371,12 @@ const store = createOptimizedUpstashStore({
 })
 ```
 
-`UpstashStore` (and `createOptimizedUpstashStore`) accept `readYourWrites`, forwarded to the
-`@upstash/redis` client. It defaults to the SDK's `true`, which makes every read on a global database
-sync to the primary before it is served. Pass `false` when the cached data is immutable or
-stale-while-revalidate (e.g. finalized log ranges) so reads are answered by the nearest replica —
-see [Upstash's docs](https://upstash.com/docs/redis/howto/readyourwrites).
+`UpstashStore` (and `createOptimizedUpstashStore`) forward `redis` to the `@upstash/redis` client;
+`url`/`token` fall back to the environment when omitted. `readYourWrites` defaults to the SDK's
+`true`, which makes every read on a global database sync to the primary before it is served. Pass
+`redis: { readYourWrites: false }` when the cached data is immutable or stale-while-revalidate (e.g.
+finalized log ranges) so reads are answered by the nearest replica — see
+[Upstash's docs](https://upstash.com/docs/redis/howto/readyourwrites).
 
 `TtlStore` wraps any store to cap how long its entries stay warm. Fronting a shared remote with a
 TTL-bounded in-memory tier keeps reads fast while ensuring a cross-instance write is masked for at
