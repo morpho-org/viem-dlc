@@ -15,12 +15,6 @@ import { ThrottledStore } from "./throttled.js";
 export type UpstashStoreOptions = {
   maxRequestBytes: number;
   ttl?: number;
-  /**
-   * Forwarded to the `@upstash/redis` client. When `url`/`token` are omitted they are read from the
-   * environment (`Redis.fromEnv`). E.g. set `readYourWrites: false` for immutable or SWR data so
-   * global-DB reads are served by the nearest replica instead of syncing to the primary first
-   * (https://upstash.com/docs/redis/howto/readyourwrites).
-   */
   redis?: Omit<RedisConfigNodejs, "automaticDeserialization" | "responseEncoding">;
   /** Optional logger for non-request-bound emissions (e.g. background I/O errors). */
   logger?: Logger;
@@ -92,8 +86,11 @@ export class UpstashStore implements Store {
     }
 
     this.options = options;
-    const { url, token, ...redisConfig } = options.redis ?? {};
-    const config = { ...redisConfig, automaticDeserialization: false, responseEncoding: false } as const;
+    const { url, token, ...config } = {
+      ...options.redis,
+      automaticDeserialization: false,
+      responseEncoding: false,
+    } as const;
     this.redis = url && token ? new Redis({ ...config, url, token }) : Redis.fromEnv(config);
   }
 
