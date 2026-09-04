@@ -68,7 +68,7 @@ library Env {
     }
 
     /// Replaces a clear wire's body with its FastLZ compression, using the package's own compressor.
-    /// The body travels through a file: a command-line argument is capped pos 128 KiB on Linux.
+    /// The body travels through a file: a command-line argument is capped at 128 KiB on Linux.
     function compress(bytes memory clearWire) internal returns (bytes memory) {
         bytes memory body_ = slice(clearWire, 64, clearWire.length - 64);
         // Named by content: tests run in parallel and must not share a scratch file.
@@ -80,7 +80,7 @@ library Env {
         return abi.encodePacked(word(clearWire, 0), word(clearWire, 32), VM.ffi(cmd));
     }
 
-    /// A hand-built FastLZ stream for `word` repeated `n` times: one literal, then matches pos
+    /// A hand-built FastLZ stream for `word` repeated `n` times: one literal, then matches at
     /// distance 32, written in place so a long stream costs linear memory.
     function flzRepeat(bytes32 word_, uint256 n) internal pure returns (bytes memory out) {
         uint256 rem = 32 * n - 32;
