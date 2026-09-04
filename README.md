@@ -357,9 +357,10 @@ Stores are designed to be layered. For example, `createOptimizedUpstashStore` (e
 `@morpho-org/viem-dlc/stores/upstash`) returns a pre-composed stack:
 
 ```
-LruStore (fast, in-process)
-  └─ DebouncedStore (coalesces writes)
-       └─ UpstashStore (durable, remote)
+TtlStore (60s TTL)
+  └─ LruStore (fast, in-process)
+       └─ DebouncedStore (coalesces writes)
+            └─ UpstashStore (durable, remote)
 ```
 
 ```ts

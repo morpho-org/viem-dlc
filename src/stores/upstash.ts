@@ -11,6 +11,7 @@ import { shardString } from "../utils/strings.js";
 import { HierarchicalStore } from "./hierarchical.js";
 import { LruStore } from "./lru.js";
 import { ThrottledStore } from "./throttled.js";
+import { TtlStore } from "./ttl.js";
 
 export type UpstashStoreOptions = {
   maxRequestBytes: number;
@@ -232,12 +233,15 @@ export function createOptimizedUpstashStore(options: UpstashStoreOptions) {
   // 100 commands/(10ms Upstash job bucket) → 3-6 commands/write → 3+ concurrent instances ≅ 3 writes
   const maxWritesBurst = 3;
 
+  // One freeze/thaw bound: how stale a pending write may land, and how long memory may serve a superseded value.
+  const maxStalenessMs = 60_000;
+
   // We coalesce writes per key and rate-limit remote persistence.
   return new HierarchicalStore(
     [
-      new LruStore({ maxBytes: 1 << 30, logger: options.logger }), // 1 GB
+      new TtlStore(new LruStore({ maxBytes: 1 << 30, logger: options.logger }), { ttlMs: maxStalenessMs }), // 1 GB
       new ThrottledStore(remote, {
-        maxStalenessMs: 60_000, // defend against serverless freeze/thaw cycles
+        maxStalenessMs,
         maxWritesBurst,
         maxWritesPerSecond,
         maxConcurrent: Infinity,

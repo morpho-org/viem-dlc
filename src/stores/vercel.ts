@@ -10,6 +10,7 @@ import { createInFlightBarrier } from "../utils/in-flight.js";
 import { HierarchicalStore } from "./hierarchical.js";
 import { LruStore } from "./lru.js";
 import { ThrottledStore } from "./throttled.js";
+import { TtlStore } from "./ttl.js";
 
 /** Vercel recommends multipart uploads for payloads larger than 100 MB. */
 const MULTIPART_THRESHOLD_BYTES = 100 * 1024 * 1024;
@@ -217,13 +218,16 @@ export function createOptimizedVercelStore(options: VercelStoreOptions = {}) {
   const maxWritesPerSecond = 15;
   const maxWritesBurst = 5;
 
+  // One freeze/thaw bound: how stale a pending write may land, and how long memory may serve a superseded value.
+  const maxStalenessMs = 60_000;
+
   // The in-memory tier provides read-your-own-writes within a single process
   // and shields the remote tier from network/operation cost on hot keys.
   return new HierarchicalStore(
     [
-      new LruStore({ maxBytes: 1 << 30, logger: options.logger }), // 1 GB
+      new TtlStore(new LruStore({ maxBytes: 1 << 30, logger: options.logger }), { ttlMs: maxStalenessMs }), // 1 GB
       new ThrottledStore(remote, {
-        maxStalenessMs: 60_000, // defend against serverless freeze/thaw cycles
+        maxStalenessMs,
         maxWritesBurst,
         maxWritesPerSecond,
         maxConcurrent: Infinity,
