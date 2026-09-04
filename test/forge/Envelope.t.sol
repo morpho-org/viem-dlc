@@ -154,7 +154,8 @@ contract EnvelopeTest {
         require(p.died && p.diedAt == 0 && p.budget > 0 && consistent(p, 0), "budget only");
     }
 
-    /// The first page a rising grant produces is a head refusal: nothing attempted, nothing charged.
+    /// The first page a rising grant produces is a head refusal: nothing attempted, nothing charged,
+    /// and a budget that saturates at zero rather than wrapping below the reserve.
     function test_telemetry_headRefusalChargesNothing() public {
         bytes memory ic = staticIc(values(3), modes(3));
         for (uint256 g = 150_000; g < 600_000; g += 2_000) {
@@ -162,6 +163,7 @@ contract EnvelopeTest {
             if (!called || bytes4(ret) != OK) continue;
             Env.Page memory p = Env.page(ret);
             require(p.nA == 1 && p.died && p.diedAt == 0 && consistent(p, 0), "[~0] uncharged");
+            require(p.budget < g, "budget saturates");
             return;
         }
         revert("no page under 600k");

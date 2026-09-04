@@ -52,8 +52,10 @@ the instrument that makes it unnecessary to guess.
 After the sentinel: `nA ‖ budget ‖ Σg ‖ Σg² ‖ gmax ‖ records`. Four fixed words per page.
 
 - `budget`: gas at the top of the loop, less the reserve every admission insists on keeping
-  (`64·cpost`, see `prepare`). It is what attempts could spend, so a page that ran out stops
-  with about zero of it left, and a prediction against it needs no client-side reserve.
+  (`64·cpost`, see `prepare`), saturating at zero: a frame that arrives with less than the reserve
+  refuses at the head and reports no budget rather than a wrapped one. It is what attempts could
+  spend, so a page that ran out stops with about zero of it left, and a prediction against it
+  needs no client-side reserve.
 - `g` for an attempt: gas from the top of its iteration to just before its accounting, so
   admission, staging, decompression, the call and the record write are all in it. Successes and
   declines are charged. A death is not: it consumed whatever was left, and the client already

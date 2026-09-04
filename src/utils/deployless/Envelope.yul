@@ -127,10 +127,9 @@ object "Envelope" {
         function paginate(F, slab) {
             // OK_SENTINEL = bytes4(keccak256("ViemDlcPage2()")) = 0x1824683e
             mstore(slab, 0x1824683e00000000000000000000000000000000000000000000000000000000)
-            // The budget an attempt can spend: what is here now, less the reserve every admission
-            // insists on keeping (`prepare`). Fresh memory zeroes the three accumulators.
+            // The budget attempts can spend. Fresh memory zeroes the three accumulators.
             mstore(0x20, gas())
-            mstore(add(slab, 0x24), sub(mload(0x20), mul(64, cpost())))
+            mstore(add(slab, 0x24), usable(mload(0x20)))
             let P := add(slab, 0xa4)
             mstore(P, 0)
             let hw := add(P, 0x20)
@@ -363,6 +362,7 @@ object "Envelope" {
         // `apre` is pre-split, so its error reaches the reserve at 1/64.
         function apre(argsLen) -> a { a := add(200, mul(3, shr(5, add(argsLen, 31)))) }
         function cpost() -> c { c := 1400 }
+        function usable(g) -> b { b := mul(gt(g, mul(64, cpost())), sub(g, mul(64, cpost()))) }
 
         function memcost(b) -> c {
             let w := shr(5, add(b, 31))
