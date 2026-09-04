@@ -15,7 +15,8 @@ import { ThrottledStore } from "./throttled.js";
 export type UpstashStoreOptions = {
   maxRequestBytes: number;
   ttl?: number;
-  redis?: Omit<RedisConfigNodejs, "automaticDeserialization" | "responseEncoding">;
+  redis?: Omit<RedisConfigNodejs, "automaticDeserialization" | "responseEncoding" | "url" | "token"> &
+    Partial<Pick<RedisConfigNodejs, "url" | "token">>;
   /** Optional logger for non-request-bound emissions (e.g. background I/O errors). */
   logger?: Logger;
 };
