@@ -1,7 +1,6 @@
 /*
  * The envelope: initcode for a deployless eth_call over a paginated lens (Yul source).
- * Design: docs/000016-tib-envelope-paginated-lenses.md, docs/000016-tib-outcome-stream.md,
- * docs/000016-tib-page-telemetry.md.
+ * Design: docs/000016-tib-paginated-lenses.md.
  *
  * Constructor args (ABI tuple; viem's wrapper's four, plus a config word):
  *   [0..32]:    target address
@@ -16,17 +15,17 @@
  * targetData = n ‖ bodyLen ‖ body. Static T: body is n strides. Dynamic T: body is n records
  * `L ‖ E`, E the padded ABI tail. With the compressed bit set, body arrives FastLZ-compressed and
  * bodyLen is its decompressed length; it is decompressed one element at a time, as attempted,
- * through a fixed-size history (docs/000016-tib-streaming-decompression.md).
+ * through a fixed-size history.
  *
  * The envelope calls the lens's per-item function once per element in its own frame, with all
  * remaining gas, and appends one record per adjudicated element to an outcome stream:
  * success `(1 << 255) | L ‖ L bytes`, decline `i`, death `~i` (always last). Ahead of the records,
- * five words of gas telemetry (docs/000016-tib-page-telemetry.md): the usable budget the loop
- * started with, what the frame spent before it (prologue, deploy and the reserve), then the sum,
- * sum of squares and maximum of the per-attempt gas of every record but a death. The guarantee:
- * nothing is touched before it is admitted, and nothing after the call costs more than the callee
- * is unable to take away. Gas before the call's EIP-150 split reaches the retained reserve at
- * 1/64; gas after it reaches the admission floor at 64× — see `prepare`.
+ * five words of gas telemetry: the usable budget the loop started with, what the frame spent
+ * before it (prologue, deploy and the reserve), then the sum, sum of squares and maximum of the
+ * per-attempt gas of every record but a death. The guarantee: nothing is touched before it is
+ * admitted, and nothing after the call costs more than the callee is unable to take away. Gas
+ * before the call's EIP-150 split reaches the retained reserve at 1/64; gas after it reaches the
+ * admission floor at 64× — see `prepare`.
  *
  * Frame `F` (words), the state between the input cursor and the output cursor:
  *   0x00 target · 0x20 n · 0x40 body · 0x60 bodyLen · 0x80 config · 0xa0 ip · 0xc0 op · 0xe0 cur

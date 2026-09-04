@@ -383,7 +383,7 @@ function nonzeroBytesOf(n: number): number {
 
 /**
  * Deviations of headroom a predicted chunk keeps below the budget. A target, not a bound: attempt
- * costs are correlated, so Cantelli's `1 / (1 + z²)` does not hold (see the page-telemetry TIB).
+ * costs are correlated, so Cantelli's `1 / (1 + z²)` does not hold (see docs/000016-tib-paginated-lenses.md).
  * An overshoot costs one continuation, packed from more data.
  */
 const PACKING_SIGMAS = 2;
