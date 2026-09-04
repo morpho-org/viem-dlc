@@ -35,7 +35,7 @@ export interface FailoverConfig {
 export function failover<S extends RpcSchema>(
   transports: readonly Transport<string, unknown, EIP1193RequestFn<S>>[],
   { shouldThrow = defaultShouldThrow }: FailoverConfig = {},
-): Transport<typeof failoverTransportKey, unknown, EIP1193RequestFn<S>> {
+): Transport<typeof failoverTransportKey, Record<string, never>, EIP1193RequestFn<S>> {
   if (transports.length === 0) {
     throw new Error("[failover] requires at least one transport");
   }

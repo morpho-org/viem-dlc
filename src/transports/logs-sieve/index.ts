@@ -22,7 +22,7 @@ export const logsSieveTransportKey = "viem-dlc-logs-sieve" as const;
 export function logsSieve<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
   [{ maxBytes }]: [LogsSieveConfig],
-): Transport<typeof logsSieveTransportKey, unknown, EIP1193RequestFn<T>> {
+): Transport<typeof logsSieveTransportKey, Record<string, never>, EIP1193RequestFn<T>> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new Error(`[logsSieve] maxBytes must be a safe integer >= 1 (got ${maxBytes})`);
   }

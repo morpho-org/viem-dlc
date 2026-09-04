@@ -71,7 +71,11 @@
     "test": "vitest run",
     "test:forge": "forge test --root test/forge",
     "prepare": "pnpm build",
-    "loc": "tokei src"
+    "loc": "tokei src",
+    "typecheck:examples": "soltag -p examples && tsc -p examples/tsconfig.json",
+    "example": "vite-node -c examples/vite.config.ts",
+    "bench": "vitest bench --run",
+    "bench:memory": "BENCH=1 vitest run test/bench/get-logs.memory.test.ts"
   },
   "dependencies": {
     "valibot": "^1.4.2"
@@ -95,9 +99,13 @@
     "@upstash/redis": "1.38.1",
     "@vercel/blob": "^2.6.1",
     "loglayer": "^9.0.0",
+    "solc": "^0.8.36",
+    "soltag": "^0.0.17",
     "tsx": "4.23.1",
     "typescript": "7.0.2",
     "viem": "2.55.10",
+    "vite": "^7.3.6",
+    "vite-node": "^6.0.0",
     "vitest": "4.1.10"
   },
   "packageManager": "pnpm@11.20.0"
