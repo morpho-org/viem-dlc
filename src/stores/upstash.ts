@@ -225,6 +225,13 @@ export class UpstashStore implements Store {
   }
 }
 
+/**
+ * Layers a TTL-bounded memory tier over a write-coalescing, rate-limited {@link UpstashStore}.
+ *
+ * @dev A read may be served from a write this stack has accepted but not yet persisted, and warming
+ * the memory tier with it restarts that tier's TTL — so a fresher cross-instance write can stay
+ * masked for up to `ttlMs + maxStalenessMs`, not just `ttlMs`.
+ */
 export function createOptimizedUpstashStore(options: UpstashStoreOptions) {
   const remote = new UpstashStore(options);
 

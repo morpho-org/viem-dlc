@@ -89,8 +89,8 @@ export type VercelStoreOptions = {
  *    server-side via the SDK and blob URLs are never exposed to browsers.
  *
  * Treat `VercelStore` as a slow, cost-bounded persistence tier; the
- * `createOptimizedVercelStore` factory fronts it with `LruStore` so hot reads
- * never hit the network at all.
+ * `createOptimizedVercelStore` factory fronts it with a TTL-bounded `LruStore`
+ * so hot reads never hit the network at all.
  */
 export class VercelStore implements Store {
   private readonly options: VercelStoreOptions;
@@ -207,6 +207,13 @@ export class VercelStore implements Store {
   }
 }
 
+/**
+ * Layers a TTL-bounded memory tier over a write-coalescing, rate-limited {@link VercelStore}.
+ *
+ * @dev A read may be served from a write this stack has accepted but not yet persisted, and warming
+ * the memory tier with it restarts that tier's TTL — so a fresher cross-instance write can stay
+ * masked for up to `ttlMs + maxStalenessMs`, not just `ttlMs`.
+ */
 export function createOptimizedVercelStore(options: VercelStoreOptions = {}) {
   const remote = new VercelStore(options);
 
