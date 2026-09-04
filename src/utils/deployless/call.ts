@@ -27,6 +27,7 @@ type FactorisedFactoryCallParams = {
     batchSize?: number;
     compress?: boolean;
     gas?: LensGas;
+    continuations?: ContinuationMode;
   };
   /** The provider's `eth_call` gas cap; with `batch.gas`, sizes the opening wave. */
   gasLimit?: number;
@@ -45,6 +46,13 @@ type FactorisedFactoryCallParams = {
  * (`item_gas_avg`, `item_gas_stddev`). Both are properties of the lens, not of any provider.
  */
 export type LensGas = { fixed: number; item: { avg: number; stddev?: number } };
+
+/**
+ * When the tails pages leave behind are sent. `fill` sends a tail once enough of them are pending
+ * to fill a page, and the remainder once no earlier chunk that could add to it is in flight;
+ * `eager` sends every tail as soon as its page lands. Anything else reads as `fill`.
+ */
+export type ContinuationMode = "fill" | "eager";
 
 /** An input element's index paired with the raw output bytes fetched for it. */
 export type ResolvedElement = { index: number; output: Hex };
@@ -65,8 +73,10 @@ export type FactorisedFactoryCallResult = {
  * (`batch.batchSize`, at most EIP-3860's initcode cap) and the gas each chunk is predicted to
  * need; fetches them in parallel; returns per-element outputs aligned to `elements`. The prediction
  * runs on the stated `gasLimit` and `batch.gas` until the first page lands and on the pages' own
- * telemetry after, so the stated figures size the opening wave and nothing else. An element gas
- * could not resolve is retried once alone.
+ * telemetry after, so the stated figures size the opening wave and, until an attempt has been
+ * costed, the item cost, and nothing else. The tails pages
+ * leave behind are pooled and re-packed together, sent as {@link ContinuationMode} says; an element
+ * gas could not resolve is retried once alone.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
@@ -158,23 +168,26 @@ export async function factorisedFactoryCall(
     return { cap: Number(gas.cap), fixed: Number(gas.fixed), avg: item.avg, stddev: item.stddev };
   };
 
-  /** Chunks `indices` under the wire cap and the gas prediction; an element that fits neither alone is `oversize`. */
-  const pack = (indices: Chunk): { chunks: Chunk[]; oversize: number[] } => {
+  /** Chunks `indices` under the wire cap and the gas prediction; an element that fits neither alone is declined as oversize. */
+  const pack = (indices: Chunk): Chunk[] => {
     const params = gasParams();
-    if (wireCap === Infinity && params === undefined) return { chunks: [indices], oversize: [] };
+    if (indices.length === 0) return [];
+    if (wireCap === Infinity && params === undefined) return [indices];
     const measure = measurer(indices);
     const fits = (start: number, end: number) => {
       const size = measure(start, end);
       if (size.bytes > wireCap) return false;
       return params === undefined || fitsGas(size, end - start, params);
     };
-    return packBatches(indices, fits);
+    const packed = packBatches(indices, fits);
+    for (const index of packed.oversize) {
+      oversize.push(index);
+      missing.push(index);
+    }
+    return packed.chunks;
   };
 
-  const packed = pack(everything);
-  oversize.push(...packed.oversize);
-  missing.push(...oversize);
-  const chunks = packed.chunks;
+  const chunks = pack(everything);
   const outputs = new Array<Hex>(elements.length);
 
   facet?.set({
@@ -190,7 +203,10 @@ export async function factorisedFactoryCall(
   const splits = { count: 0, size: 0, timeout: 0, maxDepth: 0 };
   // A lens stopping early is a continuation, a mid-page gas death an escalation; neither is a
   // split, which means only "the provider refused the request's size or timed out".
-  const pages = { continued: 0, waves: 0, escalated: 0, unresolvedAttempts: 0, allSkipped: 0 };
+  const pages = { continued: 0, escalated: 0, unresolvedAttempts: 0, allSkipped: 0 };
+  const continuations: ContinuationMode = batch?.continuations === "eager" ? "eager" : "fill";
+  const flushes = { full: 0, drain: 0, eager: 0 };
+  let generationMax = 0;
 
   const commit = async (entries: readonly ResolvedElement[]) => {
     for (const { index, output } of entries) outputs[index] = output;
@@ -198,9 +214,10 @@ export async function factorisedFactoryCall(
     if (entries.length > 0) await onResolved?.(entries);
   };
 
+  /** `generation` counts the continuations behind a chunk: 0 for the opening wave, one more per tail. */
   const fetchRecursive = async (
     indices: Chunk,
-    nextWave: Deferred,
+    generation: number,
     precomputed?: Hex,
     timeoutSplitsRemaining = 1,
     depth = 0,
@@ -239,10 +256,8 @@ export async function factorisedFactoryCall(
       }
       const halve = (nextBudget = timeoutSplitsRemaining) => {
         const mid = Math.floor(count / 2);
-        return settleAll([
-          fetchRecursive(indices.slice(0, mid), nextWave, undefined, nextBudget, depth + 1),
-          fetchRecursive(indices.slice(mid), nextWave, undefined, nextBudget, depth + 1),
-        ]);
+        dispatch(indices.slice(0, mid), generation, undefined, nextBudget, depth + 1);
+        dispatch(indices.slice(mid), generation, undefined, nextBudget, depth + 1);
       };
       const cause = classifyChunkError(e);
       if (cause === "size" && count > 1) {
@@ -278,7 +293,7 @@ export async function factorisedFactoryCall(
       const pos = indices[page.died]!;
       if (count > 1) {
         pages.escalated += 1;
-        nextWave.singletons.push([pos]);
+        dispatch([pos], generation);
       } else {
         missing.push(pos);
         unresolved.push(pos);
@@ -287,28 +302,88 @@ export async function factorisedFactoryCall(
 
     if (attempted < count) {
       pages.continued += 1;
-      nextWave.tails.push(indices.slice(attempted));
+      for (let i = attempted; i < count; i++) pending.push(indices[i]!);
+      if (generation + 1 > pendingGeneration) pendingGeneration = generation + 1;
     }
   };
 
-  let wave: Chunk[] = chunks;
-  try {
-    while (wave.length > 0) {
-      pages.waves += 1;
-      const nextWave: Deferred = { tails: [], singletons: [] };
-      const isWholeInput = wave.length === 1 && wave[0]!.length === elements.length;
-      await settleAll(
-        wave.map((chunk) => fetchRecursive(chunk, nextWave, isWholeInput ? getReferenceWrapped() : undefined)),
-      );
-      // Tails are packed only once the whole wave has reported, so every one sees the same pool.
-      wave = [...nextWave.singletons];
-      for (const tail of nextWave.tails) {
-        const repacked = pack(tail);
-        wave.push(...repacked.chunks);
-        oversize.push(...repacked.oversize);
-        missing.push(...repacked.oversize);
+  // Tails wait in `pending` and every chunk settling runs the pump, which re-packs them from the
+  // pool as it stands and sends what the mode allows. Halves and singleton escalations are chunks
+  // like any other. Nothing is dispatched after a failure; what is in flight settles first, its
+  // results committed, and then the failure surfaces.
+  let pending: number[] = [];
+  let pendingGeneration = 0;
+  let inFlight = 0;
+  // Chunks in flight that could still leave a tail, by generation; a singleton adjudicates its whole input.
+  const openBy: number[] = [];
+  const openBefore = (generation: number) => openBy.slice(0, generation).reduce((n, c) => n + c, 0);
+  let failure: { reason: unknown } | undefined;
+  let settle!: { resolve: () => void; reject: (reason: unknown) => void };
+  const done = new Promise<void>((resolve, reject) => {
+    settle = { resolve, reject };
+  });
+
+  const dispatch = (indices: Chunk, generation: number, precomputed?: Hex, timeoutSplits?: number, depth?: number) => {
+    if (failure !== undefined) return;
+    inFlight += 1;
+    const open = indices.length > 1 ? 1 : 0;
+    openBy[generation] = (openBy[generation] ?? 0) + open;
+    if (generation > generationMax) generationMax = generation;
+    fetchRecursive(indices, generation, precomputed, timeoutSplits, depth)
+      .then(undefined, (reason) => {
+        failure ??= { reason };
+      })
+      .then(() => {
+        inFlight -= 1;
+        openBy[generation]! -= open;
+        pump();
+      });
+  };
+
+  /**
+   * Every chunk but the last the packer builds from `pending` is full: the next element did not fit
+   * it. The last waits only for chunks of an earlier generation, the ones whose tails could still join it.
+   */
+  const flush = () => {
+    const generation = pendingGeneration;
+    const chunks = pack(pending.sort((a, b) => a - b));
+    const remainder = chunks.pop();
+    for (const chunk of chunks) dispatch(chunk, generation);
+    flushes.full += chunks.length;
+    pending = [];
+    pendingGeneration = 0;
+    if (remainder === undefined) return;
+    const release = openBefore(generation) === 0 ? "drain" : continuations === "eager" ? "eager" : undefined;
+    if (release === undefined) {
+      pending = [...remainder];
+      pendingGeneration = generation;
+      return;
+    }
+    flushes[release] += 1;
+    dispatch(remainder, generation);
+  };
+
+  const pump = () => {
+    if (failure === undefined && pending.length > 0) {
+      try {
+        flush();
+      } catch (reason) {
+        failure = { reason };
       }
     }
+    if (failure !== undefined) {
+      pending = [];
+      if (inFlight === 0) settle.reject(failure.reason);
+      return;
+    }
+    if (inFlight === 0) settle.resolve();
+  };
+
+  try {
+    const isWholeInput = chunks.length === 1 && chunks[0]!.length === elements.length;
+    for (const chunk of chunks) dispatch(chunk, 0, isWholeInput ? getReferenceWrapped() : undefined);
+    pump();
+    await done;
   } finally {
     if (gas !== undefined) facet?.set(gasFields(gas));
     facet?.set({
@@ -321,7 +396,12 @@ export async function factorisedFactoryCall(
       pages_escalated: pages.escalated,
       pages_all_skipped: pages.allSkipped,
       pages_continued: pages.continued,
-      pages_waves: pages.waves,
+      continuations,
+      continuation_depth_max: generationMax,
+      flushes: flushes.full + flushes.drain + flushes.eager,
+      flushes_full: flushes.full,
+      flushes_drain: flushes.drain,
+      flushes_eager: flushes.eager,
       elements_declined_oversize: oversize.length,
       elements_missing: missing.length,
       elements_unresolved: unresolved.length,
@@ -457,16 +537,9 @@ function gasFields(gas: GasStats): Record<string, number> {
   return { ...frame, item_gas_avg: avg, item_gas_stddev: stddev, item_gas_max: Number(gas.max) };
 }
 
-/** `Promise.all`, but every branch settles before the first failure surfaces. */
-async function settleAll(promises: readonly Promise<void>[]): Promise<void> {
-  const settled = await Promise.allSettled(promises);
-  const failure = settled.find((s) => s.status === "rejected");
-  if (failure) throw (failure as PromiseRejectedResult).reason;
-}
-
 /**
  * Returns the number of elements the page adjudicated, in `1..count`. The floor is what keeps every
- * wave making progress; the decoder has already bound each record to its ordinal.
+ * chunk making progress; the decoder has already bound each record to its ordinal.
  */
 function validatePage({ results, skipped, died }: Page, count: number): number {
   const attempted = results.length + skipped.length + (died === undefined ? 0 : 1);
@@ -486,9 +559,6 @@ async function fetchChunk(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: He
   }
   throw new Error("revert-mode wrapper returned without reverting");
 }
-
-/** What a wave hands the next one: continuation tails, packed once the wave has settled, and singleton escalations. */
-type Deferred = { tails: Chunk[]; singletons: Chunk[] };
 
 /**
  * Greedy packer over positions in `indices`: each chunk takes the longest prefix of the remainder

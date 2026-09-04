@@ -15,9 +15,10 @@ element in its own EVM frame with all remaining gas, admitting each attempt agai
 schedule before touching anything, and appends one record per adjudicated element to an outcome
 stream it exfiltrates via `REVERT`. Compressed input is decompressed one element at a time through
 a fixed history. Every page also reports what its attempts cost and what the frame had to spend, so
-the client packs every wave after the first from measurement, and the opening wave from two stated
-figures — the provider's cap on the transport, the lens's cost on the policy — that only ever cost
-a round trip when wrong. The caller-facing response is TIB 000012's `(results, skipped)`,
+the client packs every chunk by one prediction: from measurement once a page has landed, and before
+that from two stated figures — the provider's cap on the transport, the lens's cost on the policy —
+that only ever cost a round trip when wrong. The elements pages do not reach are pooled across pages
+and re-packed together. The caller-facing response is TIB 000012's `(results, skipped)`,
 byte-for-byte. No gas number is configured for correctness, none is fitted, and the constants
 that remain are measured against adversary fixtures or read from the protocol, with one stated
 policy target for prediction headroom.
@@ -42,12 +43,13 @@ git history. It describes the system as it stands.
   compressed chunk costs nothing until decompressed, and is decompressed only as attempted.
 - **No number from the author about the lens is load-bearing.** Static sizes come from the ABI;
   dynamic sizes come from the elements and the results themselves. The only figures a caller can
-  set — a provider's cap and a lens's measured cost — size the opening wave and nothing else.
+  set — a provider's cap and a lens's measured cost — size chunks only until the pages replace
+  them: the cap after the first page, the cost after the first costed attempt.
 - **Every served attempt is an observation.** Whether or not it stopped for gas, a page reports
   the budget its frame had, what the frame spent before its first attempt, and the sum, sum of
-  squares and maximum of per-attempt gas over every element but a death. Waves after the first are
-  packed from the request's own pooled observations, never from the count of one parent page; the
-  opening wave is packed by the same estimator from the stated figures.
+  squares and maximum of per-attempt gas over every element but a death. Every chunk after the
+  opening wave is packed from the request's own pooled observations, never from the count of one
+  parent page, by the same predicate that packs the opening wave from the stated figures.
 - **The value for every figure the caller can set is readable off any observed request**, in the
   units it is set in, on the wide event.
 - **The caller's response does not change.** `readLens` and `readContract` receive
@@ -458,49 +460,78 @@ sum may exceed the budget: the last attempt admitted may spend into the reserve.
 decoder accepts is a well-formed page. The death is consumed inside the request and never reaches
 the caller's array.
 
-**Packing and waves.** Chunks honour the wire cap — `batch.batchSize`, for which EIP-3860's
+**Packing and flushes.** Chunks honour the wire cap — `batch.batchSize`, for which EIP-3860's
 `MAX_INITCODE_SIZE` is the natural value; without one, chunks are bounded only by what the provider
-accepts — and, for the opening wave, a gas prediction when the caller has stated its inputs. An element that alone exceeds the wire cap is declined client-side with no request made.
-The greedy packer takes the longest prefix that fits, by binary search with a linear shrink for
-measures that are not perfectly monotone (the compressed byte measure is one).
+accepts — and a gas prediction. An element that alone exceeds the wire cap is declined client-side
+with no request made. The greedy packer takes the longest prefix that fits, by binary search with a
+linear shrink for measures that are not perfectly monotone (the compressed byte measure is one). A
+chunk is a list of indices into the caller's array, ascending but not necessarily contiguous.
 
-The opening wave. `deployless(http(url), { gasLimit })` and `gasLimit` in the `cache` config name
-the provider's `eth_call` cap, one per transport instance; `policy({ batch: { gas: { fixed, item:
-{ avg, stddev? } } } })` states the lens's cost in the units the wide event reports it. A chunk of
-`k` elements fits when, beside the byte cap,
+The prediction. One predicate decides every chunk: `k` elements over the chunk's bytes fit when,
+beside the byte cap,
 
 ```
-intrinsic(bytes) + fixed + k·avg + z·stddev·√k ≤ gasLimit
+k = 1    or    intrinsic(bytes) + fixed + k·avg + z·stddev·√k ≤ cap
 ```
 
 with `intrinsic` what the node deducts before the envelope's first `gas()` returns — the
 transaction and creation base, calldata by byte (EIP-2028), initcode by word (EIP-3860), and that
 opcode's own 2 — computed from the chunk's exact bytes: prefix sums of zero and non-zero bytes on
 the clear path plus the four wrapper words whose zero bytes depend on the chunk; the wrapped chunk
-itself on the compressed path. A lone element always fits: the estimate may shorten a chunk but
-never withhold an element, so the envelope decides what is served. With either side missing, or
-any figure unusable or malformed, the opening wave packs by bytes alone.
+itself on the compressed path. `z = PACKING_SIGMAS = 2`. A lone element always fits: the estimate
+may shorten a chunk but never withhold an element, so the envelope decides what is served.
 
-Every page's telemetry is pooled over the request: `budget` the smallest seen, `fixed` the
-largest, `served`, `sum`, `sumSquares`, `max` accumulated. Waves after the first pack every
-continuation tail under the wire cap and `predictItems`, the largest `k` with
+The parameters have two sources. Before any page has landed they are stated:
+`deployless(http(url), { gasLimit })` and `gasLimit` in the `cache` config name the provider's
+`eth_call` cap, one per transport instance; `policy({ batch: { gas: { fixed, item: { avg, stddev? }
+} } })` states the lens's cost in the units the wide event reports it. With either side missing, or
+any figure unusable or malformed, the opening wave packs by bytes alone. From the first page on they
+are observed. Every page's telemetry is pooled over the request — `cap` the smallest
+`intrinsic + fixed + budget` any page implied, `fixed` the largest, `served`, `sum`, `sumSquares`,
+`max` accumulated — and the predicate runs on `cap`, `fixed`, `μ = sum / served` and
+`σ² = (served·sumSquares − sum²) / served²`. While no attempt has been costed the stated item cost
+fills in against the observed cap, else bytes alone. `PageGas.budget` excludes the reserve and
+`fixed` includes it, so `cap − intrinsic − fixed` counts it once. The stated cap therefore sizes
+the opening wave and nothing else, and the stated cost nothing after the first costed attempt, by
+construction: no later chunk consults them.
 
-```
-k·μ + z·σ·√k ≤ budget        μ = sum / served,  σ² = (served·sumSquares − sum²) / served²
-```
+Two terms are estimates. `fixed` grows with the chunk's bytes — the prologue copies the wire into
+memory at 3 gas per word plus expansion, and behind a compressed body the history sits further out
+— by about 1.5k gas at 4 KiB and 15k at the wire cap, so the largest `fixed` seen under-estimates a
+far larger candidate by up to that much: half an element at 30k, two at 7k, and only for a chunk
+much larger than any page observed. Accepted rather than modelled: modelling it exactly would put
+the envelope's memory layout into the client, where a Yul change would skew a hint silently. And
+`min cap` with `max fixed` may combine pages that never co-occurred, behind one URL that fronts
+several backends: conservative, never over-packing on that account. On the compressed path bytes
+and zeros are not monotone in the prefix, so the search yields a fitting prefix rather than
+provably the longest, the heuristic the byte cap has always had.
 
-`z = PACKING_SIGMAS = 2`; `Infinity` while nothing has been served, and never below one element.
-Tails are packed only after the whole wave has settled, so every tail of a wave sees the same
-pool. The repacker reuses the same fit predicate, but the stated figures cannot bind there: a tail is
-a sub-range of a chunk that fit them, and every term is monotone in the range up to the compressed
-path's few-gas wobble noted under Open risks.
+Flushes. The elements a page did not reach are not re-sent per parent. They wait in one pending
+list, and every chunk settling re-packs that list, sorted, from the pool as it stands. What is then
+sent is `batch.continuations`'s choice:
+
+- `fill`, the default: every chunk the packer builds but the last is full — the next element did
+  not fit it — and goes at once. The last goes once no chunk that could still add to it is in
+  flight: one of an earlier generation holding more than one element, since a singleton adjudicates
+  its whole input and the full pages just dispatched belong to the next round. Small tails from many
+  parents coalesce into pages, and a round's remainder never waits on the round it opens.
+- `eager`: everything pending goes as soon as a page lands, packed the same way. Each tail travels
+  alone or with whatever landed at the same instant; more requests, no waiting.
+
+Anything else reads as `fill`. A death's singleton retry is dispatched directly, never pooled: the
+escalation needs the whole frame. The halves of a chunk the provider refused are dispatched the same
+way, so each settles on its own. The pump also runs when a page lands without a tail, since its
+telemetry can tighten the parameters and make the pending list more than a page. Pages commit as
+they land, before siblings finish, so a later chunk failing never discards results that arrived; on
+the first failure nothing further is dispatched, the pending list is dropped, chunks in flight
+settle and commit, and then the failure surfaces.
 
 The outcome protocol:
 
 | observed | meaning | action |
 |---|---|---|
-| page, no death | complete, or stopped at the floor | commit; the tail joins the next wave, packed from the pool |
-| page, death at `k`, chunk count > 1 | `k` could not be resolved in this frame | commit the prefix; retry `k` alone next wave — minimal prologue, the strongest grant this client can construct; the tail behind it joins the pool-packed wave |
+| page, no death | complete, or stopped at the floor | commit; the tail joins the pending list |
+| page, death at `k`, chunk count > 1 | `k` could not be resolved in this frame | commit the prefix; retry `k` alone at once — minimal prologue, the strongest grant this client can construct; the tail behind it joins the pending list |
 | page, death, chunk count == 1 | the element died, or was refused at the head, holding a singleton's grant | terminal: a plain `skipped` entry, counted in `elements_unresolved` |
 | size error (HTTP 413, "too large", initcode size) | the provider refused the request's size | halve; a singleton propagates |
 | timeout | possibly batch-induced, possibly a slow upstream | halve once per chunk while it holds more than one element, then propagate |
@@ -511,9 +542,11 @@ The outcome protocol:
 | any other error | unknown | propagated; `failover` is the recovery |
 
 Escalation is a two-step ladder bounded per element: one in-chunk adjudication and one singleton.
-Pages commit as they land, before siblings finish, so a later chunk failing never discards results
-that arrived. Every page adjudicates at least one element, a singleton death is terminal, and
-halving terminates classically, so the wave loop terminates without counters.
+Every page adjudicates at least one element, a singleton death is terminal, halving terminates
+classically, and every run of the pump either dispatches, leaves the pending list behind a chunk
+still in flight, or settles the request; an element that fits no chunk alone — possible on the
+compressed path, where it may have fit only beside its neighbours' history — is declined as
+oversize rather than retried. So the request terminates without counters.
 
 **Observability.** On every request that reached the packer, under the transport's facet:
 
@@ -521,14 +554,15 @@ halving terminates classically, so the wave loop terminates without counters.
 |---|---|
 | `elements_requested`, `elements_fetched`, `nominal_batches`, `batch_bytes` (stat) | the initial packing and its utilisation against the wire cap |
 | `gas_limit` | the cap the opening prediction used, when it applied |
-| `pages_waves`, `pages_continued`, `page_adjudicated` (stat) | how many round trips the input took, and whether the lens yields ~1 element per page |
+| `pages_continued`, `page_adjudicated` (stat) | how often the lens stopped short, and whether it yields ~1 element per page |
+| `flushes`, `flushes_full`, `flushes_drain`, `flushes_eager` | the requests pooled tails were re-packed into, by what released each |
+| `continuation_depth_max`, `continuations` | the longest chain of pages behind pages, and the mode |
 | `pages_all_skipped` | did every element of a page revert — a selector the lens does not implement is one cause |
 | `attempts_unresolved`, `pages_escalated` | how often gas failed to resolve an element, and the singleton round trips that cost |
 | `splits_count`, `splits_size`, `splits_timeout`, `splits_max_depth` | provider refusals; any non-zero depth is pathology |
 | `elements_missing`, `elements_declined_oversize`, `elements_unresolved` | the caller-facing `skipped`, and its client-side and gas-terminal subsets |
 | `frame_gas`, `fixed_gas` | the smallest budget and the largest prologue any page reported |
 | `item_gas_avg`, `item_gas_stddev`, `item_gas_max` | the pooled per-attempt cost |
-| `page_size_suggested` | `predictItems` of the pool: what a continuation would be packed at |
 | `gas_limit_observed` | the smallest `intrinsic + fixed + budget`: the cap the provider actually granted |
 
 The cache handler counts `elements_requested` and `elements_fetched` over deduplicated misses and
@@ -571,8 +605,9 @@ Behind `failover`, each branch states its own.
   `n ‖ bodyLen ‖ body` framing and the compression bit, the `cause`-chain revert-data walk.
 - `src/utils/deployless/codec.inner.ts`: `arrayifiedAbi`, `itemFragmentOf`, `resolveArrayFunction`,
   `arrayToWire` / `wireToArray`, `hexToPage` / `pageToWire`, `pageToHex`.
-- `src/utils/deployless/call.ts`: `factorisedFactoryCall` — packing, the opening prediction,
-  waves, the pool, `predictItems`, escalation, halving, the fields; `LensGas`.
+- `src/utils/deployless/call.ts`: `factorisedFactoryCall` — packing, the prediction and its two
+  parameter sources, the pool, the pending list and its two modes, escalation, halving, the fields;
+  `LensGas`, `ContinuationMode`.
 - `src/utils/deployless/flz.ts`: the client-side FastLZ codec.
 - `src/transports/deployless/index.ts`, `src/transports/cache/{index,types}.ts`,
   `src/transports/cache/eth-call/handler.ts`, `src/transports/state-overrides.ts`: the transports,
@@ -623,21 +658,30 @@ Yul through the package's own script and fails if the pasted constant has drifte
 - `Gas.t.sol` against `.gas-snapshot` in CI (`forge snapshot --check`), so a slower path that
   crosses no floor is a diff in review.
 
-**Vitest** (`pnpm test`, 585 tests). The codec: `arrayifiedAbi` round-trips for static tuples,
+**Vitest** (`pnpm test`, 601 tests). The codec: `arrayifiedAbi` round-trips for static tuples,
 nested arrays and dynamic types; the record decoder accepts every kind and rejects a short header,
 `nA` the payload cannot hold, unbound ordinals, a non-final or repeated death, the unused namespace,
 wrong-size and misaligned results, trailing bytes, and each inconsistent telemetry tuple;
 `pageToWire ∘ hexToPage` round-trips. The transports and handler: one case per outcome row; a
 mid-chunk death retried exactly once alone; a singleton death terminal and surfaced as a plain
 skip; a previous-format page propagated as an ordinary revert; the four thrown selectors never
-halved; continuations packed at the reported rate rather than the parent's count; tails waiting for
-the wave's pool, whichever chunk settles first; a wide spread packed more conservatively than a
-flat one; never below one element; the opening wave sized from the cap and the cost, with the fixed
-cost, the spread and the intrinsic gas each reducing it (the last to within one gas of the request
-actually sent), a cost above the cap sending every element alone, cold-start recovery on a
-three-per-page lens, degradation when the cost is understated, and bytes-only packing when either
-side is missing or any figure is malformed; the fields stamped, `gas_limit_observed` reconstructing
-the mock's cap; dedup restamping through the cache handler.
+halved; continuations packed at the reported rate rather than the parent's count and from every
+page that has landed, whichever settled first; a continuation bounded by the smallest cap and the
+largest prologue seen; the stated item cost filling in while nothing has been served; a wide spread
+packed more conservatively than a flat one; never below one element; the opening wave sized from
+the cap and the cost, with the fixed cost, the spread and the intrinsic gas each reducing it (the
+last to within one gas of the request actually sent), a cost above the cap sending every element
+alone, cold-start recovery on a three-per-page lens, degradation when the cost is understated, and
+bytes-only packing when either side is missing or any figure is malformed; small tails coalesced
+into one chunk; a full page sent while siblings are in flight and a partial one held for the drain;
+fullness re-checked when telemetry lands without a tail; a round's remainder sent beside its full
+pages once nothing earlier is open; `eager` against `fill`, and an unknown mode
+read as `fill`; a coalesced chunk's declines, death and tail mapped to the caller's indices; the
+continuation depth counted; an input of only oversize elements settling without a request; nothing
+dispatched after a failure, not even a death's escalation, and chunks in flight committed before it
+surfaces; each half of a refused chunk settling on its own, and a tail waiting on the other half
+under `fill`; the fields stamped,
+`gas_limit_observed` reconstructing the mock's cap; dedup restamping through the cache handler.
 
 **Real node** (performed against a live chain during the work, not in CI): a lens end-to-end
 through `readLens`, including a replicated input large enough to force several pages, with every
@@ -696,7 +740,11 @@ element accounted for and no corpse.
   correctness ones.
 - **Composition.** `μ` depends on which items share a frame: warm storage makes related items
   cheaper together, so a grouped input reads cheaper than a shuffled one. The caller orders `args`;
-  `readLens` aligns results to any order.
+  `readLens` aligns results to any order. A coalesced chunk mixes parents and shares less than the
+  pages `μ` was measured on, so it costs a little more per element than predicted; the consequence
+  is one continuation for that flush, whose own page pulls `μ` up.
+- **`fixed` is read off the largest page seen.** A chunk far larger than any page observed pays up
+  to ~15k gas more prologue than predicted, the growth of the wire copy with bytes; one continuation.
 - **Route.** `budget` varies by provider; the pool takes the minimum over the request, so a request
   served by several nodes behind one URL packs to the smallest.
 - **The death is still censored.** Its cost is unknown by definition, and the only element whose
@@ -849,9 +897,27 @@ that subtracted it would carry a Yul constant. **Why the sum may exceed the budg
 only requires the reserve to be present before the call, not after; rejecting `sum > budget` would
 reject every page whose last callee drained its frame.
 
-**Why tails wait for the wave.** Packing at parent completion would see an arbitrary
-completion-order prefix of the pool, and two tails in the same wave would be packed to different
-estimates of the same lens.
+**Why one predicate with two parameter sources.** With tails re-sent per parent, a tail is a
+sub-range of a chunk that fit, every term is monotone in the range, and a stated-only predicate for
+the opening wave beside a count from the pool for continuations sufficed. Once tails coalesce, a
+continuation can be larger than any chunk before it: a stated predicate on it would let an
+overstated cost cap every flush, and a count from the pool would ignore that a larger chunk pays
+more intrinsic gas — between a 4 KiB page and a 48 KiB chunk, 180k–720k depending on zero content,
+six to twenty-four elements at 30k each. One predicate on the observed cap less the candidate's own
+intrinsic gas fixes both, and makes "no chunk consults a stated figure once the pages have replaced
+it" true by construction rather than by the sub-range argument.
+
+**Why the pending list is re-packed on every settle.** Packing each tail at its parent's
+completion would pack two tails of the same lens to different estimates, from whatever prefix of
+the pool had landed. Re-packing everything pending from the whole pool means the estimate a chunk
+goes out under is always the freshest, and a page whose telemetry tightens the pool can promote
+what was waiting to a full page.
+
+**Why a mode, not a timer.** A coalescing window in milliseconds would be the one latency constant
+in a system whose every other figure is measured or stated by the caller, and no value suits both a
+local node and a rate-limited public endpoint. `fill` and `eager` are the two ends the timer would
+interpolate between, named. Singletons bypass the list because the escalation is about the frame,
+not the packing.
 
 **Why `z = 2`.** An overshoot costs one continuation, packed from more data; an undershoot costs
 extra parallel requests. Under uncorrelated costs one sigma leaves a coin flip and two leaves one in
@@ -953,6 +1019,21 @@ heterogeneous lenses. The envelope gained the `fixed` word; review made a lone e
 the prediction, the clear path's intrinsic count the four chunk-dependent wrapper words, and a null
 `batch.gas` degrade rather than throw.
 
+**Coalesced continuations** (2026-09-04). Sending tails as parents settle, and coalescing them,
+showed that the single `fits` predicate reused for tails rested on tails being sub-ranges: a
+coalesced chunk can exceed any opening chunk, so the stated figures would bind again and the pool's
+count would ignore the candidate's intrinsic gas. The predicate was unified and chunks became index
+lists first; the pending list and its two modes followed. Review of the plan found the pump's
+termination on empty and only-oversize input and its failure semantics unstated, the "exact"
+prediction an estimate where `fixed` grows with bytes, and `page_size_suggested` a count whose
+meaning would change; the first two were specified, the estimate accepted and documented, the facet
+dropped. A coalescing timer was discussed and replaced by the mode. Review of the code found a
+death's escalation could be dispatched after a failure and that halves settled as a pair rather
+than as chunks; both now go through the same dispatch as every other chunk, and `settleAll` went.
+The first draft held a remainder until nothing at all was in flight, which cost one round trip per
+round against the waves; the maintainer's intent was to wait only on the previous round, so the
+drain now counts open chunks by generation.
+
 Declined along the way:
 
 - **The ½ forwarding ratio**: once cleanup is O(1) any ratio is correct, so it is pure policy, and ½
@@ -988,5 +1069,7 @@ Declined along the way:
   the default;
   **`batch.pageSizeHint`** and **a per-provider map of counts**; **`gasLimit` over a per-item cost
   alone**; **reporting the deploy's gas alone**; **`item_gas_max` as the item cost**; **a second
-  `fits` predicate for continuations** (a tail is a sub-range of a chunk that fit, so the prediction
-  cannot bind on it).
+  `fits` predicate for continuations** (moot once one predicate packs every chunk); **a coalescing
+  timer** (`coalesceMs`); **modelling `fixed` against bytes** in the client; **a concurrency cap**
+  on flushes (the rate limiter shapes them); **`page_size_suggested`** (a data-independent count
+  made sense against a count hint; the tunables are stamped in their own units).
