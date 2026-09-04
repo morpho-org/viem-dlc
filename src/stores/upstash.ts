@@ -15,7 +15,8 @@ import { ThrottledStore } from "./throttled.js";
 export type UpstashStoreOptions = {
   maxRequestBytes: number;
   ttl?: number;
-  redis?: Omit<RedisConfigNodejs, "automaticDeserialization">;
+  redis?: Omit<RedisConfigNodejs, "automaticDeserialization" | "responseEncoding" | "url" | "token"> &
+    Partial<Pick<RedisConfigNodejs, "url" | "token">>;
   /** Optional logger for non-request-bound emissions (e.g. background I/O errors). */
   logger?: Logger;
 };
@@ -86,9 +87,12 @@ export class UpstashStore implements Store {
     }
 
     this.options = options;
-    this.redis = options.redis
-      ? new Redis({ ...options.redis, automaticDeserialization: false, responseEncoding: false })
-      : Redis.fromEnv({ automaticDeserialization: false, responseEncoding: false });
+    const { url, token, ...config } = {
+      ...options.redis,
+      automaticDeserialization: false,
+      responseEncoding: false,
+    } as const;
+    this.redis = url && token ? new Redis({ ...config, url, token }) : Redis.fromEnv(config);
   }
 
   private async _get(key: string): Promise<{ value: Buffer[] | null; motivatesRetry: boolean }> {
