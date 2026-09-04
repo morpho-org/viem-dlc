@@ -85,6 +85,17 @@ describe("observability", () => {
       expect(isObserved(undefined)).toBe(false);
     });
 
+    it("isObserved tolerates throwing accessors and lookalike brands", () => {
+      const hostile = new Proxy(new Error("hostile"), {
+        get() {
+          throw new Error("trap");
+        },
+      });
+      expect(isObserved(hostile)).toBe(false);
+      expect(isObserved(new Error("outer", { cause: hostile }))).toBe(false);
+      expect(isObserved({ [Symbol.for("viem-dlc.observed")]: 1 })).toBe(false);
+    });
+
     it("errors thrown outside a withLogging scope are not marked", async () => {
       const thrown = new Error("outside");
       const observed = observe(async () => {

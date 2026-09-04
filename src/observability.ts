@@ -38,9 +38,13 @@ function markObserved(error: unknown): void {
  */
 export function isObserved(error: unknown): boolean {
   const seen = new Set<unknown>();
-  for (let e = error; typeof e === "object" && e !== null && !seen.has(e); e = (e as { cause?: unknown }).cause) {
-    if ((e as Record<symbol, unknown>)[observedSymbol]) return true;
-    seen.add(e);
+  try {
+    for (let e = error; typeof e === "object" && e !== null && !seen.has(e); e = (e as { cause?: unknown }).cause) {
+      if ((e as Record<symbol, unknown>)[observedSymbol] === true) return true;
+      seen.add(e);
+    }
+  } catch {
+    // A throwing accessor (proxy trap, hostile getter) must not escape host error handling.
   }
   return false;
 }
