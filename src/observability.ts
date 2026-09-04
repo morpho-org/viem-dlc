@@ -18,34 +18,29 @@ export interface Logger {
   metadataOnly(metadata: Record<string, unknown>): void;
 }
 
-/** Brand stamped on errors whose failure `observe` has already emitted as a wide event. */
+/** Non-enumerable brand {@link observe} stamps on errors it has already emitted. */
 const observedSymbol = Symbol.for("viem-dlc.observed");
 
-/** Marks `error` as already reported by `observe`; a no-op for non-object values. */
 function markObserved(error: unknown): void {
-  if ((typeof error !== "object" && typeof error !== "function") || error === null) return;
+  if (typeof error !== "object" || error === null) return;
   try {
-    Object.defineProperty(error, observedSymbol, { value: true, enumerable: false, configurable: true });
+    Object.defineProperty(error, observedSymbol, { value: true });
   } catch {
-    // Frozen/non-extensible errors can't be branded; the rethrow must still proceed.
+    // Non-extensible errors can't be branded; the rethrow still proceeds.
   }
 }
 
 /**
- * Whether `error` — or any error on its `cause` chain — was already reported by
- * {@link observe} as an error-level wide event. Hosts that also log escaped errors
- * (e.g. an oRPC error-logging middleware) can use this to skip or downgrade the duplicate. The
- * chain walk matters because viem wraps transport failures (e.g. `HttpRequestError` →
- * `ContractFunctionExecutionError`) before they reach the host, so the branded error is usually
- * a `cause`, not the top-level one.
+ * Whether `error`, or anything on its `cause` chain, was already emitted by
+ * {@link observe} — so hosts that also log escaped errors can skip the duplicate.
+ * The chain walk matters because viem wraps transport failures before they
+ * reach the host, so the brand usually sits on a `cause`.
  */
 export function isObserved(error: unknown): boolean {
   const seen = new Set<unknown>();
-  let current = error;
-  while ((typeof current === "object" || typeof current === "function") && current !== null && !seen.has(current)) {
-    if ((current as Record<PropertyKey, unknown>)[observedSymbol] === true) return true;
-    seen.add(current);
-    current = (current as { cause?: unknown }).cause;
+  for (let e = error; typeof e === "object" && e !== null && !seen.has(e); e = (e as { cause?: unknown }).cause) {
+    if ((e as Record<symbol, unknown>)[observedSymbol]) return true;
+    seen.add(e);
   }
   return false;
 }
