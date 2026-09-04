@@ -68,6 +68,77 @@ describe("ThrottledStore", () => {
       expect(await store.get("key")).toBeNull();
     });
 
+    it("does not serve a pending op the admission gate will discard as stale", async () => {
+      const underlying = new MemoryStore();
+      underlying.set("stale", [Buffer.from("v1")]);
+      const originalSet = underlying.set.bind(underlying);
+      const setSpy = vi.spyOn(underlying, "set");
+
+      let resolveGate!: () => void;
+      const gate = new Promise<void>((r) => {
+        resolveGate = r;
+      });
+      setSpy.mockImplementationOnce(async (key, value) => {
+        await gate;
+        originalSet(key, value);
+      });
+
+      const store = createStore(underlying, { maxConcurrent: 1, maxStalenessMs: 20 });
+
+      // First write takes the only concurrency slot, so the second never reaches the gate.
+      store.set("blocker", [Buffer.from("blocks")]);
+      await sleep(1);
+      store.set("stale", [Buffer.from("v2")]);
+      await sleep(50);
+
+      expect(await store.get("stale")).toEqual([Buffer.from("v1")]);
+
+      resolveGate();
+      await store.flush();
+      expect(underlying.get("stale")).toEqual([Buffer.from("v1")]); // discarded, never persisted
+    });
+
+    it("does not serve a pending op the rate limiter will never admit", async () => {
+      const underlying = new MemoryStore();
+      underlying.set("b", [Buffer.from("v1")]);
+
+      // A zero refill rate leaves the queue with no scheduled wake-up, so the gate never runs.
+      const store = createStore(underlying, { maxWritesBurst: 1, maxWritesPerSecond: 0, maxStalenessMs: 20 });
+
+      store.set("a", [Buffer.from("takes-the-token")]);
+      store.set("b", [Buffer.from("v2")]);
+      await sleep(50);
+
+      expect(await store.get("b")).toEqual([Buffer.from("v1")]);
+    });
+
+    it("keeps serving an admitted op past the staleness window", async () => {
+      const underlying = new MemoryStore();
+      underlying.set("key", [Buffer.from("v1")]);
+      const originalSet = underlying.set.bind(underlying);
+      const setSpy = vi.spyOn(underlying, "set");
+
+      let resolveGate!: () => void;
+      const gate = new Promise<void>((r) => {
+        resolveGate = r;
+      });
+      setSpy.mockImplementationOnce(async (key, value) => {
+        await gate;
+        originalSet(key, value);
+      });
+
+      const store = createStore(underlying, { maxStalenessMs: 20 });
+
+      store.set("key", [Buffer.from("v2")]);
+      await sleep(50); // admitted, and now older than maxStalenessMs — but it will still land
+
+      expect(await store.get("key")).toEqual([Buffer.from("v2")]);
+
+      resolveGate();
+      await store.flush();
+      expect(underlying.get("key")).toEqual([Buffer.from("v2")]);
+    });
+
     it("falls back to the underlying store once the pending op settles", async () => {
       const underlying = new MemoryStore();
       const store = createStore(underlying);
