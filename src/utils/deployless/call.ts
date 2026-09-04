@@ -327,9 +327,11 @@ function pool(stats: GasStats | undefined, page: PageGas, served: number, intrin
 /** `gasLimit` and `batch.gas` as the opening wave uses them, or nothing when either is missing or unusable. */
 function openingBudget(gasLimit: number | undefined, gas: LensGas | undefined) {
   if (gasLimit === undefined || typeof gas !== "object" || gas === null) return undefined;
-  const fixed = gas.fixed;
-  const avg = typeof gas.item === "object" && gas.item !== null ? gas.item.avg : undefined;
-  const stddev = (typeof gas.item === "object" && gas.item !== null ? gas.item.stddev : undefined) ?? 0;
+  const item = typeof gas.item === "object" && gas.item !== null ? gas.item : undefined;
+  if (item === undefined) return undefined;
+  const { fixed } = gas;
+  const { avg } = item;
+  const stddev = item.stddev ?? 0;
   const usable =
     Number.isSafeInteger(gasLimit) &&
     gasLimit > 0 &&
@@ -339,7 +341,7 @@ function openingBudget(gasLimit: number | undefined, gas: LensGas | undefined) {
     avg > 0 &&
     Number.isFinite(stddev) &&
     stddev >= 0;
-  return usable && avg !== undefined ? { gasLimit, fixed, avg, stddev } : undefined;
+  return usable ? { gasLimit, fixed, avg, stddev } : undefined;
 }
 
 type WireSize = { bytes: number; zeros: number };
