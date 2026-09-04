@@ -495,16 +495,10 @@ fills in against the observed cap, else bytes alone. `PageGas.budget` excludes t
 the opening wave and nothing else, and the stated cost nothing after the first costed attempt, by
 construction: no later chunk consults them.
 
-Two terms are estimates. `fixed` grows with the chunk's bytes — the prologue copies the wire into
-memory at 3 gas per word plus expansion, and behind a compressed body the history sits further out
-— by about 1.5k gas at 4 KiB and 15k at the wire cap, so the largest `fixed` seen under-estimates a
-far larger candidate by up to that much: half an element at 30k, two at 7k, and only for a chunk
-much larger than any page observed. Accepted rather than modelled: modelling it exactly would put
-the envelope's memory layout into the client, where a Yul change would skew a hint silently. And
-`min cap` with `max fixed` may combine pages that never co-occurred, behind one URL that fronts
-several backends: conservative, never over-packing on that account. On the compressed path bytes
-and zeros are not monotone in the prefix, so the search yields a fitting prefix rather than
-provably the longest, the heuristic the byte cap has always had.
+Two terms are estimates, both under Open risks: `fixed` grows with the chunk's bytes, and `min cap`
+with `max fixed` may combine pages that never co-occurred, which is conservative. On the compressed
+path bytes and zeros are not monotone in the prefix, so the search yields a fitting prefix rather
+than provably the longest, the heuristic the byte cap has always had.
 
 Flushes. The elements a page did not reach are not re-sent per parent. They wait in one pending
 list, and every chunk settling re-packs that list, sorted, from the pool as it stands. What is then
@@ -665,23 +659,18 @@ wrong-size and misaligned results, trailing bytes, and each inconsistent telemet
 `pageToWire ∘ hexToPage` round-trips. The transports and handler: one case per outcome row; a
 mid-chunk death retried exactly once alone; a singleton death terminal and surfaced as a plain
 skip; a previous-format page propagated as an ordinary revert; the four thrown selectors never
-halved; continuations packed at the reported rate rather than the parent's count and from every
-page that has landed, whichever settled first; a continuation bounded by the smallest cap and the
-largest prologue seen; the stated item cost filling in while nothing has been served; a wide spread
-packed more conservatively than a flat one; never below one element; the opening wave sized from
-the cap and the cost, with the fixed cost, the spread and the intrinsic gas each reducing it (the
-last to within one gas of the request actually sent), a cost above the cap sending every element
-alone, cold-start recovery on a three-per-page lens, degradation when the cost is understated, and
-bytes-only packing when either side is missing or any figure is malformed; small tails coalesced
-into one chunk; a full page sent while siblings are in flight and a partial one held for the drain;
-fullness re-checked when telemetry lands without a tail; a round's remainder sent beside its full
-pages once nothing earlier is open; `eager` against `fill`, and an unknown mode
-read as `fill`; a coalesced chunk's declines, death and tail mapped to the caller's indices; the
-continuation depth counted; an input of only oversize elements settling without a request; nothing
-dispatched after a failure, not even a death's escalation, and chunks in flight committed before it
-surfaces; each half of a refused chunk settling on its own, and a tail waiting on the other half
-under `fill`; the fields stamped,
-`gas_limit_observed` reconstructing the mock's cap; dedup restamping through the cache handler.
+halved; the opening wave sized from the cap and the cost, with the fixed cost, the spread and the
+intrinsic gas each reducing it (the last to within one gas of the request actually sent), a cost
+above the cap sending every element alone, and bytes-only packing when either side is missing or
+any figure is malformed; the prediction's parameters replaced by the pool — the smallest cap, the
+largest prologue, the pooled spread, the stated item cost only while nothing has been served — and
+never below one element; the pending list under both modes: tails coalesced, a full page sent while
+siblings are in flight, a remainder held for the previous round and released with the next round's
+full pages, fullness re-checked on tail-less telemetry, halves settling on their own; index lists
+mapping a coalesced chunk's declines, death and tail to the caller's indices; termination on empty
+and only-oversize input; nothing dispatched after a failure and chunks in flight committed before
+it surfaces; the fields stamped, `gas_limit_observed` reconstructing the mock's cap; dedup
+restamping through the cache handler.
 
 **Real node** (performed against a live chain during the work, not in CI): a lens end-to-end
 through `readLens`, including a replicated input large enough to force several pages, with every
@@ -743,8 +732,10 @@ element accounted for and no corpse.
   `readLens` aligns results to any order. A coalesced chunk mixes parents and shares less than the
   pages `μ` was measured on, so it costs a little more per element than predicted; the consequence
   is one continuation for that flush, whose own page pulls `μ` up.
-- **`fixed` is read off the largest page seen.** A chunk far larger than any page observed pays up
-  to ~15k gas more prologue than predicted, the growth of the wire copy with bytes; one continuation.
+- **`fixed` is read off the largest page seen**, but grows with the chunk's bytes: the wire copy,
+  about 1.5k gas at 4 KiB and 15k at the wire cap. A chunk far larger than any page observed
+  over-packs by up to that, one continuation. Modelling it would put the envelope's memory layout
+  into the client; fitting a slope from two pages needs none if it ever matters.
 - **Route.** `budget` varies by provider; the pool takes the minimum over the request, so a request
   served by several nodes behind one URL packs to the smallest.
 - **The death is still censored.** Its cost is unknown by definition, and the only element whose
@@ -897,21 +888,12 @@ that subtracted it would carry a Yul constant. **Why the sum may exceed the budg
 only requires the reserve to be present before the call, not after; rejecting `sum > budget` would
 reject every page whose last callee drained its frame.
 
-**Why one predicate with two parameter sources.** With tails re-sent per parent, a tail is a
-sub-range of a chunk that fit, every term is monotone in the range, and a stated-only predicate for
-the opening wave beside a count from the pool for continuations sufficed. Once tails coalesce, a
-continuation can be larger than any chunk before it: a stated predicate on it would let an
-overstated cost cap every flush, and a count from the pool would ignore that a larger chunk pays
-more intrinsic gas — between a 4 KiB page and a 48 KiB chunk, 180k–720k depending on zero content,
-six to twenty-four elements at 30k each. One predicate on the observed cap less the candidate's own
-intrinsic gas fixes both, and makes "no chunk consults a stated figure once the pages have replaced
-it" true by construction rather than by the sub-range argument.
-
-**Why the pending list is re-packed on every settle.** Packing each tail at its parent's
-completion would pack two tails of the same lens to different estimates, from whatever prefix of
-the pool had landed. Re-packing everything pending from the whole pool means the estimate a chunk
-goes out under is always the freshest, and a page whose telemetry tightens the pool can promote
-what was waiting to a full page.
+**Why one predicate with two parameter sources.** While a tail was a sub-range of a chunk that
+fit, a stated-only predicate for the opening wave beside a count from the pool for continuations
+sufficed. A coalesced continuation can be larger than any chunk before it, and there a stated
+predicate lets an overstated cost cap every flush while a count ignores that a larger chunk pays
+more intrinsic gas: 180k–720k between a 4 KiB page and a 48 KiB chunk, six to twenty-four elements
+at 30k. One predicate on the observed cap less the candidate's own intrinsic gas fixes both.
 
 **Why a mode, not a timer.** A coalescing window in milliseconds would be the one latency constant
 in a system whose every other figure is measured or stated by the caller, and no value suits both a
@@ -1019,20 +1001,11 @@ heterogeneous lenses. The envelope gained the `fixed` word; review made a lone e
 the prediction, the clear path's intrinsic count the four chunk-dependent wrapper words, and a null
 `batch.gas` degrade rather than throw.
 
-**Coalesced continuations** (2026-09-04). Sending tails as parents settle, and coalescing them,
-showed that the single `fits` predicate reused for tails rested on tails being sub-ranges: a
-coalesced chunk can exceed any opening chunk, so the stated figures would bind again and the pool's
-count would ignore the candidate's intrinsic gas. The predicate was unified and chunks became index
-lists first; the pending list and its two modes followed. Review of the plan found the pump's
-termination on empty and only-oversize input and its failure semantics unstated, the "exact"
-prediction an estimate where `fixed` grows with bytes, and `page_size_suggested` a count whose
-meaning would change; the first two were specified, the estimate accepted and documented, the facet
-dropped. A coalescing timer was discussed and replaced by the mode. Review of the code found a
-death's escalation could be dispatched after a failure and that halves settled as a pair rather
-than as chunks; both now go through the same dispatch as every other chunk, and `settleAll` went.
-The first draft held a remainder until nothing at all was in flight, which cost one round trip per
-round against the waves; the maintainer's intent was to wait only on the previous round, so the
-drain now counts open chunks by generation.
+**Coalesced continuations** (2026-09-04). A follow-up to send tails as parents settle showed the
+reused `fits` rested on tails being sub-ranges, so the predicate was unified and chunks became index
+lists before the pending list and its modes landed. A coalescing timer was replaced by the mode; a
+first draft that held the remainder until nothing at all was in flight cost a round trip per round
+against the waves and was corrected to wait on the previous round only.
 
 Declined along the way:
 
