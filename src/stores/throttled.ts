@@ -1,10 +1,14 @@
-import { withTimeout } from "viem";
+import { type MaybePromise, withTimeout } from "viem";
 
 import type { Logger } from "../observability.js";
-import type { Store } from "../types.js";
+import type { ProvenanceAwareStore, Store, StoreRead } from "../types.js";
 import { createRateLimit, RateLimitGateError } from "../utils/with-rate-limit.js";
 
 type PendingOp = { kind: "set"; value: Buffer[] } | { kind: "delete" };
+
+function isThenable<T>(value: MaybePromise<T>): value is Promise<T> {
+  return typeof (value as { then?: unknown } | null | undefined)?.then === "function";
+}
 
 export type ThrottledStoreOptions = {
   /** Maximum number of writes that can be initiated concurrently from resting state. */
@@ -31,6 +35,7 @@ export type ThrottledStoreOptions = {
  * - `get` is not throttled. It serves the pending `set`/`delete` still eligible for admission, else
  *   the one being attempted upstream, so a read reflects a write this store can still make. Once an
  *   op settles — persisted, failed, or discarded as stale — reads revert to the underlying store.
+ *   Such a read is `provisional` via {@link ProvenanceAwareStore.getWithProvenance}.
  * - `set` and `delete` record the op and return immediately, so callers are never
  *   blocked by the rate limiter. {@link ThrottledStore.flush} is the only durability
  *   barrier; write failures surface through `onWriteError`, never as a rejection.
@@ -40,7 +45,7 @@ export type ThrottledStoreOptions = {
  *   (or intentionally discarded). A newer version satisfies the snapshotted one.
  *   Writes added after a key is satisfied do not extend the flush.
  */
-export class ThrottledStore implements Store {
+export class ThrottledStore implements ProvenanceAwareStore {
   private readonly rateLimiter: ReturnType<typeof createRateLimit>;
   private readonly maxStalenessMs: number;
   private readonly onWriteError?: (key: string, err: unknown, durationMs: number) => void;
@@ -66,16 +71,26 @@ export class ThrottledStore implements Store {
   }
 
   get(key: string) {
+    const read = this.getWithProvenance(key);
+    return isThenable(read) ? read.then(({ value }) => value) : read.value;
+  }
+
+  getWithProvenance(key: string): MaybePromise<StoreRead> {
     // Serve an op only while it can still reach the upstream store — the latest pending one inside the
-    // gate's staleness window, else whichever is being attempted. One the gate is about to discard is
-    // a phantom that a cache-aside tier above would re-stamp and then hold well past its own expiry.
+    // gate's staleness window, else whichever is being attempted. Either way the value is unpersisted,
+    // so it is provisional: see {@link StoreRead} for what a tier above must not do with it.
     const entry = this.pending.get(key);
     if (entry !== undefined && Date.now() - entry.lastUpdatedAt <= this.maxStalenessMs) {
-      return entry.op.kind === "set" ? entry.op.value : null;
+      return { value: entry.op.kind === "set" ? entry.op.value : null, provisional: true };
     }
     const attempted = this.attempting.get(key);
-    if (attempted !== undefined) return attempted.kind === "set" ? attempted.value : null;
-    return this.store.get(key);
+    if (attempted !== undefined) {
+      return { value: attempted.kind === "set" ? attempted.value : null, provisional: true };
+    }
+    const stored = this.store.get(key);
+    return isThenable(stored)
+      ? stored.then((value) => ({ value, provisional: false }))
+      : { value: stored, provisional: false };
   }
 
   set(key: string, value: Buffer[]): void {

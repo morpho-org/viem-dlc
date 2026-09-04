@@ -824,4 +824,35 @@ describe("ThrottledStore under a TTL-bounded memory tier", () => {
     await store.flush();
     expect(remote.get("key")).toEqual([Buffer.from("v2")]);
   });
+
+  it("does not re-stamp a provisional value into the memory tier", async () => {
+    const remote = new MemoryStore();
+    remote.set("key", [Buffer.from("v1")]);
+
+    const originalSet = remote.set.bind(remote);
+    const setSpy = vi.spyOn(remote, "set");
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      resolveGate = r;
+    });
+    setSpy.mockImplementationOnce(async (key, value) => {
+      await gate;
+      originalSet(key, value);
+    });
+
+    const memory = new TtlStore(new LruStore({ maxBytes: 1024 }), { ttlMs: 1000 });
+    const store = new HierarchicalStore([memory, createStore(remote)], { populateOnMiss: true });
+
+    await store.set("key", [Buffer.from("v2")]);
+    await memory.delete("key"); // stand in for LRU eviction under byte pressure
+
+    // The overlay still answers the read, so read-your-own-writes survives the eviction...
+    expect(await store.get("key")).toEqual([Buffer.from("v2")]);
+    // ...but the unpersisted value must not be stamped back in with a fresh TTL.
+    expect(await memory.get("key")).toBeNull();
+
+    resolveGate();
+    await store.flush();
+    expect(remote.get("key")).toEqual([Buffer.from("v2")]);
+  });
 });

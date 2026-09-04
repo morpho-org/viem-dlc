@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { HierarchicalStore, MemoryStore } from "../../src/stores/index.js";
-import type { Store } from "../../src/types.js";
+import type { ProvenanceAwareStore, Store, StoreRead } from "../../src/types.js";
+import { sleep } from "../../src/utils/sleep.js";
 
 describe("HierarchicalStore", () => {
   it("returns null when all stores miss", async () => {
@@ -99,6 +100,90 @@ describe("HierarchicalStore", () => {
     resolveFlush();
     await flushPromise;
     expect(completed).toBe(true);
+  });
+
+  describe("populateOnMiss", () => {
+    const provenanceStore = (read: StoreRead): ProvenanceAwareStore => ({
+      get: () => read.value,
+      getWithProvenance: () => read,
+      set: () => {},
+      delete: () => {},
+      flush: () => {},
+    });
+
+    it("warms higher tiers from an authoritative hit", async () => {
+      const top = new MemoryStore();
+      const lower = provenanceStore({ value: [Buffer.from("v")], provisional: false });
+      const store = new HierarchicalStore([top, lower], { populateOnMiss: true });
+
+      expect(await store.get("key")).toEqual([Buffer.from("v")]);
+      expect(top.get("key")).toEqual([Buffer.from("v")]);
+    });
+
+    it("does not warm higher tiers from a provisional hit", async () => {
+      const top = new MemoryStore();
+      const lower = provenanceStore({ value: [Buffer.from("v")], provisional: true });
+      const store = new HierarchicalStore([top, lower], { populateOnMiss: true });
+
+      expect(await store.get("key")).toEqual([Buffer.from("v")]);
+      expect(top.get("key")).toBeNull();
+    });
+
+    it("stops at a provisional tombstone instead of falling through", async () => {
+      const lower = new MemoryStore();
+      lower.set("key", [Buffer.from("superseded")]);
+      const lowerGet = vi.spyOn(lower, "get");
+      const middle = provenanceStore({ value: null, provisional: true });
+
+      const store = new HierarchicalStore([new MemoryStore(), middle, lower], { populateOnMiss: true });
+
+      expect(await store.get("key")).toBeNull();
+      expect(lowerGet).not.toHaveBeenCalled();
+    });
+
+    it("propagates provisional status to an outer hierarchy", async () => {
+      const top = new MemoryStore();
+      const inner = new HierarchicalStore([provenanceStore({ value: [Buffer.from("v")], provisional: true })]);
+
+      const store = new HierarchicalStore([top, inner], { populateOnMiss: true });
+
+      expect(await store.get("key")).toEqual([Buffer.from("v")]);
+      expect(top.get("key")).toBeNull();
+    });
+
+    it("does not backfill a value read before an overlapping write", async () => {
+      const top = new MemoryStore();
+      let resolveRead!: (value: Buffer[] | null) => void;
+      const lower: Store = {
+        get: () =>
+          new Promise<Buffer[] | null>((r) => {
+            resolveRead = r;
+          }),
+        set: () => {},
+        delete: () => {},
+        flush: () => {},
+      };
+
+      const store = new HierarchicalStore([top, lower], { populateOnMiss: true });
+
+      const pending = store.get("key");
+      await sleep(1); // let the read reach the slow lower tier
+      await store.set("key", [Buffer.from("v2")]);
+      resolveRead([Buffer.from("v1")]); // pre-write value, resolving after the write landed
+
+      expect(await pending).toEqual([Buffer.from("v1")]);
+      expect(top.get("key")).toEqual([Buffer.from("v2")]); // the newer write survives
+    });
+
+    it("treats a store without provenance as authoritative", async () => {
+      const top = new MemoryStore();
+      const lower = new MemoryStore();
+      lower.set("key", [Buffer.from("v")]);
+      const store = new HierarchicalStore([top, lower], { populateOnMiss: true });
+
+      expect(await store.get("key")).toEqual([Buffer.from("v")]);
+      expect(top.get("key")).toEqual([Buffer.from("v")]);
+    });
   });
 
   it("handles empty store list", async () => {
