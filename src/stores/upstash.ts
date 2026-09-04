@@ -15,7 +15,7 @@ import { ThrottledStore } from "./throttled.js";
 export type UpstashStoreOptions = {
   maxRequestBytes: number;
   ttl?: number;
-  redis?: Omit<RedisConfigNodejs, "automaticDeserialization">;
+  redis?: Omit<RedisConfigNodejs, "automaticDeserialization" | "responseEncoding">;
   /**
    * Whether reads wait for the client's own prior writes (Upstash `upstash-sync-token`). Defaults to the
    * SDK default (`true`). Set `false` for immutable or SWR data so global-DB reads are served by the
