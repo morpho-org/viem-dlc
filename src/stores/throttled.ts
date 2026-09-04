@@ -28,9 +28,9 @@ export type ThrottledStoreOptions = {
 /**
  * A store that rate-limits, concurrency-limits, and coalesces writes to an underlying store.
  *
- * - `get` is not throttled, and serves the latest pending `set`/`delete` for the key, so a read does
- *   not observe a value older than a write that is still pending. Once an op settles — persisted,
- *   failed, or discarded as stale — reads revert to whatever the underlying store holds.
+ * - `get` is not throttled. It serves the pending `set`/`delete` still eligible for admission, else
+ *   the one being attempted upstream, so a read reflects a write this store can still make. Once an
+ *   op settles — persisted, failed, or discarded as stale — reads revert to the underlying store.
  * - `set` and `delete` record the op and return immediately, so callers are never
  *   blocked by the rate limiter. {@link ThrottledStore.flush} is the only durability
  *   barrier; write failures surface through `onWriteError`, never as a rejection.
@@ -50,8 +50,8 @@ export class ThrottledStore implements Store {
   private readonly pending = new Map<string, { op: PendingOp; version: number; lastUpdatedAt: number }>();
   /** Keys with a job queued or in-flight. Prevents duplicate jobs per key. */
   private readonly active = new Set<string>();
-  /** Keys whose op cleared the admission gate and is awaiting the upstream store. */
-  private readonly admitted = new Set<string>();
+  /** The op being attempted upstream, per key. Outlives its `pending` entry when a newer version lands. */
+  private readonly attempting = new Map<string, PendingOp>();
   /** Flush boundaries waiting for specific key:version pairs to settle. */
   private readonly flushBoundaries: { resolve: () => void; keys: Map<string, number> }[] = [];
 
@@ -66,13 +66,15 @@ export class ThrottledStore implements Store {
   }
 
   get(key: string) {
+    // Serve an op only while it can still reach the upstream store — the latest pending one inside the
+    // gate's staleness window, else whichever is being attempted. One the gate is about to discard is
+    // a phantom that a cache-aside tier above would re-stamp and then hold well past its own expiry.
     const entry = this.pending.get(key);
-    // Serve a pending op only while it can still reach the upstream store — inside the gate's staleness
-    // window, or already admitted. One the gate is about to discard is a phantom that a cache-aside
-    // tier above would re-stamp and then hold well past its own expiry.
-    if (entry !== undefined && (this.admitted.has(key) || Date.now() - entry.lastUpdatedAt <= this.maxStalenessMs)) {
+    if (entry !== undefined && Date.now() - entry.lastUpdatedAt <= this.maxStalenessMs) {
       return entry.op.kind === "set" ? entry.op.value : null;
     }
+    const attempted = this.attempting.get(key);
+    if (attempted !== undefined) return attempted.kind === "set" ? attempted.value : null;
     return this.store.get(key);
   }
 
@@ -119,7 +121,7 @@ export class ThrottledStore implements Store {
           if (entry === undefined) return;
 
           const t0 = Date.now();
-          this.admitted.add(key);
+          this.attempting.set(key, entry.op);
           try {
             await withTimeout(
               async () => (entry.op.kind === "set" ? this.store.set(key, entry.op.value) : this.store.delete(key)),
@@ -141,7 +143,7 @@ export class ThrottledStore implements Store {
               .warn("upstream write failed");
             this.onWriteError?.(key, err, Date.now() - t0);
           } finally {
-            this.admitted.delete(key);
+            this.attempting.delete(key);
           }
 
           this.resolveFlushBoundaries(key, entry.version);

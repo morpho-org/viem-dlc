@@ -112,6 +112,36 @@ describe("ThrottledStore", () => {
       expect(await store.get("b")).toEqual([Buffer.from("v1")]);
     });
 
+    it("does not let a newer stale version inherit the attempted version's eligibility", async () => {
+      const underlying = new MemoryStore();
+      underlying.set("key", [Buffer.from("v1")]);
+      const originalSet = underlying.set.bind(underlying);
+      const setSpy = vi.spyOn(underlying, "set");
+
+      let resolveGate!: () => void;
+      const gate = new Promise<void>((r) => {
+        resolveGate = r;
+      });
+      setSpy.mockImplementationOnce(async (key, value) => {
+        await gate;
+        originalSet(key, value);
+      });
+
+      const store = createStore(underlying, { maxStalenessMs: 20 });
+
+      store.set("key", [Buffer.from("v2")]); // admitted, blocks upstream
+      await sleep(1);
+      store.set("key", [Buffer.from("v3")]); // queues behind it, then ages out
+      await sleep(50);
+
+      // v3 will be discarded at its own gate; the read must reflect v2, the version actually landing.
+      expect(await store.get("key")).toEqual([Buffer.from("v2")]);
+
+      resolveGate();
+      await store.flush();
+      expect(underlying.get("key")).toEqual([Buffer.from("v2")]);
+    });
+
     it("keeps serving an admitted op past the staleness window", async () => {
       const underlying = new MemoryStore();
       underlying.set("key", [Buffer.from("v1")]);
