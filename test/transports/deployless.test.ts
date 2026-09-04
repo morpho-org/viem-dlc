@@ -273,8 +273,8 @@ describe("deployless", () => {
       expect(field("splits_size")).toBe(0);
       expect(field("splits_timeout")).toBe(0);
       expect(field("splits_max_depth")).toBe(0);
-      expect(field("pages_waves")).toBe(1);
       expect(field("pages_continued")).toBe(0);
+      expect(field("flushes")).toBe(0);
       expect(field("pages_escalated")).toBe(0);
       expect(field("attempts_unresolved")).toBe(0);
       expect(field("elements_declined_oversize")).toBe(0);

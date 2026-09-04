@@ -14,7 +14,7 @@ export const deploylessTransportKey = "viem-dlc-deployless" as const;
 export type DeploylessConfig = {
   /**
    * The provider's `eth_call` gas cap. Read only with `policy().batch.gas`, to size the opening
-   * wave; every later wave sizes itself from what the pages report, so a wrong value costs a round
+   * wave; every later chunk is sized from what the pages report, so a wrong value costs a round
    * trip, never a result. `gas_limit_observed` on the wide event is the value a provider granted.
    */
   gasLimit?: number;

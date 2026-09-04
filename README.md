@@ -95,7 +95,7 @@ Use `cache(...)` when you want the same marked calls to populate and read from a
 Both transports take an optional `gasLimit`, the provider's `eth_call` gas cap:
 `deployless(http(rpcUrl), { gasLimit: 50_000_000 })`, or `gasLimit` beside `binSize` in the
 `cache` config. It is read only together with the policy's `batch.gas`, to size the opening wave;
-every later wave sizes itself from what the pages report, so a wrong value costs a round trip,
+every later chunk is sized from what the pages report, so a wrong value costs a round trip,
 never a result. Behind `failover`, each branch states its own.
 
 With observability enabled, batching reports `elements_requested` / `elements_fetched`,
@@ -105,8 +105,11 @@ error: `splits_size` (413 / initcode-size errors) and `splits_timeout`. Nothing 
 prologue grows with the chunk, so a frame that dies without reporting is a constructor too heavy
 for the node's cap, surfaced as an error rather than halved. Pagination is normal rather than a
 failure and gets its own
-fields: `pages_continued` (responses that stopped early, each repacked into one or more requests),
-`pages_waves`, `page_adjudicated` (elements per page, as a stat — a lens yielding ~1 per page is
+fields: `pages_continued` (responses that stopped early; the elements they did not reach are pooled
+and re-packed together), `flushes` (the requests those pooled elements were re-packed into, split
+into `flushes_full`, `flushes_drain` and `flushes_eager` by what released them — see
+`batch.continuations`), `continuation_depth_max` (the longest chain of pages behind pages),
+`page_adjudicated` (elements per page, as a stat — a lens yielding ~1 per page is
 pathological), `pages_all_skipped` (pages whose every element reverted — a per-item selector the
 lens does not implement is one cause), `attempts_unresolved` (elements a frame's gas could not
 resolve, whether the per-item frame died or the envelope refused to start it), `pages_escalated`
@@ -118,10 +121,10 @@ the subset another provider with a higher cap might still serve.
 Every page also reports what its attempts cost, and the request pools it: `frame_gas` (the gas a
 frame had for attempts, on the smallest frame seen), `fixed_gas` (what a frame spent before its
 first attempt: prologue, lens deploy and reserve), `item_gas_avg` / `item_gas_stddev` /
-`item_gas_max` per attempt, `page_size_suggested` (the chunk size a continuation would be packed
-at) and `gas_limit_observed`, the `eth_call` gas cap the provider actually granted, read back from
-the frame, the prologue and the calldata's intrinsic gas. These are the numbers the opening wave
-takes as configuration: `fixed_gas`, `item_gas_avg` and `item_gas_stddev` go to the policy's
+`item_gas_max` per attempt, and `gas_limit_observed`, the `eth_call` gas cap the provider actually
+granted, read back from the frame, the prologue and the calldata's intrinsic gas. Every chunk after
+the opening wave is packed from these; they are also the numbers the opening wave takes as
+configuration: `fixed_gas`, `item_gas_avg` and `item_gas_stddev` go to the policy's
 `batch.gas`, and `gas_limit_observed` to each transport's `gasLimit` (stamped as `gas_limit` when it
 applied). Take them over a representative window; a `gas_limit` above `gas_limit_observed` is a
 cap the provider has since lowered. Costs depend on which items share a frame: grouping related
@@ -464,6 +467,7 @@ policy(opts: {
     batchSize?: number
     compress?: boolean
     gas?: { fixed: number; item: { avg: number; stddev?: number } }
+    continuations?: 'fill' | 'eager'
   }
   cache?: {
     blobKey: string
@@ -489,10 +493,15 @@ policy(opts: {
   `fixed_gas` (what a frame spends before its first attempt), `item.avg` and `item.stddev` from
   `item_gas_avg` and `item_gas_stddev`. Together with the transport's `gasLimit` it sizes the
   opening wave: a chunk is as many elements as fit the cap after the calldata's intrinsic gas and
-  `fixed`, with the same headroom for the spread that continuations keep. Later waves size
-  themselves from what the pages report, so this only matters before the first response:
-  understating the cost costs one continuation wave, overstating it costs extra parallel
-  requests. A property of the lens, so one value serves every provider and chain.
+  `fixed`, with the same headroom for the spread that continuations keep. Every later chunk is
+  sized from what the pages report, so this only matters until the first attempt has been costed:
+  understating the cost costs one continuation, overstating it costs extra parallel requests. A property of the
+  lens, so one value serves every provider and chain.
+- **`opts.batch.continuations`** — when the elements a page did not reach are re-sent. `fill`
+  (the default) pools them across pages: a full page's worth goes at once, the remainder once no
+  earlier chunk that could still add to it is in flight, so small tails from many pages travel
+  together. `eager` sends every tail as soon as its page lands: more requests, no waiting.
+  Anything else reads as `fill`.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
   or when used with `deployless(...)`, `batch` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same
