@@ -16,6 +16,13 @@ export type UpstashStoreOptions = {
   maxRequestBytes: number;
   ttl?: number;
   redis?: Omit<RedisConfigNodejs, "automaticDeserialization">;
+  /**
+   * Whether reads wait for the client's own prior writes (Upstash `upstash-sync-token`). Defaults to the
+   * SDK default (`true`). Set `false` for immutable or SWR data so global-DB reads are served by the
+   * nearest replica instead of syncing to the primary first.
+   * @see https://upstash.com/docs/redis/howto/readyourwrites
+   */
+  readYourWrites?: boolean;
   /** Optional logger for non-request-bound emissions (e.g. background I/O errors). */
   logger?: Logger;
 };
@@ -86,9 +93,12 @@ export class UpstashStore implements Store {
     }
 
     this.options = options;
-    this.redis = options.redis
-      ? new Redis({ ...options.redis, automaticDeserialization: false, responseEncoding: false })
-      : Redis.fromEnv({ automaticDeserialization: false, responseEncoding: false });
+    const redisConfig = {
+      readYourWrites: options.readYourWrites ?? options.redis?.readYourWrites,
+      automaticDeserialization: false,
+      responseEncoding: false,
+    } satisfies Partial<RedisConfigNodejs>;
+    this.redis = options.redis ? new Redis({ ...options.redis, ...redisConfig }) : Redis.fromEnv(redisConfig);
   }
 
   private async _get(key: string): Promise<{ value: Buffer[] | null; motivatesRetry: boolean }> {
