@@ -23,9 +23,9 @@ related:
 >
 > **Superseded in part by 000016-tib-page-telemetry.md**: the continuation rule "re-packed at the
 > count the page demonstrated" (now a prediction from per-page gas telemetry); the deferred
-> `itemsHint` in Derivation (shipped as `batch.pageSizeHint`, itself replaced by `gasLimit` and
-> `batch.gas` in 000016-tib-opening-wave.md; the remembered realized rate is declined there); and
-> what remains of the "Cold-start latency" risk.
+> `itemsHint` in Derivation (shipped as the transport's `gasLimit` plus `batch.gas`; a count hint
+> and the remembered realized rate are declined there); and what remains of the "Cold-start
+> latency" risk.
 
 The gas model survives pagination for exactly one reason: the prologue isn't paginated. Work
 proportional to the *sent* count — envelope decompression, calldata copy, output allocation —

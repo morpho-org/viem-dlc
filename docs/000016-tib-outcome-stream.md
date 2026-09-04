@@ -8,9 +8,9 @@ related:
 
 # TIB — Outcome stream: envelope memory proportional to progress, no declared sizes
 
-> **Superseded in part by 000016-tib-page-telemetry.md**: the response carries four gas words
-> between `nA` and the records, under the sentinel `ViemDlcPage2()`; `Page` gains `gas`; and
-> `cpost` is 1,400. **And by 000016-tib-opening-wave.md**: a fifth word, under `ViemDlcPage3()`.
+> **Superseded in part by 000016-tib-page-telemetry.md**: the response carries five gas words
+> between `nA` and the records, under the sentinel `ViemDlcPage3()`; `Page` gains `gas`; and
+> `cpost` is 1,400.
 
 TIB 000016 moved the element loop into the envelope so that no per-element cost is paid before
 an admission check. Three costs still are, all proportional to the *sent* count `n`: the slab
