@@ -26,6 +26,12 @@ export interface CacheConfig {
   binSize: number;
   /** Returns the probability [0,1] that a cached chunk should be refetched. */
   invalidationStrategy: InvalidationStrategy;
+  /**
+   * The provider's `eth_call` gas cap. Read only with `policy().batch.gas`, to size the opening
+   * wave; every later chunk is sized from what the pages report, so a wrong value costs a round
+   * trip, never a result. `gas_limit_observed` on the wide event is the value a provider granted.
+   */
+  gasLimit?: number;
 }
 
 export type HandlerContext = CacheConfig & {

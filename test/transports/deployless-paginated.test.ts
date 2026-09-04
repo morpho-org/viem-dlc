@@ -19,7 +19,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { policy } from "../../src/actions/call.js";
 import { withLogging } from "../../src/observability.js";
-import { deployless } from "../../src/transports/deployless/index.js";
+import { type DeploylessConfig, deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
 import {
@@ -95,8 +95,9 @@ function revertWith(data: Hex): Error & { data: Hex } {
   return err;
 }
 
-/** The four telemetry words as they sit on the wire. */
-const header = ({ budget, sum, sumSquares, max }: PageGas) => word(budget) + word(sum) + word(sumSquares) + word(max);
+/** The five telemetry words as they sit on the wire. */
+const header = ({ budget, fixed, sum, sumSquares, max }: PageGas) =>
+  word(budget) + word(fixed) + word(sum) + word(sumSquares) + word(max);
 
 /** A lens response whose records are given verbatim, costed flat for every record but a death. */
 function revertWithRecords(...records: string[]) {
@@ -115,8 +116,8 @@ function revertWithPage(results: readonly bigint[], skipped: readonly number[], 
 }
 
 type LensBehavior = {
-  /** Most elements the lens will attempt in one call before stopping for gas. */
-  pageSize?: number;
+  /** Most elements the lens will attempt in one call before stopping for gas, per chunk by its first address value. */
+  pageSize?: number | ((firstValue: number) => number);
   /** Address values the lens deterministically declines. */
   decline?: readonly number[];
   /** Address values the lens reports a gas death on, ending the page at that index. */
@@ -127,8 +128,12 @@ type LensBehavior = {
   itemGas?: (value: number) => number;
   /** What the lens's frame can spend on attempts, per chunk by its first address value; by default exactly `pageSize` flat attempts. */
   budget?: number | ((firstValue: number) => number);
+  /** What the frame spent before its first attempt, per chunk by its first address value. */
+  fixed?: (firstValue: number) => number;
   /** Milliseconds a chunk's response waits, by its first address value; to reorder completions. */
   delay?: (firstValue: number) => number;
+  /** A promise a chunk's response also waits for, by its first address value; to release completions by hand. */
+  hold?: (firstValue: number) => Promise<unknown> | undefined;
 };
 
 /**
@@ -141,32 +146,54 @@ function mockPagedLens({
   starve = [],
   recoversAlone = false,
   itemGas = () => 1_000,
-  budget = pageSize === Infinity ? 10_000_000 : pageSize * 1_000,
+  budget = typeof pageSize === "number" && pageSize !== Infinity ? pageSize * 1_000 : 10_000_000,
+  fixed = () => 100_000,
   delay = () => 0,
+  hold = () => undefined,
 }: LensBehavior = {}) {
   return vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
     const addrs = sentAddresses((args.params[0] as { data: Hex }).data);
     const first = addrValue(addrs[0]!);
     const frame = typeof budget === "number" ? budget : budget(first);
+    const prologue = fixed(first);
+    const stopAt = typeof pageSize === "number" ? pageSize : pageSize(first);
     await new Promise((resolve) => setTimeout(resolve, delay(first)));
+    await hold(first);
     const results: bigint[] = [];
     const skipped: number[] = [];
     const costs: number[] = [];
-    for (let i = 0; i < addrs.length && i < pageSize; i++) {
+    for (let i = 0; i < addrs.length && i < stopAt; i++) {
       const value = addrValue(addrs[i]!);
       if (starve.includes(value) && !(recoversAlone && addrs.length === 1)) {
-        throw revertWithPage(results, skipped, gasOf(costs, frame), i);
+        throw revertWithPage(results, skipped, gasOf(costs, frame, prologue), i);
       }
       costs.push(itemGas(value));
       if (decline.includes(value)) skipped.push(i);
       else results.push(BigInt(value));
     }
-    throw revertWithPage(results, skipped, gasOf(costs, frame));
+    throw revertWithPage(results, skipped, gasOf(costs, frame, prologue));
   });
 }
 
-function createTransport(requestFn: ReturnType<typeof vi.fn>) {
-  return deployless(custom({ request: requestFn as never }))({ retryCount: 0 } as never);
+function createTransport(requestFn: ReturnType<typeof vi.fn>, config?: DeploylessConfig) {
+  return deployless(custom({ request: requestFn as never }), config)({ retryCount: 0 } as never);
+}
+
+/**
+ * A cap and a stated cost that open at exactly `k` elements per chunk: a million per item, a cap
+ * with half a million to spare, which the calldata's intrinsic gas (about a hundred thousand) fits.
+ */
+const openAt = (k: number) => ({
+  gasLimit: k * 1_000_000 + 500_000,
+  batch: { gas: { fixed: 0, item: { avg: 1_000_000 } } },
+});
+
+/** What a node deducts for a creation `eth_call`'s data before the envelope runs, as `call.ts` prices it. */
+function intrinsicGasOf(data: Hex): number {
+  const bytes = (data.length - 2) / 2;
+  let zeros = 0;
+  for (let i = 2; i < data.length; i += 2) if (data.slice(i, i + 2) === "00") zeros++;
+  return 53_000 + 4 * zeros + 16 * (bytes - zeros) + 2 * Math.ceil(bytes / 32) + 2;
 }
 
 function decodeResults(result: unknown): bigint[] {
@@ -265,7 +292,7 @@ describe("deployless (paginated)", () => {
 
   it("stamps paginated continuations and unservable elements onto the wide event", async () => {
     // Serves 2 per call and declines the element valued 3, so the run both continues and
-    // ends up short: one continuation, two waves, one element the lens refused.
+    // ends up short: one continuation, two flushes, one element the lens refused.
     const requestFn = mockPagedLens({ pageSize: 2, decline: [3] });
     const transport = createTransport(requestFn);
 
@@ -279,7 +306,8 @@ describe("deployless (paginated)", () => {
     expect(field("elements_missing")).toBe(1);
     expect(field("elements_unresolved")).toBe(0);
     expect(field("pages_continued")).toBe(1);
-    expect(field("pages_waves")).toBe(2);
+    expect(field("flushes")).toBe(2);
+    expect(field("continuation_depth_max")).toBe(1);
     expect(field("pages_escalated")).toBe(0);
     expect(field("attempts_unresolved")).toBe(0);
     // A lens stopping early is a continuation, not a bisect.
@@ -428,7 +456,7 @@ describe("deployless (paginated)", () => {
     });
 
     it("propagates a page in the previous format as an ordinary revert", async () => {
-      const previous = `0xf90a85b5${word(1)}${success(1n)}` as Hex;
+      const previous = `0x1824683e${word(1)}${word(0).repeat(4)}${success(1n)}` as Hex;
       const requestFn = vi.fn().mockRejectedValue(revertWith(previous));
 
       await expect(createTransport(requestFn).request(createRequest([addr(1)]))).rejects.toThrow(/execution reverted/);
@@ -444,28 +472,111 @@ describe("deployless (paginated)", () => {
   });
 });
 
-describe("pageSizeHint", () => {
-  it("caps the opening wave at the hint", async () => {
+describe("opening wave", () => {
+  it("sizes the opening chunks from the provider's cap and the lens's stated cost", async () => {
     const requestFn = mockPagedLens();
-    const transport = createTransport(requestFn);
+    const { gasLimit, batch } = openAt(4);
 
     const { result, field } = await withFacet(() =>
-      transport.request(createRequest([1, 2, 3, 4, 5].map(addr), { pageSizeHint: 2 })),
+      createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8].map(addr), batch)),
     );
 
-    expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n, 5n]);
-    expect(requestedIndices(requestFn)).toEqual([[1, 2], [3, 4], [5]]);
-    expect(field("pages_waves")).toBe(1);
-    expect(field("page_size_hint")).toBe(2);
+    expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n]);
+    expect(requestedIndices(requestFn)).toEqual([
+      [1, 2, 3, 4],
+      [5, 6, 7, 8],
+    ]);
+    expect(field("flushes")).toBe(0);
+    expect(field("gas_limit")).toBe(gasLimit);
+  });
+
+  it("charges the fixed cost against the cap", async () => {
+    const requestFn = mockPagedLens();
+    const { gasLimit } = openAt(4);
+    const batch = { gas: { fixed: 1_000_000, item: { avg: 1_000_000 } } };
+
+    await createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4, 5, 6].map(addr), batch));
+
+    expect(requestedIndices(requestFn)).toEqual([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
+  });
+
+  it("keeps headroom for the stated spread, as continuations do", async () => {
+    const requestFn = mockPagedLens();
+    const { gasLimit } = openAt(4);
+    const batch = { gas: { fixed: 0, item: { avg: 1_000_000, stddev: 300_000 } } };
+
+    await createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4, 5, 6].map(addr), batch));
+
+    expect(requestedIndices(requestFn)).toEqual([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
+  });
+
+  it("charges the calldata's intrinsic gas against the cap", async () => {
+    const requestFn = mockPagedLens();
+    const { batch } = openAt(4);
+
+    await createTransport(requestFn, { gasLimit: 4_000_000 }).request(
+      createRequest([1, 2, 3, 4, 5, 6].map(addr), batch),
+    );
+
+    expect(requestedIndices(requestFn)).toEqual([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
+  });
+
+  it("prices a chunk's calldata to the gas of the request it actually sends", async () => {
+    // A cap of exactly three one-gas elements plus their chunk's intrinsic gas fits three, not four.
+    const probe = mockPagedLens();
+    await createTransport(probe).request(createRequest([1, 2, 3].map(addr)));
+    const sent = (probe.mock.calls[0]![0] as EthCallRequest).params[0].data as Hex;
+    const batch = { gas: { fixed: 0, item: { avg: 1 } } };
+    const exact = mockPagedLens();
+    const overByOne = mockPagedLens();
+
+    await createTransport(exact, { gasLimit: intrinsicGasOf(sent) + 3 }).request(
+      createRequest([1, 2, 3, 4, 5, 6].map(addr), batch),
+    );
+    await createTransport(overByOne, { gasLimit: intrinsicGasOf(sent) + 2 }).request(
+      createRequest([1, 2, 3, 4, 5, 6].map(addr), batch),
+    );
+
+    expect(requestedIndices(exact)).toEqual([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
+    expect(requestedIndices(overByOne)).toEqual([
+      [1, 2],
+      [3, 4],
+      [5, 6],
+    ]);
+  });
+
+  it("sends an element alone rather than withholding it when the stated cost exceeds the cap", async () => {
+    const requestFn = mockPagedLens();
+    const batch = { gas: { fixed: 0, item: { avg: 10_000_000 } } };
+
+    const { result } = await withFacet(() =>
+      createTransport(requestFn, { gasLimit: 1_000_000 }).request(createRequest([1, 2, 3].map(addr), batch)),
+    );
+
+    expect(requestedIndices(requestFn)).toEqual([[1], [2], [3]]);
+    expect(decodePage(result)).toEqual({ results: [1n, 2n, 3n], skipped: [] });
   });
 
   it("recovers the wave a bytes-only opening always pays on a multi-page input", async () => {
     const nine = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(addr);
     const blind = mockPagedLens({ pageSize: 3 });
-    const hinted = mockPagedLens({ pageSize: 3 });
+    const sized = mockPagedLens({ pageSize: 3 });
+    const { gasLimit, batch } = openAt(3);
 
     const a = await withFacet(() => createTransport(blind).request(createRequest(nine)));
-    const b = await withFacet(() => createTransport(hinted).request(createRequest(nine, { pageSizeHint: 3 })));
+    const b = await withFacet(() => createTransport(sized, { gasLimit }).request(createRequest(nine, batch)));
 
     expect(decodeResults(a.result)).toEqual(decodeResults(b.result));
     expect(requestedIndices(blind)).toEqual([
@@ -473,21 +584,22 @@ describe("pageSizeHint", () => {
       [4, 5, 6],
       [7, 8, 9],
     ]);
-    expect(requestedIndices(hinted)).toEqual([
+    expect(requestedIndices(sized)).toEqual([
       [1, 2, 3],
       [4, 5, 6],
       [7, 8, 9],
     ]);
-    expect([a.field("pages_waves"), a.field("pages_continued")]).toEqual([2, 1]);
-    expect([b.field("pages_waves"), b.field("pages_continued")]).toEqual([1, 0]);
+    expect([a.field("flushes"), a.field("pages_continued")]).toEqual([2, 1]);
+    expect([b.field("flushes"), b.field("pages_continued")]).toEqual([0, 0]);
   });
 
-  it("degrades to the bytes-only opening when the hint overshoots", async () => {
+  it("degrades to the bytes-only opening when the stated cost is too low", async () => {
     const nine = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(addr);
     const requestFn = mockPagedLens({ pageSize: 3 });
+    const { gasLimit, batch } = openAt(10);
 
     const { field } = await withFacet(() =>
-      createTransport(requestFn).request(createRequest(nine, { pageSizeHint: 10 })),
+      createTransport(requestFn, { gasLimit }).request(createRequest(nine, batch)),
     );
 
     expect(requestedIndices(requestFn)).toEqual([
@@ -495,18 +607,42 @@ describe("pageSizeHint", () => {
       [4, 5, 6],
       [7, 8, 9],
     ]);
-    expect(field("pages_waves")).toBe(2);
+    expect(field("flushes")).toBe(2);
   });
 
-  it.each([0, -1, 2.5, "3"])("ignores an unusable hint (%j)", async (pageSizeHint) => {
+  it("opens by bytes alone when either the cap or the cost is missing", async () => {
+    const capOnly = mockPagedLens();
+    const costOnly = mockPagedLens();
+    const three = [1, 2, 3].map(addr);
+    const { gasLimit, batch } = openAt(1);
+
+    const a = await withFacet(() => createTransport(capOnly, { gasLimit }).request(createRequest(three)));
+    const b = await withFacet(() => createTransport(costOnly).request(createRequest(three, batch)));
+
+    expect(capOnly).toHaveBeenCalledOnce();
+    expect(costOnly).toHaveBeenCalledOnce();
+    expect([a.field("gas_limit"), b.field("gas_limit")]).toEqual([undefined, undefined]);
+  });
+
+  it.each([
+    ["a non-positive cap", 0, { fixed: 0, item: { avg: 1_000_000 } }],
+    ["a negative fixed cost", 1_500_000, { fixed: -1, item: { avg: 1_000_000 } }],
+    ["a zero item cost", 1_500_000, { fixed: 0, item: { avg: 0 } }],
+    ["a non-numeric item cost", 1_500_000, { fixed: 0, item: { avg: "1000000" } }],
+    ["a negative spread", 1_500_000, { fixed: 0, item: { avg: 1_000_000, stddev: -1 } }],
+    ["a null cost", 1_500_000, null],
+    ["a cost that is not an object", 1_500_000, "cheap"],
+    ["a cost without an item", 1_500_000, { fixed: 0 }],
+    ["a null item", 1_500_000, { fixed: 0, item: null }],
+  ])("ignores %s", async (_name, gasLimit, gas) => {
     const requestFn = mockPagedLens();
 
     const { field } = await withFacet(() =>
-      createTransport(requestFn).request(createRequest([1, 2, 3].map(addr), { pageSizeHint })),
+      createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3].map(addr), { gas })),
     );
 
     expect(requestFn).toHaveBeenCalledOnce();
-    expect(field("page_size_hint")).toBeUndefined();
+    expect(field("gas_limit")).toBeUndefined();
   });
 });
 
@@ -524,13 +660,15 @@ describe("packing from telemetry", () => {
     ]);
   });
 
-  it("pools the whole wave before packing any tail", async () => {
+  it("packs a tail from the pool of every page that has landed", async () => {
     // Two opening chunks: one of cheap items, one of expensive ones, each stopping after two. Pooled,
     // the spread is wide enough that one item is all the budget admits with headroom; alone, the
     // cheap chunk would have asked for six.
     const requestFn = mockPagedLens({ pageSize: 2, budget: 6_000, itemGas: (v) => (v <= 4 ? 1_000 : 3_000) });
 
-    await createTransport(requestFn).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8].map(addr), { pageSizeHint: 4 }));
+    const { gasLimit, batch } = openAt(4);
+
+    await createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8].map(addr), batch));
 
     expect(requestedIndices(requestFn)).toEqual([[1, 2, 3, 4], [5, 6, 7, 8], [3], [4], [7], [8]]);
   });
@@ -544,22 +682,21 @@ describe("packing from telemetry", () => {
       delay: (first) => (first <= 4 ? 20 : 0),
     });
     const eight = [1, 2, 3, 4, 5, 6, 7, 8].map(addr);
+    const { gasLimit, batch } = openAt(4);
 
-    await createTransport(cheapFirst).request(createRequest(eight, { pageSizeHint: 4 }));
-    await createTransport(dearFirst).request(createRequest(eight, { pageSizeHint: 4 }));
+    await createTransport(cheapFirst, { gasLimit }).request(createRequest(eight, batch));
+    await createTransport(dearFirst, { gasLimit }).request(createRequest(eight, batch));
 
     expect(requestedIndices(dearFirst).slice(2).sort()).toEqual(requestedIndices(cheapFirst).slice(2).sort());
   });
 
   it("never packs below one element, however small the smallest frame", async () => {
     const requestFn = mockPagedLens({ pageSize: 2, budget: (first) => (first <= 4 ? 5_000 : 500) });
+    const { gasLimit, batch } = openAt(4);
 
-    const { field } = await withFacet(() =>
-      createTransport(requestFn).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8].map(addr), { pageSizeHint: 4 })),
-    );
+    await createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8].map(addr), batch));
 
     expect(requestedIndices(requestFn)).toEqual([[1, 2, 3, 4], [5, 6, 7, 8], [3], [4], [7], [8]]);
-    expect(field("page_size_suggested")).toBe(1);
   });
 
   it("packs a tail whole while no attempt has been costed", async () => {
@@ -572,13 +709,13 @@ describe("packing from telemetry", () => {
 
   it("takes the smallest frame seen as the request's budget", async () => {
     const requestFn = mockPagedLens({ pageSize: 2, budget: (first) => (first <= 2 ? 5_000 : 3_000) });
+    const { gasLimit, batch } = openAt(2);
 
     const { field } = await withFacet(() =>
-      createTransport(requestFn).request(createRequest([1, 2, 3, 4].map(addr), { pageSizeHint: 2 })),
+      createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4].map(addr), batch)),
     );
 
     expect(field("frame_gas")).toBe(3_000);
-    expect(field("page_size_suggested")).toBe(3);
   });
 
   it("packs a wide spread more conservatively than a flat one with the same mean", async () => {
@@ -593,7 +730,7 @@ describe("packing from telemetry", () => {
     expect(requestedIndices(spread)[1]).toEqual([3]);
   });
 
-  it("stamps the pooled telemetry and the hint it suggests", async () => {
+  it("stamps the pooled telemetry", async () => {
     const requestFn = mockPagedLens({ pageSize: 5, budget: 5_000 });
 
     const { field } = await withFacet(() =>
@@ -601,20 +738,410 @@ describe("packing from telemetry", () => {
     );
 
     expect(field("frame_gas")).toBe(5_000);
+    expect(field("fixed_gas")).toBe(100_000);
     expect(field("item_gas_avg")).toBe(1_000);
     expect(field("item_gas_stddev")).toBe(0);
     expect(field("item_gas_max")).toBe(1_000);
-    expect(field("page_size_suggested")).toBe(5);
   });
 
-  it("stamps only the frame when nothing was served", async () => {
+  it("reads the provider's cap back off the frame, the prologue and the calldata", async () => {
+    const requestFn = mockPagedLens();
+
+    const { field } = await withFacet(() => createTransport(requestFn).request(createRequest([1, 2, 3].map(addr))));
+
+    const sent = (requestFn.mock.calls[0]![0] as EthCallRequest).params[0].data as Hex;
+    expect(field("gas_limit_observed")).toBe(intrinsicGasOf(sent) + 100_000 + 10_000_000);
+  });
+
+  it("bounds a continuation by the smallest cap and the largest prologue any page reported", async () => {
+    // Two opening chunks report frames worth six and four attempts; the second also spent three
+    // thousand more before its first attempt. The cap is read off the first, the prologue off the
+    // second, and together they leave room for three attempts, which is what every tail is packed to.
+    const requestFn = mockPagedLens({
+      pageSize: 2,
+      budget: (first) => (first <= 6 ? 6_000 : 4_000),
+      fixed: (first) => (first <= 6 ? 100_000 : 103_000),
+    });
+    const { gasLimit, batch } = openAt(6);
+
+    const { field } = await withFacet(() =>
+      createTransport(requestFn, { gasLimit }).request(
+        createRequest(
+          [...Array(12).keys()].map((i) => addr(i + 1)),
+          batch,
+        ),
+      ),
+    );
+
+    expect(requestedIndices(requestFn).slice(2, 4)).toEqual([
+      [3, 4, 5],
+      [6, 9, 10],
+    ]);
+    expect(field("fixed_gas")).toBe(103_000);
+  });
+
+  it("packs a tail from the stated item cost while nothing has been served", async () => {
+    // Both opening pages die at their head, so the pool has a cap and a prologue but no attempt
+    // cost. The stated cost fills in, against the observed cap: one item per chunk here.
+    const requestFn = mockPagedLens({ starve: [1, 4], recoversAlone: true, budget: 1_500_000 });
+    const { gasLimit, batch } = openAt(3);
+
+    await createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4, 5, 6].map(addr), batch));
+
+    expect(requestedIndices(requestFn).slice(2).sort()).toEqual([[1], [2], [3], [4], [5], [6]]);
+  });
+
+  it("stamps only the frame's words when nothing was served", async () => {
     const requestFn = mockPagedLens({ starve: [1] });
 
     const { field } = await withFacet(() => createTransport(requestFn).request(createRequest([addr(1)])));
 
     expect(field("frame_gas")).toBe(10_000_000);
+    expect(field("fixed_gas")).toBe(100_000);
     expect(field("item_gas_avg")).toBeUndefined();
-    expect(field("page_size_suggested")).toBeUndefined();
+  });
+});
+
+describe("continuations", () => {
+  const eight = [1, 2, 3, 4, 5, 6, 7, 8].map(addr);
+
+  function gate() {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { held, release };
+  }
+
+  /** Resolves once `requestFn` has gone two ticks of the timer queue without a new call; nothing here does I/O. */
+  async function quiescence(...requestFns: ReturnType<typeof vi.fn>[]) {
+    const calls = () => requestFns.reduce((n, fn) => n + fn.mock.calls.length, 0);
+    for (let quiet = 0, seen = calls(); quiet < 2; ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const now = calls();
+      quiet = now === seen ? quiet + 1 : 0;
+      seen = now;
+    }
+  }
+
+  it("coalesces the small tails of several pages into one chunk", async () => {
+    // Four opening pages each leave one element behind; the four are sent together once nothing
+    // else is in flight, instead of as four requests.
+    const requestFn = mockPagedLens({ pageSize: 1, budget: 10_000 });
+    const { gasLimit, batch } = openAt(2);
+
+    const { result, field } = await withFacet(() =>
+      createTransport(requestFn, { gasLimit }).request(createRequest(eight, batch)),
+    );
+
+    expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n]);
+    expect(requestedIndices(requestFn).slice(0, 5)).toEqual([
+      [1, 2],
+      [3, 4],
+      [5, 6],
+      [7, 8],
+      [2, 4, 6, 8],
+    ]);
+    expect(field("continuations")).toBe("fill");
+    expect(field("flushes_full")).toBe(0);
+    expect(field("pages_continued")).toBe(7);
+  });
+
+  it("sends a full page while siblings are still in flight and holds a partial one for the drain", async () => {
+    // Frames worth three attempts; the third opening chunk answers late. Two early tails make
+    // more than a page: the page goes at once, its remainder waits for the third chunk.
+    const late = gate();
+    const requestFn = mockPagedLens({
+      pageSize: 2,
+      budget: 3_000,
+      hold: (first) => (first === 9 ? late.held : undefined),
+    });
+    const twelve = [...Array(12).keys()].map((i) => addr(i + 1));
+    const { gasLimit, batch } = openAt(4);
+
+    const request = withFacet(() => createTransport(requestFn, { gasLimit }).request(createRequest(twelve, batch)));
+    await quiescence(requestFn);
+    const early = requestedIndices(requestFn);
+    late.release();
+    const { result, field } = await request;
+
+    expect(early).toEqual([
+      [1, 2, 3, 4],
+      [5, 6, 7, 8],
+      [9, 10, 11, 12],
+      [3, 4, 7],
+    ]);
+    // Once the third chunk lands nothing earlier is open, so the remainder goes with the full page.
+    expect(requestedIndices(requestFn)).toEqual([...early, [7, 8, 11], [12], [11]]);
+    expect(decodeResults(result)).toHaveLength(12);
+    expect([field("flushes_full"), field("flushes_drain"), field("flushes_eager")]).toEqual([2, 2, 0]);
+    expect(field("flushes")).toBe(4);
+  });
+
+  it("sends the remainder with the full pages once nothing earlier could still add to it", async () => {
+    // Two opening chunks leave four tails that pack one per chunk. All four go out together: the
+    // full pages just dispatched belong to the next round and cannot feed this remainder.
+    const late = gate();
+    const requestFn = mockPagedLens({
+      pageSize: 2,
+      budget: 6_000,
+      itemGas: (v) => (v <= 4 ? 1_000 : 3_000),
+      hold: (first) => ([3, 4, 7].includes(first) ? late.held : undefined),
+    });
+    const { gasLimit, batch } = openAt(4);
+
+    const request = createTransport(requestFn, { gasLimit }).request(createRequest(eight, batch));
+    await quiescence(requestFn);
+    const early = requestedIndices(requestFn);
+    late.release();
+    await request;
+
+    expect(early).toEqual([[1, 2, 3, 4], [5, 6, 7, 8], [3], [4], [7], [8]]);
+  });
+
+  it("re-checks whether the pending tails fill a page when telemetry arrives without a tail", async () => {
+    // The first page leaves two cheap-looking elements pending. The second serves everything it
+    // was given, dearly; pooled, two attempts no longer fit with headroom, so one goes at once.
+    const requestFn = mockPagedLens({
+      pageSize: 2,
+      budget: 10_000,
+      itemGas: (v) => (v >= 5 ? 5_000 : 1_000),
+      delay: (first) => (first === 5 ? 20 : 0),
+    });
+    const { gasLimit, batch } = openAt(4);
+
+    await createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4, 5, 6].map(addr), batch));
+
+    expect(requestedIndices(requestFn)).toEqual([[1, 2, 3, 4], [5, 6], [3], [4]]);
+  });
+
+  it("under `eager`, sends each tail as its page lands", async () => {
+    const lateA = gate();
+    const lateB = gate();
+    const eager = mockPagedLens({
+      pageSize: 1,
+      budget: 10_000,
+      hold: (first) => (first === 3 ? lateA.held : undefined),
+    });
+    const fill = mockPagedLens({
+      pageSize: 1,
+      budget: 10_000,
+      hold: (first) => (first === 3 ? lateB.held : undefined),
+    });
+    const { gasLimit, batch } = openAt(2);
+    const four = [1, 2, 3, 4].map(addr);
+
+    const a = withFacet(() =>
+      createTransport(eager, { gasLimit }).request(createRequest(four, { ...batch, continuations: "eager" })),
+    );
+    const b = withFacet(() => createTransport(fill, { gasLimit }).request(createRequest(four, batch)));
+    await quiescence(eager, fill);
+    const eagerEarly = requestedIndices(eager);
+    const fillEarly = requestedIndices(fill);
+    lateA.release();
+    lateB.release();
+    const [{ field }] = await Promise.all([a, b]);
+
+    expect(eagerEarly).toEqual([[1, 2], [3, 4], [2]]);
+    expect(fillEarly).toEqual([
+      [1, 2],
+      [3, 4],
+    ]);
+    expect(requestedIndices(eager)).toEqual([[1, 2], [3, 4], [2], [4]]);
+    expect(requestedIndices(fill)).toEqual([[1, 2], [3, 4], [2, 4], [4]]);
+    expect(field("continuations")).toBe("eager");
+    expect([field("flushes_eager"), field("flushes_drain")]).toEqual([1, 1]);
+  });
+
+  it("reads an unknown mode as `fill`", async () => {
+    const requestFn = mockPagedLens({ pageSize: 1, budget: 10_000 });
+    const { gasLimit, batch } = openAt(2);
+
+    const { field } = await withFacet(() =>
+      createTransport(requestFn, { gasLimit }).request(
+        createRequest([1, 2, 3, 4].map(addr), { ...batch, continuations: "sideways" }),
+      ),
+    );
+
+    expect(requestedIndices(requestFn).slice(0, 3)).toEqual([
+      [1, 2],
+      [3, 4],
+      [2, 4],
+    ]);
+    expect(field("continuations")).toBe("fill");
+  });
+
+  it("maps a coalesced chunk's declines, death and tail back to the caller's indices", async () => {
+    // Opening pages stop after one; the coalesced chunk [2, 4, 6, 8] runs on: 4 is declined, 6
+    // dies and is retried alone, 8 is left behind and fetched after.
+    const requestFn = mockPagedLens({
+      pageSize: (first) => (first % 2 ? 1 : Infinity),
+      budget: 10_000,
+      decline: [4],
+      starve: [6],
+      recoversAlone: true,
+    });
+    const { gasLimit, batch } = openAt(2);
+
+    const { result, field } = await withFacet(() =>
+      createTransport(requestFn, { gasLimit }).request(createRequest(eight, batch)),
+    );
+
+    expect(decodePage(result)).toEqual({ results: [1n, 2n, 3n, 5n, 6n, 7n, 8n], skipped: [3] });
+    expect(requestedIndices(requestFn).slice(4)).toEqual([[2, 4, 6, 8], [6], [8]]);
+    expect(field("pages_escalated")).toBe(1);
+    expect(field("elements_unresolved")).toBe(0);
+  });
+
+  it("counts how deep the chain of continuations went", async () => {
+    const requestFn = mockPagedLens({ pageSize: 1, budget: 10_000 });
+
+    const { field } = await withFacet(() => createTransport(requestFn).request(createRequest([1, 2, 3].map(addr))));
+
+    expect(requestedIndices(requestFn)).toEqual([[1, 2, 3], [2, 3], [3]]);
+    expect(field("continuation_depth_max")).toBe(2);
+    expect(field("flushes")).toBe(2);
+  });
+
+  it("settles without an upstream call when every element is oversize", async () => {
+    const requestFn = mockPagedLens();
+
+    const { result, field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest([1, 2].map(addr), { batchSize: 100 })),
+    );
+
+    expect(requestFn).not.toHaveBeenCalled();
+    expect(decodePage(result)).toEqual({ results: [], skipped: [0, 1] });
+    expect(field("elements_declined_oversize")).toBe(2);
+  });
+
+  describe("failure", () => {
+    /** Serves one element per page, except that the chunk opening at `first` fails once `held` resolves. */
+    function failingAt(first: number, held: Promise<unknown>, lens = mockPagedLens({ pageSize: 1 })) {
+      return vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
+        if (addrValue(sentAddresses((args.params[0] as { data: Hex }).data)[0]!) !== first) return lens(args);
+        await held;
+        throw revertWith("0xdeadbeef");
+      });
+    }
+
+    it("dispatches nothing further once a chunk has failed", async () => {
+      // The first page's tail is pending when the second chunk fails; it is never sent.
+      const late = gate();
+      const requestFn = failingAt(3, late.held);
+      const { gasLimit, batch } = openAt(2);
+      const { logger, events } = createStubLogger();
+
+      const request = withLogging(
+        () => createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4].map(addr), batch)),
+        { logger },
+      );
+      request.catch(() => {});
+      await quiescence(requestFn);
+      late.release();
+
+      await expect(request).rejects.toThrow(/execution reverted/);
+      expect(requestedIndices(requestFn)).toEqual([
+        [1, 2],
+        [3, 4],
+      ]);
+      expect(findDotted(events[0]!.context, "viem-dlc-deployless", "eth_call.elements_fetched")).toBe(1);
+    });
+
+    it("lets chunks in flight settle, and commit, before the failure surfaces", async () => {
+      const late = gate();
+      const requestFn = failingAt(1, Promise.resolve(), mockPagedLens({ pageSize: 1, hold: () => late.held }));
+      const { gasLimit, batch } = openAt(2);
+      const { logger, events } = createStubLogger();
+      let settled = false;
+
+      const request = withLogging(
+        () => createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4].map(addr), batch)),
+        { logger },
+      );
+      request.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await quiescence(requestFn);
+      const settledEarly = settled;
+      late.release();
+
+      await expect(request).rejects.toThrow(/execution reverted/);
+      expect(settledEarly).toBe(false);
+      // The surviving chunk's page was committed, and its tail was never sent.
+      expect(findDotted(events[0]!.context, "viem-dlc-deployless", "eth_call.elements_fetched")).toBe(1);
+      expect(requestFn).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not escalate a death that lands after a failure", async () => {
+      const late = gate();
+      const lens = mockPagedLens({ starve: [3], recoversAlone: true, hold: () => late.held });
+      const requestFn = failingAt(1, Promise.resolve(), lens);
+      const { gasLimit, batch } = openAt(2);
+
+      const request = createTransport(requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4].map(addr), batch));
+      request.catch(() => {});
+      await quiescence(requestFn);
+      late.release();
+
+      await expect(request).rejects.toThrow(/execution reverted/);
+      expect(requestedIndices(requestFn)).toEqual([
+        [1, 2],
+        [3, 4],
+      ]);
+    });
+  });
+
+  it("under `fill`, holds a tail for the other half of a refused chunk", async () => {
+    // The halves are the round the tail waits on, so the held half gates the remainder; once it
+    // lands, both tails go out together.
+    const late = gate();
+    const lens = mockPagedLens({ pageSize: 1, budget: 10_000, hold: (first) => (first === 3 ? late.held : undefined) });
+    const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
+      if (sentAddresses((args.params[0] as { data: Hex }).data).length === 4) throw new Error("request too large");
+      return lens(args);
+    });
+
+    const request = createTransport(requestFn).request(createRequest([1, 2, 3, 4].map(addr)));
+    await quiescence(requestFn);
+    const early = requestedIndices(requestFn);
+    late.release();
+    await request;
+
+    expect(early).toEqual([
+      [1, 2, 3, 4],
+      [1, 2],
+      [3, 4],
+    ]);
+    expect(requestedIndices(requestFn).slice(0, 4)).toEqual([...early, [2, 4]]);
+  });
+
+  it("lets each half of a refused chunk settle on its own", async () => {
+    // The provider refuses the four-element chunk; the halves go out together, the second is held,
+    // and under `eager` the first half's tail does not wait for it.
+    const late = gate();
+    const lens = mockPagedLens({ pageSize: 1, budget: 10_000, hold: (first) => (first === 3 ? late.held : undefined) });
+    const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
+      if (sentAddresses((args.params[0] as { data: Hex }).data).length === 4) throw new Error("request too large");
+      return lens(args);
+    });
+
+    const request = withFacet(() =>
+      createTransport(requestFn).request(createRequest([1, 2, 3, 4].map(addr), { continuations: "eager" })),
+    );
+    await quiescence(requestFn);
+    const early = requestedIndices(requestFn);
+    late.release();
+    const { result, field } = await request;
+
+    expect(early).toEqual([[1, 2, 3, 4], [1, 2], [3, 4], [2]]);
+    expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n]);
+    expect([field("splits_size"), field("splits_max_depth")]).toEqual([1, 1]);
   });
 });
 

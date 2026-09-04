@@ -33,9 +33,15 @@ export const MAX_INITCODE_SIZE = 49_152;
  *   are greedy-packed under it and fetched in parallel. {@link MAX_INITCODE_SIZE} is the usual value.
  * @param opts.batch.compress FastLZ-compress calldata on the wire so more elements fit per chunk,
  *   at the cost of encoding time and decompression gas.
- * @param opts.batch.pageSizeHint Elements per chunk in the opening wave; later waves size themselves
- *   from what the pages report. Too high costs one continuation wave, too low costs extra parallel
- *   requests. Read `page_size_suggested` off the wide event to set it.
+ * @param opts.batch.gas The lens's cost, as the wide event reports it: `fixed` from `fixed_gas`,
+ *   `item.avg` and `item.stddev` from `item_gas_avg` and `item_gas_stddev`. With the transport's
+ *   `gasLimit`, sizes the opening wave; every later chunk is sized from what the pages report, the
+ *   stated cost standing in only until an attempt has been costed. Over-estimating costs extra
+ *   parallel requests, under-estimating costs one continuation.
+ * @param opts.batch.continuations When the elements a page did not reach are re-sent. `fill`
+ *   (default) pools them across pages and sends full pages at once and the remainder once no earlier
+ *   chunk that could still add to it is in flight: fewer requests. `eager` sends every tail as its
+ *   page lands: more requests, no waiting.
  * @param opts.cache Optional cache config. Honored by the `cache` transport only; if omitted,
  *   or when used with `deployless`, `batch` is still honored without caching.
  * @param opts.cache.blobKey Identifies the backing cache blob. Requests with the same
