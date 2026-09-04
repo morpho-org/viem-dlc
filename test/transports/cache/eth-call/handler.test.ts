@@ -42,6 +42,7 @@ import {
 } from "../../../../src/utils/deployless/codec.inner.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
 import { createStubLogger, findDotted } from "../../../helpers/logger.js";
+import { flatGas } from "../../../helpers/page.js";
 
 type EthCallRequest = EIP1193Parameters<CacheSchema, "eth_call">;
 
@@ -103,7 +104,7 @@ function wireBytesFor(count: number): number {
 }
 
 type PolicyOpts = {
-  batch?: { batchSize?: number; compress?: boolean };
+  batch?: { batchSize?: number; compress?: boolean; pageSizeHint?: number };
 };
 
 function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
@@ -181,7 +182,8 @@ function revertWithSentinel(payload: Hex): Error & { data: Hex } {
 }
 
 function pageRevert(types: string, results: readonly unknown[], skipped: readonly number[], died?: number) {
-  const page = { results: elementsOf(types, results), skipped, ...(died === undefined ? {} : { died }) };
+  const gas = flatGas(results.length + skipped.length);
+  const page = { results: elementsOf(types, results), skipped, gas, ...(died === undefined ? {} : { died }) };
   return revertWithSentinel(pageToWire(page));
 }
 
@@ -443,6 +445,16 @@ describe("handleEthCall", () => {
         expect((data.length - 2) / 2).toBeLessThanOrEqual(batchSize);
       }
 
+      expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
+    });
+
+    it("pageSizeHint caps the opening wave's chunks", async () => {
+      const requestFn = mockPagedFn();
+      const accounts = addrs(5);
+
+      const result = await handleEthCall(ctx(requestFn), createRequest(accounts, { batch: { pageSizeHint: 2 } }));
+
+      expect(requestFn.mock.calls.length).toBe(3);
       expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
     });
   });

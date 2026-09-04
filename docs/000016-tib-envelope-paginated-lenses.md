@@ -20,6 +20,11 @@ related:
 > out-of-gas marker or a provider's "out of gas" text) and its facets `splits_corpse` /
 > `corpse_errors` (the marker is now a thrown error); and the "Cold-start latency" and
 > "`MAX_ALLOC_BYTES` sizing" open risks.
+>
+> **Superseded in part by 000016-tib-page-telemetry.md**: the continuation rule "re-packed at the
+> count the page demonstrated" (now a prediction from per-page gas telemetry); the deferred
+> `itemsHint` in Derivation (shipped as `batch.pageSizeHint`; the remembered realized rate is declined
+> there); and what remains of the "Cold-start latency" risk.
 
 The gas model survives pagination for exactly one reason: the prologue isn't paginated. Work
 proportional to the *sent* count — envelope decompression, calldata copy, output allocation —

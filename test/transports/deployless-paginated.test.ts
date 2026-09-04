@@ -29,8 +29,9 @@ import {
   OOG_SENTINEL,
   unwrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
-import { pageToWire, wireToArray } from "../../src/utils/deployless/codec.inner.js";
+import { type PageGas, pageToWire, wireToArray } from "../../src/utils/deployless/codec.inner.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
+import { flatGas, gasOf } from "../helpers/page.js";
 
 type EthCallRequest = EIP1193Parameters<import("viem").PublicRpcSchema, "eth_call">;
 
@@ -94,13 +95,22 @@ function revertWith(data: Hex): Error & { data: Hex } {
   return err;
 }
 
-/** A lens response whose records are given verbatim. */
+/** The four telemetry words as they sit on the wire. */
+const header = ({ budget, sum, sumSquares, max }: PageGas) => word(budget) + word(sum) + word(sumSquares) + word(max);
+
+/** A lens response whose records are given verbatim, costed flat for every record but a death. */
 function revertWithRecords(...records: string[]) {
-  return revertWith(`${OK_SENTINEL}${word(records.length)}${records.join("")}` as Hex);
+  const served = records.filter((r) => !r.startsWith("ffff")).length;
+  return revertWith(`${OK_SENTINEL}${word(records.length)}${header(flatGas(served))}${records.join("")}` as Hex);
 }
 
-function revertWithPage(results: readonly bigint[], skipped: readonly number[], died?: number) {
-  const page = { results: results.map((r) => `0x${word(r)}` as Hex), skipped, ...(died === undefined ? {} : { died }) };
+function revertWithPage(results: readonly bigint[], skipped: readonly number[], gas: PageGas, died?: number) {
+  const page = {
+    results: results.map((r) => `0x${word(r)}` as Hex),
+    skipped,
+    gas,
+    ...(died === undefined ? {} : { died }),
+  };
   return revertWith(`${OK_SENTINEL}${pageToWire(page).slice(2)}` as Hex);
 }
 
@@ -113,26 +123,45 @@ type LensBehavior = {
   starve?: readonly number[];
   /** Whether a `starve` element resolves once it is the only element in the chunk. */
   recoversAlone?: boolean;
+  /** Gas an attempt on the element with this address value costs; flat when omitted. */
+  itemGas?: (value: number) => number;
+  /** What the lens's frame can spend on attempts, per chunk by its first address value; by default exactly `pageSize` flat attempts. */
+  budget?: number | ((firstValue: number) => number);
+  /** Milliseconds a chunk's response waits, by its first address value; to reorder completions. */
+  delay?: (firstValue: number) => number;
 };
 
 /**
  * A conforming paginated lens: walks its input in index order, stops after `pageSize` attempts,
  * declines `decline` elements and reports a gas death on `starve` elements (no per-element cap).
  */
-function mockPagedLens({ pageSize = Infinity, decline = [], starve = [], recoversAlone = false }: LensBehavior = {}) {
+function mockPagedLens({
+  pageSize = Infinity,
+  decline = [],
+  starve = [],
+  recoversAlone = false,
+  itemGas = () => 1_000,
+  budget = pageSize === Infinity ? 10_000_000 : pageSize * 1_000,
+  delay = () => 0,
+}: LensBehavior = {}) {
   return vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
     const addrs = sentAddresses((args.params[0] as { data: Hex }).data);
+    const first = addrValue(addrs[0]!);
+    const frame = typeof budget === "number" ? budget : budget(first);
+    await new Promise((resolve) => setTimeout(resolve, delay(first)));
     const results: bigint[] = [];
     const skipped: number[] = [];
+    const costs: number[] = [];
     for (let i = 0; i < addrs.length && i < pageSize; i++) {
       const value = addrValue(addrs[i]!);
       if (starve.includes(value) && !(recoversAlone && addrs.length === 1)) {
-        throw revertWithPage(results, skipped, i);
+        throw revertWithPage(results, skipped, gasOf(costs, frame), i);
       }
+      costs.push(itemGas(value));
       if (decline.includes(value)) skipped.push(i);
       else results.push(BigInt(value));
     }
-    throw revertWithPage(results, skipped);
+    throw revertWithPage(results, skipped, gasOf(costs, frame));
   });
 }
 
@@ -298,9 +327,9 @@ describe("deployless (paginated)", () => {
       const result = await transport.request(createRequest([1, 2, 3, 4].map(addr)));
 
       expect(decodePage(result)).toEqual({ results: [1n, 2n, 3n, 4n], skipped: [] });
-      // The death is retried exactly once, alone; the tail behind it is re-packed at the rate the
-      // page realized (one element served), so it comes back as singletons of its own.
-      expect(requestedIndices(requestFn)).toEqual([[1, 2, 3, 4], [2], [3], [4]]);
+      // The death is retried exactly once, alone. The tail behind it is packed from what the page
+      // reported about the element it did serve, not punished for the death, so it stays whole.
+      expect(requestedIndices(requestFn)).toEqual([[1, 2, 3, 4], [2], [3, 4]]);
     });
 
     it("stamps the escalation on the wide event", async () => {
@@ -398,6 +427,13 @@ describe("deployless (paginated)", () => {
       expect(error.message).toMatch(expected);
     });
 
+    it("propagates a page in the previous format as an ordinary revert", async () => {
+      const previous = `0xf90a85b5${word(1)}${success(1n)}` as Hex;
+      const requestFn = vi.fn().mockRejectedValue(revertWith(previous));
+
+      await expect(createTransport(requestFn).request(createRequest([addr(1)]))).rejects.toThrow(/execution reverted/);
+    });
+
     it("throws a malformed-input revert instead of halving it", async () => {
       const requestFn = vi.fn().mockRejectedValue(revertWith(`${MALFORMED_INPUT_SELECTOR}${"00".repeat(32)}` as Hex));
       const transport = createTransport(requestFn);
@@ -405,6 +441,161 @@ describe("deployless (paginated)", () => {
       await expect(transport.request(createRequest([1, 2, 3, 4].map(addr)))).rejects.toThrow(/rejected the input wire/);
       expect(requestFn).toHaveBeenCalledOnce();
     });
+  });
+});
+
+describe("pageSizeHint", () => {
+  it("caps the opening wave at the hint", async () => {
+    const requestFn = mockPagedLens();
+    const transport = createTransport(requestFn);
+
+    const { result, field } = await withFacet(() =>
+      transport.request(createRequest([1, 2, 3, 4, 5].map(addr), { pageSizeHint: 2 })),
+    );
+
+    expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n, 5n]);
+    expect(requestedIndices(requestFn)).toEqual([[1, 2], [3, 4], [5]]);
+    expect(field("pages_waves")).toBe(1);
+    expect(field("page_size_hint")).toBe(2);
+  });
+
+  it("recovers the wave a bytes-only opening always pays on a multi-page input", async () => {
+    const nine = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(addr);
+    const blind = mockPagedLens({ pageSize: 3 });
+    const hinted = mockPagedLens({ pageSize: 3 });
+
+    const a = await withFacet(() => createTransport(blind).request(createRequest(nine)));
+    const b = await withFacet(() => createTransport(hinted).request(createRequest(nine, { pageSizeHint: 3 })));
+
+    expect(decodeResults(a.result)).toEqual(decodeResults(b.result));
+    expect(requestedIndices(blind)).toEqual([
+      [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      [4, 5, 6],
+      [7, 8, 9],
+    ]);
+    expect(requestedIndices(hinted)).toEqual([
+      [1, 2, 3],
+      [4, 5, 6],
+      [7, 8, 9],
+    ]);
+    expect([a.field("pages_waves"), a.field("pages_continued")]).toEqual([2, 1]);
+    expect([b.field("pages_waves"), b.field("pages_continued")]).toEqual([1, 0]);
+  });
+
+  it("degrades to the bytes-only opening when the hint overshoots", async () => {
+    const nine = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(addr);
+    const requestFn = mockPagedLens({ pageSize: 3 });
+
+    const { field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest(nine, { pageSizeHint: 10 })),
+    );
+
+    expect(requestedIndices(requestFn)).toEqual([
+      [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      [4, 5, 6],
+      [7, 8, 9],
+    ]);
+    expect(field("pages_waves")).toBe(2);
+  });
+
+  it.each([0, -1, 2.5, "3"])("ignores an unusable hint (%j)", async (pageSizeHint) => {
+    const requestFn = mockPagedLens();
+
+    const { field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest([1, 2, 3].map(addr), { pageSizeHint })),
+    );
+
+    expect(requestFn).toHaveBeenCalledOnce();
+    expect(field("page_size_hint")).toBeUndefined();
+  });
+});
+
+describe("packing from telemetry", () => {
+  it("packs continuations at the rate the pages reported, not at the parent's count", async () => {
+    // The lens stops after two attempts for a reason of its own but reports a frame worth four.
+    const requestFn = mockPagedLens({ pageSize: 2, budget: 4_000 });
+
+    await createTransport(requestFn).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8, 9].map(addr)));
+
+    expect(requestedIndices(requestFn).slice(0, 3)).toEqual([
+      [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      [3, 4, 5, 6],
+      [7, 8, 9],
+    ]);
+  });
+
+  it("pools the whole wave before packing any tail", async () => {
+    // Two opening chunks: one of cheap items, one of expensive ones, each stopping after two. Pooled,
+    // the spread is wide enough that one item is all the budget admits with headroom; alone, the
+    // cheap chunk would have asked for six.
+    const requestFn = mockPagedLens({ pageSize: 2, budget: 6_000, itemGas: (v) => (v <= 4 ? 1_000 : 3_000) });
+
+    await createTransport(requestFn).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8].map(addr), { pageSizeHint: 4 }));
+
+    expect(requestedIndices(requestFn)).toEqual([[1, 2, 3, 4], [5, 6, 7, 8], [3], [4], [7], [8]]);
+  });
+
+  it("packs the same tails whichever chunk settles first", async () => {
+    const cheapFirst = mockPagedLens({ pageSize: 2, budget: 6_000, itemGas: (v) => (v <= 4 ? 1_000 : 3_000) });
+    const dearFirst = mockPagedLens({
+      pageSize: 2,
+      budget: 6_000,
+      itemGas: (v) => (v <= 4 ? 1_000 : 3_000),
+      delay: (first) => (first <= 4 ? 20 : 0),
+    });
+    const eight = [1, 2, 3, 4, 5, 6, 7, 8].map(addr);
+
+    await createTransport(cheapFirst).request(createRequest(eight, { pageSizeHint: 4 }));
+    await createTransport(dearFirst).request(createRequest(eight, { pageSizeHint: 4 }));
+
+    expect(requestedIndices(dearFirst).slice(2).sort()).toEqual(requestedIndices(cheapFirst).slice(2).sort());
+  });
+
+  it("takes the smallest frame seen as the request's budget", async () => {
+    const requestFn = mockPagedLens({ pageSize: 2, budget: (first) => (first <= 2 ? 5_000 : 3_000) });
+
+    const { field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest([1, 2, 3, 4].map(addr), { pageSizeHint: 2 })),
+    );
+
+    expect(field("frame_gas")).toBe(3_000);
+    expect(field("page_size_suggested")).toBe(3);
+  });
+
+  it("packs a wide spread more conservatively than a flat one with the same mean", async () => {
+    const flat = mockPagedLens({ pageSize: 2, budget: 6_000, itemGas: () => 2_000 });
+    const spread = mockPagedLens({ pageSize: 2, budget: 6_000, itemGas: (v) => (v % 2 ? 1_000 : 3_000) });
+    const six = [1, 2, 3, 4, 5, 6].map(addr);
+
+    await createTransport(flat).request(createRequest(six));
+    await createTransport(spread).request(createRequest(six));
+
+    expect(requestedIndices(flat)[1]).toEqual([3, 4, 5]);
+    expect(requestedIndices(spread)[1]).toEqual([3]);
+  });
+
+  it("stamps the pooled telemetry and the hint it suggests", async () => {
+    const requestFn = mockPagedLens({ pageSize: 5, budget: 5_000 });
+
+    const { field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(addr))),
+    );
+
+    expect(field("frame_gas")).toBe(5_000);
+    expect(field("item_gas_avg")).toBe(1_000);
+    expect(field("item_gas_stddev")).toBe(0);
+    expect(field("item_gas_max")).toBe(1_000);
+    expect(field("page_size_suggested")).toBe(5);
+  });
+
+  it("stamps only the frame when nothing was served", async () => {
+    const requestFn = mockPagedLens({ starve: [1] });
+
+    const { field } = await withFacet(() => createTransport(requestFn).request(createRequest([addr(1)])));
+
+    expect(field("frame_gas")).toBe(10_000_000);
+    expect(field("item_gas_avg")).toBeUndefined();
+    expect(field("page_size_suggested")).toBeUndefined();
   });
 });
 

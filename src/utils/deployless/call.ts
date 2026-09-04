@@ -15,7 +15,7 @@ import {
   isOutOfGasRevert,
   wrapDeploylessFactoryCall,
 } from "./codec.envelope.js";
-import { arrayToWire, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
+import { arrayToWire, hexToPage, type Page, type PageGas, type ResolvedArrayFunction } from "./codec.inner.js";
 
 type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
@@ -26,6 +26,7 @@ type FactorisedFactoryCallParams = {
   batch?: {
     batchSize?: number;
     compress?: boolean;
+    pageSizeHint?: number;
   };
   restOfEthCallParams: RestOfEthCallParams;
   /**
@@ -52,9 +53,10 @@ export type FactorisedFactoryCallResult = {
 
 /**
  * Packs `elements` into deployless-factory `eth_call` chunks under the wire budget
- * (`batch.batchSize`, at most EIP-3860's initcode cap), fetches them in parallel, and returns
- * per-element outputs aligned to `elements`. No gas is modelled: the envelope reports how far it
- * got and an element gas could not resolve is retried once alone.
+ * (`batch.batchSize`, at most EIP-3860's initcode cap) and, for the opening wave, `batch.pageSizeHint`
+ * elements; fetches them in parallel; returns per-element outputs aligned to `elements`. Every
+ * page reports how far it got and what its attempts cost, so the waves after the first are packed
+ * by {@link predictItems} and an element gas could not resolve is retried once alone.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
@@ -96,14 +98,20 @@ export async function factorisedFactoryCall(
 
   const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
   const fits = (start: number, end: number) => wireCap === Infinity || measureWireBytes(start, end) <= wireCap;
+  const hint = batch?.pageSizeHint;
+  const pageSizeHint = hint !== undefined && Number.isSafeInteger(hint) && hint > 0 ? hint : Infinity;
 
-  const packed = packBatches({ count: elements.length, maxItems: Infinity, fits });
+  const packed = packBatches({ count: elements.length, maxItems: pageSizeHint, fits });
   oversize.push(...packed.oversize);
   missing.push(...oversize);
   const ranges = packed.ranges;
   const outputs = new Array<Hex>(elements.length);
 
-  facet?.set({ elements_requested: elements.length, nominal_batches: ranges.length });
+  facet?.set({
+    elements_requested: elements.length,
+    nominal_batches: ranges.length,
+    ...(pageSizeHint === Infinity ? {} : { page_size_hint: pageSizeHint }),
+  });
   // Sizes of the *initial* packing, to compare realized utilization against the wire budget.
   // Halved children and continuations are not resampled. Guarded rather than
   // `facet?.stat(...)` so unobserved calls skip re-measuring.
@@ -113,6 +121,7 @@ export async function factorisedFactoryCall(
   // A lens stopping early is a continuation, a mid-page gas death an escalation; neither is a
   // split, which means only "the provider refused the request's size or timed out".
   const pages = { continued: 0, waves: 0, escalated: 0, unresolvedAttempts: 0, allSkipped: 0 };
+  let gas: GasStats | undefined;
 
   const commit = async (entries: readonly ResolvedElement[]) => {
     for (const { index, output } of entries) outputs[index] = output;
@@ -120,7 +129,7 @@ export async function factorisedFactoryCall(
     if (entries.length > 0) await onResolved?.(entries);
   };
 
-  /** Re-packs `[from, to)` under the wire budget and an item cap the lens just demonstrated. */
+  /** Re-packs `[from, to)` under the wire budget and an item cap. */
   const packRange = (from: number, to: number, maxItems: number): BatchRange[] =>
     packBatches({
       count: to - from,
@@ -130,8 +139,7 @@ export async function factorisedFactoryCall(
 
   const fetchRecursive = async (
     [start, end]: BatchRange,
-    /** Ranges deferred to the next wave: continuations and singleton escalations. */
-    nextWave: BatchRange[],
+    nextWave: Deferred,
     precomputed?: Hex,
     timeoutSplitsRemaining = 1,
     depth = 0,
@@ -191,6 +199,7 @@ export async function factorisedFactoryCall(
 
     const page = hexToPage(solidity.outputLayout, returndata);
     const attempted = validatePage(page, count);
+    gas = pool(gas, page.gas, attempted - (page.died === undefined ? 0 : 1));
     facet?.stat("page_adjudicated", attempted);
     if (page.died === undefined && page.results.length === 0 && page.skipped.length > 0) pages.allSkipped += 1;
 
@@ -208,7 +217,7 @@ export async function factorisedFactoryCall(
       const pos = start + page.died;
       if (count > 1) {
         pages.escalated += 1;
-        nextWave.push([pos, pos + 1]);
+        nextWave.singletons.push([pos, pos + 1]);
       } else {
         missing.push(pos);
         unresolved.push(pos);
@@ -217,8 +226,7 @@ export async function factorisedFactoryCall(
 
     if (attempted < count) {
       pages.continued += 1;
-      const served = attempted - (page.died === undefined ? 0 : 1);
-      nextWave.push(...packRange(start + attempted, end, served > 0 ? served : Infinity));
+      nextWave.tails.push([start + attempted, end]);
     }
   };
 
@@ -226,14 +234,17 @@ export async function factorisedFactoryCall(
   try {
     while (wave.length > 0) {
       pages.waves += 1;
-      const nextWave: BatchRange[] = [];
+      const nextWave: Deferred = { tails: [], singletons: [] };
       const isWholeInput = wave.length === 1 && wave[0]![0] === 0 && wave[0]![1] === elements.length;
       await settleAll(
         wave.map((range) => fetchRecursive(range, nextWave, isWholeInput ? getReferenceWrapped() : undefined)),
       );
-      wave = nextWave;
+      // Tails are packed only once the whole wave has reported, so every one sees the same pool.
+      const cap = gas === undefined ? Infinity : predictItems(gas);
+      wave = [...nextWave.singletons, ...nextWave.tails.flatMap(([from, to]) => packRange(from, to, cap))];
     }
   } finally {
+    if (gas !== undefined) facet?.set(gasFields(gas));
     facet?.set({
       elements_fetched: fetched,
       splits_count: splits.count,
@@ -256,6 +267,66 @@ export async function factorisedFactoryCall(
     missing: missing.sort((a, b) => a - b),
     unresolved: unresolved.sort((a, b) => a - b),
     oversize: oversize.sort((a, b) => a - b),
+  };
+}
+
+/** The gas telemetry of every page a request has seen, pooled; `budget` is the smallest frame's. */
+type GasStats = { budget: bigint; served: bigint; sum: bigint; sumSquares: bigint; max: bigint };
+
+function pool(stats: GasStats | undefined, page: PageGas, served: number): GasStats {
+  if (stats === undefined) return { ...page, served: BigInt(served) };
+  return {
+    budget: page.budget < stats.budget ? page.budget : stats.budget,
+    served: stats.served + BigInt(served),
+    sum: stats.sum + page.sum,
+    sumSquares: stats.sumSquares + page.sumSquares,
+    max: page.max > stats.max ? page.max : stats.max,
+  };
+}
+
+/**
+ * Deviations of headroom a predicted chunk keeps below the budget. Were attempt costs uncorrelated,
+ * a chunk's deviation would be `σ·√k` and Cantelli would bound overshoot at `1 / (1 + z²)`, one in
+ * five at `z = 2`; warm storage and ordering correlate them, so this is a target, not a bound. An
+ * overshoot costs one continuation, packed from more data.
+ */
+const PACKING_SIGMAS = 2;
+
+/**
+ * The largest chunk whose cost, `k·μ + z·σ·√k` for the pooled mean and deviation of one attempt,
+ * fits the budget. `Infinity` before any attempt has been costed.
+ */
+function predictItems(gas: GasStats): number {
+  if (gas.served === 0n) return Infinity;
+  const { mean, sigma, budget } = moments(gas);
+  const z = PACKING_SIGMAS;
+  const fits = (k: number) => k * mean + z * sigma * Math.sqrt(k) <= budget;
+  const root = (-z * sigma + Math.sqrt(z * z * sigma * sigma + 4 * mean * budget)) / (2 * mean);
+  let k = Math.floor(root * root);
+  if (fits(k + 1)) k += 1;
+  while (k > 1 && !fits(k)) k -= 1;
+  return Math.max(1, k);
+}
+
+/** Mean and population deviation of one attempt's cost; the variance's numerator stays exact in bigint. */
+function moments({ budget, served, sum, sumSquares }: GasStats) {
+  const n = Number(served);
+  return {
+    budget: Number(budget),
+    mean: Number(sum) / n,
+    sigma: Math.sqrt(Number(served * sumSquares - sum * sum)) / n,
+  };
+}
+
+function gasFields(gas: GasStats): Record<string, number> {
+  if (gas.served === 0n) return { frame_gas: Number(gas.budget) };
+  const { budget, mean, sigma } = moments(gas);
+  return {
+    frame_gas: budget,
+    item_gas_avg: mean,
+    item_gas_stddev: sigma,
+    item_gas_max: Number(gas.max),
+    page_size_suggested: predictItems(gas),
   };
 }
 
@@ -291,6 +362,9 @@ async function fetchChunk(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: He
 }
 
 type BatchRange = readonly [start: number, end: number];
+
+/** What a wave hands the next one: continuation tails, packed once the wave has settled, and singleton escalations. */
+type Deferred = { tails: BatchRange[]; singletons: BatchRange[] };
 
 type PackBatchesArgs = {
   count: number;
