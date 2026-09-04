@@ -19,7 +19,8 @@ the client packs every wave after the first from measurement, and the opening wa
 figures — the provider's cap on the transport, the lens's cost on the policy — that only ever cost
 a round trip when wrong. The caller-facing response is TIB 000012's `(results, skipped)`,
 byte-for-byte. No gas number is configured for correctness, none is fitted, and the constants
-that remain are measured against adversary fixtures or read from the protocol.
+that remain are measured against adversary fixtures or read from the protocol, with one stated
+policy target for prediction headroom.
 
 This document consolidates four earlier TIBs written against the same baseline (envelope-driven
 pagination, the outcome stream, streaming decompression, page telemetry); their originals are in
@@ -42,13 +43,13 @@ git history. It describes the system as it stands.
 - **No number from the author about the lens is load-bearing.** Static sizes come from the ABI;
   dynamic sizes come from the elements and the results themselves. The only figures a caller can
   set — a provider's cap and a lens's measured cost — size the opening wave and nothing else.
-- **Every page is an uncensored observation.** Whether or not it stopped for gas, a page reports
+- **Every served attempt is an observation.** Whether or not it stopped for gas, a page reports
   the budget its frame had, what the frame spent before its first attempt, and the sum, sum of
-  squares and maximum of per-attempt gas. Waves after the first are packed from the request's own
+  squares and maximum of per-attempt gas over every element but a death. Waves after the first are packed from the request's own
   pooled observations, never from the count of one parent page; the opening wave is packed by the
   same estimator from the stated figures.
-- **Every figure the caller can set is readable off any observed request**, in the units it is set
-  in, on the wide event.
+- **The value for every figure the caller can set is readable off any observed request**, in the
+  units it is set in, on the wide event.
 - **The caller's response does not change.** `readLens` and `readContract` receive
   `(U[] results, uint256[] skipped)`; a partial result is a successful response; cache keys and
   cached values are raw element bytes.
@@ -300,13 +301,13 @@ than the post-call path needs.
 | `dwork(L)` | pre-split, compressed only | producing and copying out `L` bytes: the worst per-byte token cost, one overshooting token, one rebase and the copy-out: `300·L + 3·⌈L/32⌉ + 9000` |
 | `cpost` | post-split | the longest path from the call's return to a valid exit: classification, the head check and deposit calculation for dynamic output, one record store, the telemetry accounting, the header patch, `revert` over expanded memory, or the next iteration's admission and its refusal: `1400` |
 
-The values are pinned in the Yul where they are set, by the adversary fixtures in Verification,
-not derived here. `cpost` is pinned by a callee that returns with almost nothing left, so the
-post-call path runs on the retained 1/64 alone; `dwork`'s per-byte term by a 6 KiB element encoded
-as one-byte literals, since a pre-split shortfall reaches the reserve at 1/64 and only a large
-element can move it. Every other fixture passes with the constants far too low, because a prompt
-return refunds what the post-call path needs. A term without an adversary is unpinned, whatever the
-sweeps say.
+The values are set in the Yul and guarded by the adversary fixtures in Verification, which are
+the fixtures that fail when a constant is too low. `cpost`'s adversary is a callee that returns
+with almost nothing left, so the post-call path runs on the retained 1/64 alone; `dwork`'s per-byte
+term's is a 6 KiB element encoded as one-byte literals, since a pre-split shortfall reaches the
+reserve at 1/64 and only a large element can move it. Every other fixture passes with the constants
+far too low, because a prompt return refunds what the post-call path needs. A term without an
+adversary is unguarded, whatever the sweeps say.
 
 Proof sketch. After admission the frame holds `> need`. The pre-split spend is `≤ expansion + apre
 [+ dwork]`, so the gas available to the call is `> 64·cpost` and EIP-150 retains `> cpost` however
@@ -403,9 +404,11 @@ works from the array-shaped fragment `f(T[]) returns (U[] results, uint256[] ski
 what the caller's calldata is encoded with and what `policy.abi` carries, and derives the per-item
 fragment from it (`itemFragmentOf`), whose selector goes into `config`. `arrayifiedAbi` is the
 inverse and the only supported way to produce the array-shaped fragment: it takes the per-item
-fragment from the contract's real ABI, so the name and types are the compiler's. Both transforms
-accept exactly one input parameter and one output and remove or add exactly the terminal `[]`,
-preserving names and tuple components. This is the one place a wrong fragment fails silently — a
+fragment from the contract's real ABI, so the name and types are the compiler's; it requires exactly
+one `view`/`pure` input and one output, appends `[]` to each, and names the outputs `results` and
+`skipped`. `itemFragmentOf` removes the terminal `[]` from the sole input and the first output,
+preserving tuple components and parameter names. This is the one place a wrong fragment fails
+silently — a
 per-item selector the lens does not implement makes every call revert and every element a plain
 skip — and `pages_all_skipped` is the diagnostic.
 
@@ -435,9 +438,9 @@ sum may exceed the budget: the last attempt admitted may spend into the reserve.
 decoder accepts is a well-formed page. The death is consumed inside the request and never reaches
 the caller's array.
 
-**Packing and waves.** Chunks honour the wire cap — `batch.batchSize`, at most EIP-3860's
-`MAX_INITCODE_SIZE` — and, for the opening wave, a gas prediction when the caller has stated its
-inputs. An element that alone exceeds the wire cap is declined client-side with no request made.
+**Packing and waves.** Chunks honour the wire cap — `batch.batchSize`, for which EIP-3860's
+`MAX_INITCODE_SIZE` is the natural value; without one, chunks are bounded only by what the provider
+accepts — and, for the opening wave, a gas prediction when the caller has stated its inputs. An element that alone exceeds the wire cap is declined client-side with no request made.
 The greedy packer takes the longest prefix that fits, by binary search with a linear shrink for
 measures that are not perfectly monotone (the compressed byte measure is one).
 
@@ -468,8 +471,9 @@ k·μ + z·σ·√k ≤ budget        μ = sum / served,  σ² = (served·sumSqu
 
 `z = PACKING_SIGMAS = 2`; `Infinity` while nothing has been served, and never below one element.
 Tails are packed only after the whole wave has settled, so every tail of a wave sees the same
-pool. The stated figures play no further part: a tail is a sub-range of a chunk that fit them, and
-every term is monotone in the range.
+pool. The repacker reuses the same fit predicate, but the stated figures cannot bind there: a tail is
+a sub-range of a chunk that fit them, and every term is monotone in the range up to the compressed
+path's few-gas wobble noted under Open risks.
 
 The outcome protocol:
 
@@ -478,8 +482,8 @@ The outcome protocol:
 | page, no death | complete, or stopped at the floor | commit; the tail joins the next wave, packed from the pool |
 | page, death at `k`, chunk count > 1 | `k` could not be resolved in this frame | commit the prefix; retry `k` alone next wave — minimal prologue, the strongest grant this client can construct; the tail behind it joins the pool-packed wave |
 | page, death, chunk count == 1 | the element died, or was refused at the head, holding a singleton's grant | terminal: a plain `skipped` entry, counted in `elements_unresolved` |
-| size error (HTTP 413, "too large", initcode size) | the provider refused the request's size | halve |
-| timeout | possibly batch-induced, possibly a slow upstream | halve once per chunk, then propagate |
+| size error (HTTP 413, "too large", initcode size) | the provider refused the request's size | halve; a singleton propagates |
+| timeout | possibly batch-induced, possibly a slow upstream | halve once per chunk while it holds more than one element, then propagate |
 | `OOG_SENTINEL` | the factory or the lens constructor ran out of gas under this node's cap | thrown; a smaller chunk cannot cure it |
 | `CounterfactualDeployFailed` | target occupied, constructor reverted, or no code at `target` | thrown |
 | `MalformedResult` | a lens result that does not fit its declared layout | thrown |
@@ -507,28 +511,33 @@ halving terminates classically, so the wave loop terminates without counters.
 | `page_size_suggested` | `predictItems` of the pool: what a continuation would be packed at |
 | `gas_limit_observed` | the smallest `intrinsic + fixed + budget`: the cap the provider actually granted |
 
-The cache handler restamps the caller-facing element counts after dedup so telemetry matches the
-array the caller receives; a full cache hit or an empty input never reaches the packer and carries
-none of these. The recipe for the opening wave: run under observability, take `fixed_gas`,
+The cache handler counts `elements_requested` and `elements_fetched` over deduplicated misses and
+restamps `elements_missing`, `elements_unresolved` and `elements_declined_oversize` after rebasing,
+so those match the array the caller receives; a full cache hit or an empty input never reaches the
+packer and carries none of these. The recipe for the opening wave: run under observability, take `fixed_gas`,
 `item_gas_avg` and `item_gas_stddev` for the policy and `gas_limit_observed` for each transport. A
 `gas_limit` above `gas_limit_observed` is a cap the provider has since lowered.
 
 **Transports.** `deployless(http(url), { gasLimit? })` intercepts only calls carrying the
 `policy(...)` sentinel in `stateOverride`. `cache(http(url), [{ binSize, store, invalidationStrategy,
-gasLimit? }, …])` does the same and keys element bytes by `(targetTo, factory, factoryData,
-selector, element)`. Each documents `gasLimit` itself and exposes it on its value. Behind
-`failover`, each branch states its own.
+gasLimit? }, …])` does the same and keys element bytes by the deployless target (`targetTo`,
+`factory`, `factoryData`), the array-shaped selector, the element, and the rest of the `eth_call`
+parameters (block reference, remaining state overrides, block overrides), under a blob keyed by
+chain and `policy.cache.blobKey`. Each documents `gasLimit` itself and exposes it on its value.
+Behind `failover`, each branch states its own.
 
 ### Accounting
 
 - Envelope initcode: 2,621 bytes, under 6% of the 49,152-byte cap.
 - Per element on a trivial lens (`test/forge/Gas.t.sol`, `page(110) − page(10)`): about 2,850 gas
   clear and 4,780 compressed, including the warm `STATICCALL`, staging, admission, the record
-  write and the telemetry; the snapshot lines are 1,393,350 and 1,658,772 per hundred. Real lenses
-  cost 7k–100k per element, so the overhead is 5–40% on the clear path.
-- Constants: `apre(argsLen) = 200 + 3·⌈argsLen/32⌉`, `cpost = 1400` (the drained-callee adversary
-  fails at 1,100 and passes at 1,200), `dwork(L) = 300·L + 3·⌈L/32⌉ + 9000`, history
-  `2·8192 + 320`, death slack 32, deploy-death threshold `gasBefore/32`, `PACKING_SIGMAS = 2`.
+  write and the telemetry; the snapshot lines are 1,393,350 and 1,658,772 per hundred. The
+  downstream fleet's lenses, by their previously fitted per-element coefficients, cost 7k–100k per
+  element, so the overhead is 5–40% on the clear path.
+- Constants: `apre(argsLen) = 200 + 3·⌈argsLen/32⌉`, `cpost = 1400`, `dwork(L) = 300·L +
+  3·⌈L/32⌉ + 9000`, history `2·8192 + 320`, death slack 32, deploy-death threshold `gasBefore/32`,
+  `PACKING_SIGMAS = 2` (a policy target, not a measurement). The suites run the adversaries at the
+  shipped values; the calibration that set them is in Derivation.
 - Intrinsic gas: `21000 + 32000 + 4·zeros + 16·nonzeros + 2·⌈bytes/32⌉ + 2`, Ethereum's schedule.
 
 ## Scope & files
@@ -573,11 +582,11 @@ Yul through the package's own script and fails if the pasted constant has drifte
   cannot afford as a death that the same element alone survives.
 - The wire: body-length mismatch, misaligned, overlong and zero lengths, trailing and truncated
   records, each `MalformedInput(i)`.
-- Compression: 100,000 identical elements under a 2M grant page (the pre-streaming envelope was a
-  corpse at every grant); rebases inside both `materialize`s of one dynamic element; witness streams
-  decode; a literal and a match straddling a record; tokens past `ipEnd`, exhaustion mid-record,
-  back-references before the history, trailing tokens, overshoot past the body, each
-  `MalformedInput`.
+- Compression: 50,000 identical 64-byte elements under a 2M grant page (the pre-streaming envelope
+  was a corpse at every grant); rebases inside both `materialize`s of one dynamic element and
+  across back-references that straddle one; the one-byte-literal and distance-one witness streams
+  decode; tokens past `ipEnd`, exhaustion mid-record, back-references before the history, trailing
+  tokens, overshoot past the body, each `MalformedInput`.
 - Telemetry: the per-attempt mean tracks the frame's marginal cost within 10%; declines are
   charged; a head death and a head refusal charge nothing, and the refusal's budget saturates
   rather than wraps; a page that dies at 4 charges within 1% of a page over its first four; a
@@ -609,8 +618,9 @@ three-per-page lens, degradation when the cost is understated, and bytes-only pa
 side is missing or any figure is malformed; the fields stamped, `gas_limit_observed` reconstructing
 the mock's cap; dedup restamping through the cache handler.
 
-**Real node**: a lens end-to-end through `readLens`, including a replicated input large enough to
-force several pages, with every element accounted for and no corpse.
+**Real node** (performed against a live chain during the work, not in CI): a lens end-to-end
+through `readLens`, including a replicated input large enough to force several pages, with every
+element accounted for and no corpse.
 
 `pnpm typecheck`, `pnpm exec biome check .`.
 
@@ -681,10 +691,11 @@ force several pages, with every element accounted for and no corpse.
   fewer or more zero bytes. Each element adds at least `avg`, so the total only fails to be
   monotone for an `avg` below a wobble of a few dozen gas, which the packer's linear shrink
   tolerates.
-- **Deterministic envelope errors replay across `failover` branches.** `MalformedResult` and
-  `MalformedInput` are plain thrown errors that the failover's default classifier does not treat as
-  terminal, so a codec or lens bug is retried against every provider before surfacing. Low impact;
-  in the backlog.
+- **Thrown envelope errors replay across `failover` branches.** The four are plain `Error`s
+  wrapping viem's revert, and the failover's default classifier inspects only the outer error, so
+  each is retried against every provider before surfacing. For the deploy out-of-gas that is
+  desirable — another cap may fit — but `MalformedResult`, `MalformedInput` and
+  `CounterfactualDeployFailed` are deterministic. Low impact; in the backlog.
 
 ## Notes
 
@@ -722,11 +733,11 @@ barely above `64·cpost` rounds below `cpost`, so the pre-split terms are added 
 strict. The claim is a margin-bearing inequality probed at the boundary; only the shape of the
 argument is structural.
 
-**Why a stream and not a bitmap in consumed bytes.** A bitmap is denser and was designed in full. It
-needs an exit relocation, a per-attempt pre-touch that includes it, and a proof that it never
-overtakes what the decompressor still reads. The stream needs none of those: exit is one `revert`,
-nothing is relocated, and no region is shared. Legibility of the envelope is worth more than the
-payload bytes.
+**Why a stream and not a bitmap in consumed bytes.** A bitmap is denser but needs an exit
+relocation, a per-attempt pre-touch that includes it, and a proof that it never overtakes what the
+decompressor still reads. The stream needs none of those: exit is one `revert`, nothing is
+relocated, and no region is shared. Legibility of the envelope is worth more than the payload
+bytes.
 
 **Why `~i`.** `-i` cannot tag index 0, and the head is the tag's most important case. An
 offset-by-one scheme could, but it would renumber every untagged entry. `~i` leaves declines
@@ -760,10 +771,9 @@ intent ranks "no numbers from the author" above that corner.
 the one path to an unbounded memory access, and the client wrote the wire. A decline would hide a
 codec bug as a skipped element.
 
-**Why one envelope.** Two files existed to keep the uncompressed initcode small, and "copied
-verbatim" was the price: every fix landed twice, with two constants and two drift guards. In
-`eth_call` no calldata is billed and initcode meters at 2 gas per word, so the loop is written once
-and compression is a branch in `prepare` and `stage`.
+**Why one envelope.** In `eth_call` no calldata is billed and initcode meters at 2 gas per word,
+so keeping a smaller uncompressed variant buys nothing; the loop is written once and compression is
+a branch in `prepare` and `stage`, with one constant and one drift guard.
 
 **Why a fixed history and not a record-sized ring.** A ring sized by the chunk's largest record
 puts an element-sized expansion back into the prologue and makes every attempt reserve for the
@@ -865,10 +875,12 @@ admission, deleting the budget and the corpse class, and a new protocol error fo
 They diverged on skip encoding (bitmap in consumed bytes vs. stream — stream chosen), on dynamic
 output (pre-split touch to a bound vs. post-call admission — post-call, so the bound can go), on a
 version word (folded into the sentinel), and on floor derivation (audited opcode counts vs.
-boundary tests — boundary tests, but covering every post-call path). Review found death records
+boundary tests — boundary tests, but covering every post-call path). The bitmap was designed in
+full before the stream was chosen. Review found death records
 that did not advance `P`, a head refusal into untouched memory, an unsigned-subtraction `E`, the
 head check before the size check, and a decoder that trusted record order; it moved staging into
-the record slot for both paths and merged the two envelopes.
+the record slot for both paths and merged the two envelopes, which had existed to keep the
+uncompressed initcode small at the price of every fix landing twice.
 
 **Streaming decompression** (2026-09-03). Review of the same plans replaced a record-sized ring
 with the fixed history, moved the pump target to a length relative to `cur`, added the token and
@@ -883,7 +895,8 @@ protocol change once the censoring argument surfaced: a remembered rate across r
 first, could only learn upward by overshooting under count-only pages. Review caught that
 predictions must use the usable budget (raw frame gas over-packs every continuation by `64·cpost/μ`)
 and that tails must wait for the wave's pool. `cpost` rose from 1,200 to 1,400 for the post-call
-accounting.
+accounting: the drained-callee adversary failed at 1,100 and passed at 1,200 when swept during
+calibration, and 1,400 carries the margin.
 
 **The opening wave** (2026-09-04). A count hint (`batch.pageSizeHint`) shipped and was withdrawn as
 provider-dependent. Dividing the cap by a stated per-item cost alone was declined for the numerator;
@@ -907,7 +920,8 @@ Declined along the way:
   the page after a death** on the retained gas; **a gas-estimate tier**; **enforced naming**;
   **adaptive measurement as the primary stop**; **geometric sub-chunk doubling**; **truncating
   oversized results**; **checkpointing via storage** from a `staticcall`; **a client-side probe
-  call** before packing.
+  call** before packing; **a `pages_floor_stopped` facet** (a duplicate of `pages_continued`); **a
+  singleton retry budget** for route variance (a pathological corner, stamped instead).
 - **Keeping ABI on the wire for dynamic `U`** (its offset table is the O(`n`) touch being
   removed); **skip words in consumed decompressed input** (unsound under back-references without a
   lookahead); **`maxResultBytes` as an optional pre-touch bound**; **a `PAGE_V1` word**; **auditing
@@ -918,7 +932,9 @@ Declined along the way:
   heuristics and bounds element size by the EVM stack); **input-bounded `dwork`** (helps only
   compressible single elements of tens to hundreds of KB).
 - **A remembered rate across requests**; **per-item gas records** in the stream; **a median or
-  histogram**; **`batch.shuffle`**; **a probing knob**; **mean-only packing** as the default;
+  histogram**; **`batch.shuffle`**; **a probing knob** (scaling the count hint on a sampled fraction
+  of requests was the callsite's business; moot once the count hint went); **mean-only packing** as
+  the default;
   **`batch.pageSizeHint`** and **a per-provider map of counts**; **`gasLimit` over a per-item cost
   alone**; **reporting the deploy's gas alone**; **`item_gas_max` as the item cost**; **a second
   `fits` predicate for continuations** (a tail is a sub-range of a chunk that fit, so the prediction
