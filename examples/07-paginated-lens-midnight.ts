@@ -1,20 +1,19 @@
 /**
- * `policy({ paged: true })`: a lens that reports how far it got instead of being bisected into.
+ * A paginated lens whose per-item function reverts on its own: `toMarket` reverts for a market
+ * that was never created, and the envelope records exactly that as a skip — no try/catch needed.
  *
  * The lens measures Midnight borrower health — debt against oracle-priced borrow capacity, the
- * way `isHealthy()` does — for a batch of `(market, borrower)` pairs. It stops when gas runs low
- * (the transport retries the tail) and declines pairs whose market was never created, which
- * `toMarket` reverts on. Those land in `skipped`, rebased onto the caller's input. A partial result
- * is a successful response; check `skipped` yourself.
+ * way `isHealthy()` does — for a batch of `(market, borrower)` pairs. The envelope stops when gas
+ * runs low (the transport retries the tail). Skipped pairs land in `skipped`, rebased onto the
+ * caller's input. A partial result is a successful response; check `skipped` yourself.
  *
  * Candidates come from Morpho's liquidation-candidates API, an over-inclusive feed that itself says
  * to re-read every pair on-chain before acting — which is exactly what the lens does.
  */
-import { policy } from "@morpho-org/viem-dlc/actions";
+import { MAX_INITCODE_SIZE, readLens } from "@morpho-org/viem-dlc/actions";
 import { deployless } from "@morpho-org/viem-dlc/transports";
 import { sol } from "soltag";
-import { type Address, createPublicClient, getAbiItem, getAddress, type Hex, http, keccak256, toHex } from "viem";
-import { readContract } from "viem/actions";
+import { type Address, createPublicClient, getAddress, type Hex, http, keccak256, toHex } from "viem";
 import { base } from "viem/chains";
 
 const rpcUrl = process.env.RPC_URL;
@@ -60,19 +59,14 @@ const IMidnight = `
   interface IOracle { function price() external view returns (uint256); }
 `;
 
-// Index order, single pass, element 0 always attempted; stop on low gas (retryable tail), skip on
-// a condition that will decline identically next time (the market does not exist). Only \`toMarket\`
-// is wrapped in try/catch — a broken oracle reverts the frame rather than masquerading as a skip.
-const healthLens = sol("MidnightHealthPagedLens")`
+// Any per-item revert is recorded as a skip, so a broken oracle would be skipped too, not
+// distinguished from a missing market; keep per-item reverts to conditions that are permanent.
+const healthLens = sol("MidnightHealthLens")`
   pragma solidity ^0.8.24;
   ${IMidnight}
-  contract MidnightHealthPagedLens {
+  contract MidnightHealthLens {
     uint256 constant WAD = 1e18;
     uint256 constant ORACLE_PRICE_SCALE = 1e36;
-    // Measured on Base via eth_estimateGas: a served element costs ~48k (up to ~56k with two
-    // collateral legs), a skipped one ~12k. The reserve covers the assembly epilogue and return.
-    uint256 constant PER_ELEMENT_ESTIMATE = 70_000;
-    uint256 constant RETURN_RESERVE = 30_000;
 
     IMidnight immutable midnight;
     constructor(IMidnight _midnight) { midnight = _midnight; }
@@ -85,25 +79,8 @@ const healthLens = sol("MidnightHealthPagedLens")`
       bool matured;
     }
 
-    function page(Input[] calldata inputs)
-      external view returns (Health[] memory results, uint256[] memory skipped)
-    {
-      results = new Health[](inputs.length);
-      skipped = new uint256[](inputs.length);
-      uint256 nResults;
-      uint256 nSkipped;
-      for (uint256 i = 0; i < inputs.length; i++) {
-        if (i > 0 && gasleft() < RETURN_RESERVE + PER_ELEMENT_ESTIMATE) break;
-        try midnight.toMarket(inputs[i].id) returns (Market memory market) {
-          results[nResults++] = _health(market, inputs[i].id, inputs[i].borrower);
-        } catch {
-          skipped[nSkipped++] = i;
-        }
-      }
-      assembly {
-        mstore(results, nResults)
-        mstore(skipped, nSkipped)
-      }
+    function healthOf(Input calldata x) external view returns (Health memory) {
+      return _health(midnight.toMarket(x.id), x.id, x.borrower);
     }
 
     // Mirrors isHealthy(): maxDebt accumulates collateral * price / SCALE * lltv / WAD over the
@@ -127,7 +104,7 @@ const healthLens = sol("MidnightHealthPagedLens")`
 
 const client = createPublicClient({
   chain: base,
-  transport: deployless(http(rpcUrl), { gasLimit: 50_000_000 }),
+  transport: deployless(http(rpcUrl)),
 });
 
 const candidates = await fetchCandidates(1.5);
@@ -144,24 +121,18 @@ const inputs = candidates.flatMap(({ market_id: id, borrower }, i) =>
     : [{ id, borrower }],
 );
 
-const [results, skipped] = await readContract(client, {
+const { results, skipped } = await readLens(client, {
   ...healthLens.with(MIDNIGHT),
-  functionName: "page",
-  args: [inputs],
-  stateOverride: [
-    policy({
-      abi: getAbiItem({ abi: healthLens.abi, name: "page" }),
-      paged: true,
-      // eth_estimateGas on Base fits ~818k + 48.5k·N for this lens (the constant is mostly the
-      // counterfactual deploy). Padded ~25%; an over-packed chunk costs one more round trip, not a
-      // bisection, so the model only needs to be a sane opening guess.
-      batch: { gas: { constant: 850_000, linear: 60_000, quadratic: 0 } },
-    }),
-  ],
+  functionName: "healthOf",
+  args: inputs,
+  batch: { batchSize: MAX_INITCODE_SIZE },
 });
 
-console.log(`${inputs.length} inputs → ${results.length} results, ${skipped.length} skipped`);
-console.log(`every skipped input is the bogus market: ${skipped.every((i) => inputs[Number(i)]?.id === bogusMarket)}`);
+const planted = skipped.filter((i) => inputs[i]?.id === bogusMarket).length;
+console.log(
+  `${inputs.length} inputs → ${results.length} results, ${skipped.length} skipped ` +
+    `(${planted} planted, ${skipped.length - planted} from the API that this Midnight does not recognize)`,
+);
 
 // liquidate() admits a position when debt > 0 && !locked && (matured || debt > maxDebt); the
 // liquidator gate (market.liquidatorGate.canLiquidate(caller)) is caller-specific and left out here.

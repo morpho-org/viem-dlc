@@ -31,12 +31,8 @@ const tail = [
 
 const transport = failover(
   [
-    cache(http(rpcUrl), [{ ...shared, gasLimit: 30_000_000 }, { maxBlockRange: 100_000 }, ...tail]),
-    cache(http(process.env.RPC_URL_FALLBACK ?? rpcUrl), [
-      { ...shared, gasLimit: 50_000_000 },
-      { maxBlockRange: 10_000 },
-      ...tail,
-    ]),
+    cache(http(rpcUrl), [shared, { maxBlockRange: 100_000 }, ...tail]),
+    cache(http(process.env.RPC_URL_FALLBACK ?? rpcUrl), [shared, { maxBlockRange: 10_000 }, ...tail]),
   ],
   {
     // Auth/billing failures won't get better on retry, but also shouldn't try the next provider.

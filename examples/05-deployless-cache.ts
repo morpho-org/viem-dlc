@@ -1,10 +1,10 @@
 /**
- * `cache` + `policy({ batch, cache })`: the same lens read as 04, but each element's result is
+ * `cache` + `readLens({ batch, cache })`: the same lens read as 04, but each element's result is
  * cached under `blobKey` for `ttl` ms. Repeat elements are served from the store; only novel
  * elements go upstream. `delta` desynchronizes refreshes so many keys populated together don't
  * all expire in the same instant.
  */
-import { MAX_INITCODE_SIZE, policy } from "@morpho-org/viem-dlc/actions";
+import { MAX_INITCODE_SIZE, readLens } from "@morpho-org/viem-dlc/actions";
 import { LruStore } from "@morpho-org/viem-dlc/stores";
 import { cache, createSimpleInvalidation } from "@morpho-org/viem-dlc/transports/cache";
 import { sol } from "soltag";
@@ -13,13 +13,12 @@ import {
   type Chain,
   type Client,
   createPublicClient,
-  getAbiItem,
   type Hex,
   http,
   parseAbiItem,
   type Transport,
 } from "viem";
-import { getBlockNumber, getLogs, readContract } from "viem/actions";
+import { getBlockNumber, getLogs } from "viem/actions";
 import { base } from "viem/chains";
 
 const rpcUrl = process.env.RPC_URL;
@@ -52,7 +51,8 @@ const IMorpho = `
   }
 `;
 
-// One dynamic-array input, one dynamic-array output, same length and order — the shape `policy` requires.
+// A lens is one function over one element; the transport calls it once per element in its own
+// frame and paginates. Nothing here knows about batching.
 const positionsLens = sol("MorphoPositionsLens")`
   pragma solidity ^0.8.24;
   ${IMorpho}
@@ -60,11 +60,8 @@ const positionsLens = sol("MorphoPositionsLens")`
     IMorpho constant MORPHO = IMorpho(0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb);
     struct Input { bytes32 id; address user; }
 
-    function positions(Input[] calldata inputs) external view returns (IMorpho.Position[] memory out) {
-      out = new IMorpho.Position[](inputs.length);
-      for (uint256 i = 0; i < inputs.length; i++) {
-        out[i] = MORPHO.position(inputs[i].id, inputs[i].user);
-      }
+    function positionOf(Input calldata x) external view returns (IMorpho.Position memory) {
+      return MORPHO.position(x.id, x.user);
     }
   }
 `;
@@ -74,7 +71,6 @@ const transport = cache(http(rpcUrl), [
     binSize: 10_000,
     store: new LruStore({ maxBytes: 100_000_000 }),
     invalidationStrategy: createSimpleInvalidation(),
-    gasLimit: 30_000_000,
   },
   { maxBlockRange: 100_000 },
   { retryCount: 3, retryDelay: 1_000, blockTimestamp: false },
@@ -89,17 +85,12 @@ const inputs = await discoverPositions(client, { fromBlock: toBlock - 20_000n, t
 console.log(`${inputs.length} distinct (market, borrower) pairs in the last 20 000 blocks\n`);
 
 const cachedPositions = (keys: typeof inputs) =>
-  readContract(client, {
+  readLens(client, {
     ...positionsLens.with(),
-    functionName: "positions",
-    args: [keys],
-    stateOverride: [
-      policy({
-        abi: getAbiItem({ abi: positionsLens.abi, name: "positions" }),
-        batch: { batchSize: MAX_INITCODE_SIZE, gas: { constant: 350_000, linear: 35_000, quadratic: 0 } },
-        cache: { blobKey: "morpho-positions", ttl: 300_000, delta: 10_000 },
-      }),
-    ],
+    functionName: "positionOf",
+    args: keys,
+    batch: { batchSize: MAX_INITCODE_SIZE },
+    cache: { blobKey: "morpho-positions", ttl: 300_000, delta: 10_000 },
   });
 
 await measure("cold", () => cachedPositions(inputs));
