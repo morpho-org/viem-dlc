@@ -45,7 +45,8 @@ several *instances* of the same transport — say, one cache per failover branch
 instances are suffixed `.1`, `.2`, ... in first-touch order, which is stable for a
 given composition. Every layer also stamps a per-instance `crossings` count, so the
 event records which transports the call traversed and how many times each. Call-level
-fields are `call_id`, `duration_ms`, and `status` (`"ok"` or `"error"`). Failed calls
+fields are `call_id`, `chain_id` (when the client has a chain), `duration_ms`, and `status`
+(`"ok"` or `"error"`). Failed calls
 emit at `error` level with the error attached via `withError`, so hosts that forward
 `withError` entries to an error reporter (e.g. Sentry) capture them automatically.
 

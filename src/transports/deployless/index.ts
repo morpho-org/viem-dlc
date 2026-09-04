@@ -49,7 +49,7 @@ export function deployless<T extends Base>(
       {
         key: deploylessTransportKey,
         name: "[viem-dlc] deployless",
-        request: observe(request, facetId) as EIP1193RequestFn,
+        request: observe(request, facetId, params.chain?.id) as EIP1193RequestFn,
         retryCount: 0,
         type: deploylessTransportKey,
       },

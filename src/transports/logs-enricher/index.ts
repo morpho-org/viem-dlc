@@ -79,7 +79,7 @@ export function logsEnricher<T extends Base>(
     return createTransport({
       key: logsEnricherTransportKey,
       name: "[viem-dlc] logs-enricher",
-      request: observe(request, facetId) as EIP1193RequestFn,
+      request: observe(request, facetId, params.chain?.id) as EIP1193RequestFn,
       retryCount: 0,
       type: logsEnricherTransportKey,
     });
