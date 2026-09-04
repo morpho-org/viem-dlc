@@ -5,7 +5,6 @@ import { getObservability } from "../../../observability.js";
 import type { EIP1193Parameters } from "../../../types.js";
 import { cyrb64Hash } from "../../../utils/hash.js";
 import {
-  arrayToHex,
   calldataToArray,
   factorisedFactoryCall,
   pageToHex,
@@ -22,7 +21,7 @@ import type { HandlerContext } from "../types.js";
 import type { CachedEthCallEntry } from "./types.js";
 
 export async function handleEthCall(
-  { store, coalesce, requestFn, chainId, gasLimit, facetId }: HandlerContext,
+  { store, coalesce, requestFn, chainId, facetId }: HandlerContext,
   req: EIP1193Parameters<CacheSchema, "eth_call">,
 ): Promise<Hex> {
   const extracted = extractEthCallPolicy(req.params[2]);
@@ -55,7 +54,7 @@ export async function handleEthCall(
   }
 
   const { target, targetData } = unwrapDeploylessFactoryCall(txn.data);
-  const solidity = resolveArrayFunction(extracted.policy.abi, extracted.policy.paged);
+  const solidity = resolveArrayFunction(extracted.policy.abi);
   const inputElements = calldataToArray(solidity, targetData);
 
   facet?.set({ input_elements: inputElements.length });
@@ -75,7 +74,6 @@ export async function handleEthCall(
       elements: inputElements,
       solidity,
       batch: extracted.policy.batch,
-      gasLimit,
       restOfEthCallParams,
       facet,
     });
@@ -125,6 +123,7 @@ export async function handleEthCall(
 
     const hits = new Array<Hex>(inputElements.length);
     const unservable: number[] = [];
+    const unresolved: number[] = [];
     const misses: { entryKey: string; indices: number[]; element: Hex }[] = [];
     const now = Date.now();
 
@@ -159,12 +158,11 @@ export async function handleEthCall(
       const fetchedAt = Date.now();
 
       try {
-        const { missing } = await factorisedFactoryCall(requestFn, {
+        const fetchedResult = await factorisedFactoryCall(requestFn, {
           target,
           elements: misses.map((m) => m.element),
           solidity,
           batch: extracted.policy.batch,
-          gasLimit,
           restOfEthCallParams,
           facet,
           // Buffer per chunk, so a later chunk failing doesn't discard the siblings that landed.
@@ -179,10 +177,17 @@ export async function handleEthCall(
           },
         });
         // `missing` indexes deduped misses; callers expect indices into their own input array.
-        for (const i of missing) unservable.push(...misses[i]!.indices);
+        let oversize = 0;
+        for (const i of fetchedResult.missing) unservable.push(...misses[i]!.indices);
+        for (const i of fetchedResult.unresolved) unresolved.push(...misses[i]!.indices);
+        for (const i of fetchedResult.oversize) oversize += misses[i]!.indices.length;
         // Deduping means one unservable entry can stand for several caller inputs; restamp so
-        // the field matches the `skipped` array the response actually carries.
-        facet?.set({ elements_missing: unservable.length });
+        // the fields match the `skipped` array the response actually carries.
+        facet?.set({
+          elements_missing: unservable.length,
+          elements_unresolved: unresolved.length,
+          elements_declined_oversize: oversize,
+        });
       } finally {
         const t4 = performance.now();
         await ndjson.flush();
@@ -213,17 +218,13 @@ export async function handleEthCall(
 }
 
 /**
- * Encodes the aggregated response in the shape the policy's abi declares: a bare `U[]`, or for a
- * paged lens the `(U[] results, uint256[] skipped)` tuple, with `outputs` sparse at every skipped
- * index. `skipped` must already be expressed against the caller's input array.
+ * Encodes the aggregated `(U[] results, uint256[] skipped)` page, with `outputs` sparse at every
+ * skipped index and `skipped` already expressed against the caller's input array.
  */
 function encodeResponse(
   solidity: ResolvedArrayFunction,
   outputs: readonly (Hex | undefined)[],
   skipped: readonly number[],
 ): Hex {
-  const results = outputs.filter((o) => o !== undefined);
-  return solidity.paged
-    ? pageToHex(solidity.outputLayout, { results, skipped })
-    : arrayToHex(solidity.outputLayout, results);
+  return pageToHex(solidity.outputLayout, { results: outputs.filter((o) => o !== undefined), skipped });
 }

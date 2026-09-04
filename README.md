@@ -55,37 +55,35 @@ emit at `error` level with the error attached via `withError`, so hosts that for
 
 Thin transport wrapper for deployless `eth_call` splitting. It only intercepts calls carrying
 the `policy(...)` sentinel in `stateOverride`, re-packs the marked input array into one or more
-deployless-factory calls under both a byte budget (`batch.batchSize`) and a gas budget
-(`batch.gas` against the transport's `gasLimit`), and forwards everything else unchanged.
+deployless-factory calls under a wire byte budget (`batch.batchSize`), aggregates the pages that
+come back, and forwards everything else unchanged.
+There is no gas configuration: the envelope calls the lens's per-item function once per element
+in its own frame and reports how far it got, so a chunk adapts to whatever gas the node grants —
+see [Paginated lenses](#paginated-lenses). Most callers reach it through
+[`readLens`](#readlens) rather than building the call by hand.
 
 ```ts
 import { createPublicClient, encodeFunctionData, http, parseAbiItem } from 'viem'
 import { call } from 'viem/actions'
 import { deployless } from '@morpho-org/viem-dlc/transports'
-import { policy } from '@morpho-org/viem-dlc/actions'
+import { arrayifiedAbi, policy } from '@morpho-org/viem-dlc/actions'
 
-const positionsAbi = parseAbiItem(
-  'function positions((bytes32 id, address user)[] inputs) view returns ((uint256,uint128,uint128)[])'
+// The lens implements `positionOf((bytes32,address)) view returns ((uint256,uint128,uint128))`;
+// the array-shaped fragment the wire carries is derived from it.
+const positionsAbi = arrayifiedAbi(
+  parseAbiItem('function positionOf((bytes32 id, address user) input) view returns ((uint256,uint128,uint128))')
 )
 
 const client = createPublicClient({
-  transport: deployless(http(rpcUrl), { gasLimit: 30_000_000 }),
+  transport: deployless(http(rpcUrl)),
 })
 
 const result = await call(client, {
   factory,
   factoryData,
   to,
-  data: encodeFunctionData({ abi: [positionsAbi], functionName: 'positions', args: [inputs] }),
-  stateOverride: [
-    policy({
-      abi: positionsAbi,
-      batch: {
-        batchSize: 1 << 15,
-        gas: { constant: 50_000, linear: 30_000, quadratic: 0 },
-      },
-    }),
-  ],
+  data: encodeFunctionData({ abi: [positionsAbi], functionName: 'positionOf', args: [inputs] }),
+  stateOverride: [policy({ abi: positionsAbi, batch: { batchSize: 1 << 15 } })],
 })
 ```
 
@@ -93,13 +91,34 @@ If `policy.cache` is present, `deployless(...)` ignores it and still behaves as 
 Use `cache(...)` when you want the same marked calls to populate and read from a backing store.
 
 With observability enabled, batching reports `elements_requested` / `elements_fetched`,
-`nominal_batches`, `batch_bytes` (sizes of the initial packing, so bisected and continued
-chunks are not resampled), and `splits_*` for chunks bisected after a size or timeout error.
-Paged lenses get their own fields, since stopping early is normal rather than a failure —
-and only paged calls emit them, so their presence marks a paged run: `pages_continued`
-(responses that stopped early, each of which may be repacked into several requests),
-`pages_waves`, and `elements_missing` (elements the lens declined, plus any single element
-that exhausted the frame — the same count the response's `skipped` array carries).
+`nominal_batches` and `batch_bytes` (sizes of the initial packing against the wire budget;
+halved and continued chunks are not resampled), and `splits_*` for chunks halved after an
+error: `splits_size` (413 / initcode-size errors) and `splits_timeout`. Nothing in the envelope's
+prologue grows with the chunk, so a frame that dies without reporting is a constructor too heavy
+for the node's cap, surfaced as an error rather than halved. Pagination is normal rather than a
+failure and gets its own
+fields: `pages_continued` (responses that stopped early, each repacked into one or more requests),
+`pages_waves`, `page_adjudicated` (elements per page, as a stat — a lens yielding ~1 per page is
+pathological), `pages_all_skipped` (pages whose every element reverted — a per-item selector the
+lens does not implement is one cause), `attempts_unresolved` (elements a frame's gas could not
+resolve, whether the per-item frame died or the envelope refused to start it), `pages_escalated`
+(singleton retries those cost), and, matching the response's
+`skipped` array: `elements_missing` in total, of which `elements_declined_oversize` could not fit
+a chunk alone under `batch.batchSize` and `elements_unresolved` were gas-terminal even alone —
+the subset another provider with a higher cap might still serve.
+
+Every page also reports what its attempts cost, and the request pools it: `frame_gas` (the gas a
+frame had for attempts, on the smallest frame seen), `item_gas_avg` / `item_gas_stddev` /
+`item_gas_max` per attempt, and `page_size_suggested`, the chunk size the transport would open
+with given those numbers — the value for `batch.pageSizeHint`, which is stamped as `page_size_hint` when
+set. To pick a hint, run without one under observability and take the median suggestion over a
+representative window; a hint far from the suggestion is stale, and `pages_continued` at zero
+with the suggestion above the hint means it undershoots. To keep learning once a hint is set,
+scale it on a sampled fraction of requests, e.g. `(Math.random() < 0.1 ? 2 : 1) * hint`. Costs
+depend on which items share a frame: grouping related elements warms storage they share and
+lowers `item_gas_avg`, shuffling makes the rate uniform across chunks; results align to `args` in
+either order. A full cache hit or an empty input makes no upstream call and carries none of
+these fields.
 
 ### `cache`
 
@@ -119,7 +138,6 @@ const transport = cache(http(rpcUrl), [
     binSize: 10_000,
     store: new LruStore({ maxBytes: 100_000_000 }),
     invalidationStrategy: createSimpleInvalidation(),
-    gasLimit: 30_000_000,
   },
   {
     maxBlockRange: 100_000,
@@ -154,8 +172,9 @@ Two invalidation strategies are provided:
 ### `failover`
 
 Request-level fallback dispatcher for fronting multiple RPC providers with provider-specific
-limits. Each branch is a fully-built per-provider stack carrying its own `maxBlockRange` /
-`gasLimit`. Branches are constructed once at composition time, so stateful inner transports
+limits. Each branch is a fully-built per-provider stack carrying its own `maxBlockRange`; nothing
+gas-related is configured per branch, since deployless lenses adapt to each node's grant on their
+own. Branches are constructed once at composition time, so stateful inner transports
 (coalescing mutexes, rate-limiter token buckets) persist across requests instead of being
 rebuilt per call — unlike viem's stock `fallback`, which rebuilds the active branch on every
 request and effectively disables those features.
@@ -171,8 +190,8 @@ const store = new LruStore({ maxBytes: 100_000_000 })
 const sharedConfig = { binSize: 10_000, store, invalidationStrategy: createSimpleInvalidation() }
 
 const transport = failover([
-  cache(http(rpcUrlA), [{ ...sharedConfig, gasLimit: 30_000_000 }, { maxBlockRange: 100_000 }]),
-  cache(http(rpcUrlB), [{ ...sharedConfig, gasLimit: 50_000_000 }, { maxBlockRange: 10_000 }]),
+  cache(http(rpcUrlA), [sharedConfig, { maxBlockRange: 100_000 }]),
+  cache(http(rpcUrlB), [sharedConfig, { maxBlockRange: 10_000 }]),
 ])
 
 const client = createPublicClient({ chain: mainnet, transport })
@@ -183,7 +202,7 @@ is sized for the lowest common denominator. The shared `Store` means partial fet
 branch A persist in cache and are visible to branch B on fallover, making recovery cheap.
 
 `failover` only sees errors that escape per-branch halving (`logsDivider` range-halving and
-`deployless` size-bisection run inside each branch first). By default, contract reverts and
+`deployless` halving run inside each branch first). By default, contract reverts and
 user-rejection errors propagate immediately instead of triggering fallover — pass a custom
 `shouldThrow` to override:
 
@@ -396,24 +415,46 @@ const logs = await getLogs2(client, {
 })
 ```
 
+### `readLens`
+
+Reads a [paginated lens](#paginated-lenses): the lens's per-item function, called once per element
+of `args` through the `deployless` or `cache` transport. Takes the same deployless-factory
+descriptor as viem's `readContract` (`abi`, `address`, `factory`, `factoryData`) plus the `policy`
+options; returns `{ results, skipped }`, with `results` typed from the per-item function's return
+type and `skipped` the indices into `args` that were not served.
+
+```ts
+import { readLens, MAX_INITCODE_SIZE } from '@morpho-org/viem-dlc/actions'
+
+const { results, skipped } = await readLens(client, {
+  ...healthLens.with(MORPHO),          // abi, address, factory, factoryData
+  functionName: 'healthOf',            // f(T) returns (U), one parameter, one value
+  args: inputs,                        // T[]
+  batch: { batchSize: MAX_INITCODE_SIZE, compress: true },
+  cache: { blobKey: 'blue-health', ttl: 60_000 },
+})
+```
+
+A partial result is a **successful response**: `skipped` merges elements the lens declined
+(its per-item call reverted), elements declined client-side for size, and elements
+that ran out of gas even when retried alone. Check it if you need every element.
+
 ### `eth_call` `policy`
 
-Creates a `stateOverride` entry that tells the `deployless` or `cache` transport how
-to handle a deployless `eth_call`. Works with viem's `call` action against a contract
-exposing a single dynamic-array input and a single dynamic-array output (e.g.
-`balancesOf(address[]) -> uint256[]`), invoked via viem's deployless-factory pattern
-(`call({ factory, factoryData, to, data, ... })`). The transports decode the outer
-array structurally; when used with `cache`, element bytes round-trip through the cache
+The lower-level marker `readLens` attaches for you: a `stateOverride` entry that tells the
+`deployless` or `cache` transport to treat a deployless `eth_call` as a paginated lens read. The
+call is encoded against the array-shaped fragment `f(T[]) returns (U[] results, uint256[] skipped)`,
+which never exists on-chain; `arrayifiedAbi` derives it from the per-item function. Use it when you
+want plain `readContract`/`call` instead of `readLens`. Element bytes round-trip through the cache
 untouched, so tuples, nested arrays, and other complex element types are supported.
 
 ```ts
 policy(opts: {
-  abi: AbiFunction
-  paged?: boolean
+  abi: AbiFunction              // arrayifiedAbi(itemFragment)
   batch?: {
     batchSize?: number
     compress?: boolean
-    gas?: { constant: number; linear: number; quadratic: number }
+    pageSizeHint?: number
   }
   cache?: {
     blobKey: string
@@ -423,45 +464,31 @@ policy(opts: {
 })
 ```
 
-- **`opts.abi`** — the `AbiFunction` fragment for the callee. Must have exactly one
-  input and one output, both dynamic arrays — or, with `paged`, two outputs.
-- **`opts.paged`** — marks `abi` as a *paged* lens returning
-  `(U[] results, uint256[] skipped)` instead of a bare `U[]`. See
-  [Paged lenses](#paged-lenses) below for what that buys and the contract it requires.
-- **`opts.batch`** — optional batching config. Omit to send all elements in a single
-  upstream `eth_call`. When set, chunks honor `batchSize` and `gas` together — either
-  budget can be left unset.
-- **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk.
-  Input elements are greedy-packed under this limit and fetched in parallel. Omit to
-  skip byte-budget enforcement.
-- **`opts.batch.compress`** — FastLZ-compress calldata on the wire. Helps fit more
-  elements per chunk under EIP-3860's 49_152-byte initcode cap, at the cost of extra
-  pre-request encoding time.
-- **`opts.batch.gas`** — polynomial gas-cost model
-  `G(N) = constant + linear·N + quadratic·N²` for the lens. Combined with the
-  transport's `gasLimit`, the chunker picks the largest per-chunk `N` such that
-  `G(N) ≤ gasLimit`. No internal safety factor, and `gasLimit` is a client-side budget only —
-  it is never sent as a `gas` field, so the node's own cap is what actually stops execution.
-  Overshooting `G(N)` while staying under that cap simply burns more gas than budgeted.
-  When the node's cap *is* hit, a drained lens frame is recovered rather than lost: the
-  wrapper reports it as `OOG_SENTINEL` revert data, which the chunker classifies as a size
-  error and bisects on, down to a single element if need be. Two caveats — the sentinel only
-  covers the lens frame, so running out of gas inside the wrapper itself (FLZ decompression,
-  or memory expansion while copying returndata) falls back to matching the provider's error
-  text; and a lens that burns >98.4% of its frame and *then* reverts with empty data is
-  reported as out-of-gas too, which costs a full bisect to singletons (`2N-1` requests)
-  before the original error resurfaces. `linear` is typically the dominant term; `quadratic`
-  captures memory expansion (`memWords² / 512`); pass `0` for any unused term.
+- **`opts.abi`** — the array-shaped fragment from `arrayifiedAbi`. Build it from the per-item
+  fragment in the contract's real ABI: the transport derives the per-item selector from it, and a
+  selector the lens does not implement fails as a page that skips every element.
+- **`opts.batch`** — optional batching config. Omit to send all elements in a single upstream
+  `eth_call`.
+- **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk; elements
+  are greedy-packed under it and fetched in parallel. `MAX_INITCODE_SIZE` (EIP-3860's 49 152
+  bytes) is the usual value. The cap is not tuned per lens, chain, or provider.
+- **`opts.batch.compress`** — FastLZ-compress calldata on the wire, so more elements fit per
+  chunk at the cost of encoding time and decompression gas. The envelope decompresses element by
+  element as it attempts them, so a highly compressible chunk pages like any other and costs
+  nothing before its first element.
+- **`opts.batch.pageSizeHint`** — elements per chunk in the opening wave, beside the byte budget.
+  Later waves size themselves from what the pages report, so this only matters before the first
+  response: too high costs one continuation wave, too low costs extra parallel requests. Read
+  `page_size_suggested` off the wide event of a request made without it.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
   or when used with `deployless(...)`, `batch` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same
   `blobKey` share storage; different `blobKey`s are isolated into different blobs.
 - **`opts.cache.ttl`** — maximum age in milliseconds before a cached entry is
   considered stale.
-- **Semantic requirement** — beyond the ABI shape, the callee must be elementwise:
-  for an input array `[x0, ..., xn]`, it must return `[y0, ..., yn]` with the same
-  length and order, where each `yi` depends only on `xi` plus shared chain state,
-  not on other elements, their multiplicity, or their order.
+- **Semantic requirement** — the per-item function must be elementwise: each served value, and
+  each decline, depends only on its own element plus shared chain state, never on other elements,
+  their multiplicity, their order, or the gas the frame happened to have.
 - **`opts.cache.delta`** — XFetch early-refresh scale in milliseconds. On each
   freshness check the handler samples `u ~ Uniform(0, 1]` and treats the entry as
   stale once `age - delta * ln(u) >= ttl`, so entries may refresh up to several
@@ -470,106 +497,79 @@ policy(opts: {
   Probabilistic Cache Stampede Prevention" (2015), assuming constant recompute
   cost. Defaults to 0 (disabled).
 
-```ts
-import { encodeFunctionData, parseAbiItem } from 'viem'
-import { call } from 'viem/actions'
-import { policy } from '@morpho-org/viem-dlc/actions'
-
-const positionsAbi = parseAbiItem(
-  'function positions((bytes32 id, address user)[] inputs) view returns ((uint256,uint128,uint128)[])'
-)
-
-const cachePolicy = policy({
-  abi: positionsAbi,
-  batch: {
-    batchSize: 1 << 15,
-    gas: { constant: 50_000, linear: 30_000, quadratic: 0 },
-  },
-  cache: {
-    blobKey: 'morpho-positions',
-    ttl: 300_000,
-  },
-})
-
-const result = await call(client, {
-  factory,      // deployed factory address
-  factoryData,  // calldata that makes `factory` deploy the lens helper
-  to,           // deterministic deployment address of the lens
-  data: encodeFunctionData({ abi: [positionsAbi], functionName: 'positions', args: [inputs] }),
-  stateOverride: [cachePolicy],
-})
-```
-
 Cache keys are derived from `(targetTo, factory, factoryData, selector, inputElement)`,
 so repeat elements collapse into a single blob entry and novel elements are appended to
 the blob on the next fetch. The handler rejects any tx envelope field besides `data`
 (`from`, `gas`, `value`, etc.).
 
-#### Paged lenses
+#### Paginated lenses
 
-A paged lens may stop before consuming its whole input. It walks its input in index order, in a
-single pass, and stops once — having attempted `i = results.length + skipped.length` elements.
-`results` covers that prefix minus `skipped`; `skipped` holds ascending indices, relative to this
-call's input, that it looked at and declined.
-
-Position is what separates the two outcomes: `[i, N)` was never attempted and is **retried**,
-while an index in `skipped` is **permanent**. So an over-packed chunk costs one extra round trip
-rather than a bisection, and `batch.gas` only has to be a rough opening guess.
+A lens is one `view` function over one element. That is the whole contract:
 
 ```solidity
-function page(T[] input) view returns (U[] results, uint256[] skipped) {
-    for (uint256 i = 0; i < input.length; i++) {
-        if (i > 0 && gasleft() < reserve + estimate) break;    // tail: retryable
-        if (!isValid(input[i])) { skipped.push(i); continue; } // deterministic: permanent
-        results.push(one(input[i]));
-    }
+contract BlueHealthLens {
+  IMorpho immutable morpho;
+  constructor(IMorpho _morpho) { morpho = _morpho; }
+
+  function healthOf(Input calldata x) external view returns (Health memory) {
+    Market memory m = morpho.market(x.id);
+    require(m.lastUpdate != 0);          // permanent condition → skipped
+    return _health(x.id, m, x.borrower);
+  }
 }
 ```
 
-The contract your lens must honor:
+The envelope — the initcode this package sends with every deployless call — reads the element
+array, calls the per-item function **once per element in its own frame** with all remaining gas,
+and deposits each result straight into the response. Per element, exactly one of three things
+happens. The call **returns**: the result is kept. It **reverts** (any reason, any data): the
+index goes to `skipped` — so keep per-item reverts to conditions that are permanent, since a
+broken dependency is skipped the same way, and the revert reason is not surfaced. It **runs out
+of gas**: EIP-150 guarantees the envelope keeps 1/64 of what it forwarded, which is enough to
+report that in-band and stop; the transport retries the element once on its own, where it holds
+the largest frame a node can grant, and only if it dies there too does it land in the caller's
+`skipped`. Before each attempt the envelope also checks that the frame can pay for the memory the
+attempt would touch and still report an outcome, priced from the fee schedule; below that, it
+stops (or, for element 0, reports it unresolved without attempting).
+So a frame never dies mid-page, and nothing in the prologue grows with the chunk; a constructor
+too heavy for a node's cap is reported as an error rather than halved.
 
-- **Index order, single pass.** Otherwise "before `i`" no longer implies "declined".
-- **Attempt at least one element.** `(results=[], skipped=[])` is a protocol violation, not a
-  retryable state — it is what would let a lens stall a range forever, so it throws. A lens that
-  cannot afford element 0 must attempt it and let the frame die; the envelope reports that as an
-  out-of-gas and the transport marks the element unservable. This is what makes termination
-  finite without a retry counter or a gas-escalation ladder.
-- **Skips are deterministic.** A skip means invalid input or a reverting element — something
-  that declines identically next time. Running out of gas is never a skip; when gas runs out, stop.
-- **Values are batching-invariant.** Neither a served value nor a decline may depend on position,
-  batch composition, or `gasleft()`. Only the stopping boundary may.
+No element type needs a number from the author: static sizes come from the ABI, dynamic inputs
+carry their length on the wire, and dynamic results carry theirs in returndata. The envelope
+refuses an ill-formed result (`MalformedResult`, surfaced as a protocol error rather than halved).
 
-Per-element gas capping is optional and usually overkill — it matters only when an element may be
-unbounded, where it turns a dead frame into a stop that preserves the prefix. A capping lens must
-leave element 0 uncapped (or retrying a range headed by that element returns `([], [])`), and must
-tell a capped out-of-gas from a plain `revert(0, 0)` — both yield empty returndata — by treating
-"consumed ≈ the cap **and** empty returndata" as gas-driven. Same heuristic, and same imprecision,
-as the envelope's own 63/64 check.
+**Shared work goes in the constructor.** Item frames share no memory, but the counterfactual
+deploy runs the constructor inside the same `eth_call`: immutables hold value types, and storage
+written in the constructor is readable from every per-item call. EIP-2929 warmth is per
+transaction, so the first element to touch a market's storage warms it for all later elements in
+the chunk. The constructor runs once per chunk in the prologue, so keep it bounded: one that
+exhausts the node's cap fails the request outright.
 
-**What the caller sees.** The chunked calls aggregate into a single page over the whole input, so
-the response keeps the shape the abi declares — `readContract`, `decodeFunctionResult`, and
-contract instances all work unchanged:
+What the envelope cannot enforce, and the lens must still honor: **skips are deterministic** (a
+revert means invalid input or a permanently failing element, never something more gas would pass)
+and **values are batching-invariant** (neither a served value nor a decline may depend on
+position, batch composition, or `gasleft()`).
+
+**What the caller sees.** `readLens` returns `{ results, skipped }` typed from the per-item
+function. Through plain viem, the chunked calls aggregate into one page over the whole input, in
+the shape `arrayifiedAbi` declares, so `readContract` and `decodeFunctionResult` work too:
 
 ```ts
+const pageAbi = arrayifiedAbi(getAbiItem({ abi: healthLens.abi, name: 'healthOf' }))
+
 const [results, skipped] = await readContract(client, {
-  abi: [pageAbi],
-  functionName: 'page',
+  ...healthLens.with(MORPHO),
+  abi: [pageAbi],                       // after the spread: the real ABI has no array function
+  functionName: 'healthOf',
   args: [inputs],
-  factory,
-  factoryData,
-  address: to,
-  stateOverride: [policy({ abi: pageAbi, paged: true })],
+  stateOverride: [policy({ abi: pageAbi })],
 })
 ```
 
 `skipped` is rebased onto the caller's input, and expands across deduplicated inputs, so its
-indices always address the array you passed. A partial result is a **successful response**, not a
-throw — check `skipped` if you need every element, and raise your own error if a gap is
-unacceptable.
-
-Two things `skipped` deliberately merges: elements the lens declined, and elements that exhausted
-the frame even when retried alone. The second depends on the node's `eth_call` gas cap, so a
-provider with a higher cap might serve them, whereas a decline is a property of the element.
+indices always address the array you passed. Elements that ran out of gas even alone depend on
+the node's `eth_call` gas cap, so a provider with a higher cap might serve them;
+`elements_unresolved` counts them in the wide event.
 
 ### `getDeploymentBlockNumber`
 

@@ -6,6 +6,7 @@ import {
   deploylessCallViaFactoryBytecode,
   encodeAbiParameters,
   encodeDeployData,
+  getAddress,
   type Hex,
   pad,
   parseAbiItem,
@@ -26,10 +27,22 @@ import type { HandlerContext } from "../../../../src/transports/cache/types.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
-import { OK_SENTINEL, unwrapDeploylessFactoryCall } from "../../../../src/utils/deployless/codec.envelope.js";
-import { flzDecompress } from "../../../../src/utils/deployless/flz.js";
+import {
+  envelopeConfig,
+  OK_SENTINEL,
+  unwrapDeploylessFactoryCall,
+  wrapDeploylessFactoryCall,
+} from "../../../../src/utils/deployless/codec.envelope.js";
+import {
+  arrayToWire,
+  hexToArray,
+  pageToWire,
+  resolveArrayFunction,
+  wireToArray,
+} from "../../../../src/utils/deployless/codec.inner.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
 import { createStubLogger, findDotted } from "../../../helpers/logger.js";
+import { flatGas } from "../../../helpers/page.js";
 
 type EthCallRequest = EIP1193Parameters<CacheSchema, "eth_call">;
 
@@ -41,10 +54,18 @@ const TARGET_TO = "0x1111111111111111111111111111111111111111" as const;
 const FACTORY = "0x2222222222222222222222222222222222222222" as const;
 const FACTORY_DATA = "0xcafebabe" as const;
 
-const balancesOfAbi = parseAbiItem("function balancesOf(address[] accounts) view returns (uint256[])") as AbiFunction;
+const pageAbi = parseAbiItem(
+  "function balancesOf(address[] accounts) view returns (uint256[] results, uint256[] skipped)",
+) as AbiFunction;
 
-function buildTargetCalldata(abi: AbiFunction, addrs: readonly Address[]): Hex {
-  return concat([toFunctionSelector(abi), encodeAbiParameters([{ type: "address[]" }], [addrs])]);
+const addr = (n: number) => pad(toHex(n), { size: 20 });
+const addrs = (n: number) => Array.from({ length: n }, (_, i) => addr(i + 1));
+
+/** The envelope's config word for {@link pageAbi} — invariant across chunks. */
+const CONFIG = envelopeConfig(resolveArrayFunction(pageAbi), false);
+
+function buildTargetCalldata(abi: AbiFunction, accounts: readonly Address[]): Hex {
+  return concat([toFunctionSelector(abi), encodeAbiParameters([{ type: "address[]" }], [accounts])]);
 }
 
 /** Inbound shape: viem's stock RETURN-mode wrapper. The handler re-wraps for upstream. */
@@ -67,12 +88,23 @@ function buildDeploylessCall(targetData: Hex): Hex {
   });
 }
 
+/** Bytes the handler puts on the wire for a chunk of `count` address elements. */
+function wireBytesFor(count: number): number {
+  const wrapped = wrapDeploylessFactoryCall(
+    {
+      target: { address: TARGET_TO, factory: FACTORY, factoryData: FACTORY_DATA },
+      targetData: arrayToWire(
+        WORD,
+        addrs(count).map((a) => pad(a, { size: 32 })),
+      ),
+    },
+    { compress: false, config: CONFIG },
+  );
+  return (wrapped.length - 2) / 2;
+}
+
 type PolicyOpts = {
-  batch?: {
-    batchSize?: number;
-    compress?: boolean;
-    gas?: { constant: number; linear: number; quadratic: number };
-  };
+  batch?: { batchSize?: number; compress?: boolean; pageSizeHint?: number };
 };
 
 function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
@@ -91,14 +123,14 @@ function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
 
 type RequestOpts = PolicyOpts & { abi?: AbiFunction };
 
-function createRequest(addrs: readonly Address[], opts: RequestOpts = {}): EthCallRequest {
-  const abi = opts.abi ?? balancesOfAbi;
+function createRequest(accounts: readonly Address[], opts: RequestOpts = {}): EthCallRequest {
+  const abi = opts.abi ?? pageAbi;
   return {
     method: "eth_call",
     params: [
-      { data: buildDeploylessCall(buildTargetCalldata(abi, addrs)) },
+      { data: buildDeploylessCall(buildTargetCalldata(abi, accounts)) },
       "latest",
-      cachePolicySentinel(abi, { batch: opts.batch }),
+      cachePolicySentinel(abi, opts),
     ],
   };
 }
@@ -111,16 +143,35 @@ function ctx(requestFn: HandlerContext["requestFn"], store = new MemoryStore()):
     chainId,
     binSize: 10_000,
     invalidationStrategy: () => 0,
-    gasLimit: 30_000_000,
     facetId: createFacetId(cacheTransportKey),
   };
 }
 
-/** Recovers `addrs` from upstream-wrapped data (works for either RETURN or REVERT prefix). */
+/** Runs the handler under a stub logger, returning the response and a wide-event field reader. */
+async function withFacet(context: HandlerContext, req: EthCallRequest) {
+  const { logger, events } = createStubLogger();
+  // Same id on the boundary as the handler uses, so both write the bare key.
+  const observed = observe(() => handleEthCall(context, req), context.facetId);
+  const result = await withLogging(() => observed({ method: "eth_call" }), { logger }).catch((e) => e as Error);
+  return {
+    result,
+    field: (name: string) => findDotted(events[0]!.context, cacheTransportKey, `eth_call.${name}`),
+  };
+}
+
+const WORD = { mode: "static", size: 32 } as const;
+const DYNAMIC = { mode: "dynamic" } as const;
+
+/** Recovers the accounts from upstream-wrapped data, compressed or not. */
 function decodeSentAddresses(data: Hex): readonly Address[] {
   const { targetData } = unwrapDeploylessFactoryCall(data);
-  const [addrs] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
-  return addrs as readonly Address[];
+  return wireToArray(WORD, targetData).map((w) => getAddress(`0x${w.slice(26)}`));
+}
+
+/** The raw element bytes viem's encoding of `values` yields for the array type `types`. */
+function elementsOf(types: string, values: readonly unknown[]): readonly Hex[] {
+  const layout = types === "uint256[]" ? WORD : DYNAMIC;
+  return hexToArray(layout, encodeAbiParameters([{ type: types }], [values] as never));
 }
 
 /** Builds a viem-shaped error whose `.data` field carries OK_SENTINEL || payload. */
@@ -130,27 +181,36 @@ function revertWithSentinel(payload: Hex): Error & { data: Hex } {
   return err;
 }
 
-/** The wrapper always exfiltrates via REVERT, so success arrives as a sentinel-framed throw. */
-function mockBalancesOfFn() {
+function pageRevert(types: string, results: readonly unknown[], skipped: readonly number[], died?: number) {
+  const gas = flatGas(results.length + skipped.length);
+  const page = { results: elementsOf(types, results), skipped, gas, ...(died === undefined ? {} : { died }) };
+  return revertWithSentinel(pageToWire(page));
+}
+
+type LensBehavior = {
+  /** Address values the lens declines outright. */
+  decline?: readonly number[];
+  /** Address values the lens reports a gas death on, ending the page at that index. */
+  starve?: readonly number[];
+};
+
+/** A conforming paginated lens over `address[]`, echoing each account's numeric value. */
+function mockPagedFn({ decline = [], starve = [] }: LensBehavior = {}) {
   return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
-    const data = (args.params[0] as { data: Hex }).data;
-    const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
-    throw revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [outputs]));
+    const accounts = decodeSentAddresses((args.params[0] as { data: Hex }).data);
+    const results: bigint[] = [];
+    const skipped: number[] = [];
+    for (let i = 0; i < accounts.length; i++) {
+      const value = Number(BigInt(accounts[i]!));
+      if (starve.includes(value)) throw pageRevert("uint256[]", results, skipped, i);
+      if (decline.includes(value)) skipped.push(i);
+      else results.push(BigInt(value));
+    }
+    throw pageRevert("uint256[]", results, skipped);
   });
 }
 
-function mockCompressibleFn(compress: boolean) {
-  return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
-    const data = (args.params[0] as { data: Hex }).data;
-    const { targetData: raw } = unwrapDeploylessFactoryCall(data);
-    const targetData = compress ? flzDecompress(raw) : raw;
-    const [addrs] = decodeAbiParameters([{ type: "address[]" }], `0x${targetData.slice(10)}` as Hex);
-    const outputs = (addrs as readonly Address[]).map((a) => BigInt(a));
-    throw revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [outputs]));
-  });
-}
-
-function entryKeyFor(element: Hex, abi: AbiFunction = balancesOfAbi) {
+function entryKeyFor(element: Hex, abi: AbiFunction = pageAbi) {
   return keychain.entryKey(chainId, "eth_call", {
     target: { address: TARGET_TO, factory: FACTORY, factoryData: FACTORY_DATA },
     selector: toFunctionSelector(abi),
@@ -180,7 +240,28 @@ async function populateStore(
   await ndjson.flush();
 }
 
-const addr = (n: number) => pad(toHex(n), { size: 20 });
+/** Cached entry keys, in the sorted order `scan` visits them. */
+async function cachedKeys(store: MemoryStore, blobKey: string): Promise<string[]> {
+  const cached = new LazyNdjsonMap<CachedEthCallEntry>(codec, { get: () => store.get(blobKey) ?? [] });
+  const keys: string[] = [];
+  await cached.scan((record) => void keys.push(record.key));
+  return keys;
+}
+
+/** Entry keys for the given address values, sorted the way {@link cachedKeys} returns them. */
+function expectedKeys(values: readonly number[], abi: AbiFunction = pageAbi): string[] {
+  return values.map((n) => entryKeyFor(pad(toHex(n), { size: 32 }), abi)).sort();
+}
+
+/** Decodes the `(U[] results, uint256[] skipped)` tuple the handler responds with. */
+function decodePage(result: unknown, types = "uint256[]") {
+  const [results, skipped] = decodeAbiParameters([{ type: types }, { type: "uint256[]" }], result as Hex);
+  return { results: [...(results as readonly unknown[])], skipped: (skipped as readonly bigint[]).map(Number) };
+}
+
+function decodeResults(result: unknown, types = "uint256[]"): unknown[] {
+  return decodePage(result, types).results;
+}
 
 describe("handleEthCall", () => {
   it("passes through when policy sentinel is absent", async () => {
@@ -202,10 +283,10 @@ describe("handleEthCall", () => {
       params: [
         {
           to: "0x3333333333333333333333333333333333333333",
-          data: buildDeploylessCall(buildTargetCalldata(balancesOfAbi, [addr(1)])),
+          data: buildDeploylessCall(buildTargetCalldata(pageAbi, [addr(1)])),
         },
         "latest",
-        cachePolicySentinel(balancesOfAbi),
+        cachePolicySentinel(pageAbi),
       ],
     };
     await expect(handleEthCall(ctx(vi.fn()), req)).rejects.toThrow(/found extras: to/);
@@ -214,17 +295,17 @@ describe("handleEthCall", () => {
   it("throws when data is not a deployless factory wrapper", async () => {
     const req: EthCallRequest = {
       method: "eth_call",
-      params: [{ data: "0xabcdef" as Hex }, "latest", cachePolicySentinel(balancesOfAbi)],
+      params: [{ data: "0xabcdef" as Hex }, "latest", cachePolicySentinel(pageAbi)],
     };
     await expect(handleEthCall(ctx(vi.fn()), req)).rejects.toThrow(/deployless factory wrapper/);
   });
 
-  it("throws when policy abi is not a single-array-in/single-array-out function", async () => {
-    const badAbi = parseAbiItem("function foo(address) view returns (uint256[])") as AbiFunction;
+  it("throws when the policy abi does not take a dynamic array", async () => {
+    const badAbi = parseAbiItem("function foo(address a) view returns (uint256[] r, uint256[] s)") as AbiFunction;
     const req: EthCallRequest = {
       method: "eth_call",
       params: [
-        { data: buildDeploylessCall(buildTargetCalldata(balancesOfAbi, [addr(1)])) },
+        { data: buildDeploylessCall(buildTargetCalldata(pageAbi, [addr(1)])) },
         "latest",
         cachePolicySentinel(badAbi),
       ],
@@ -232,12 +313,29 @@ describe("handleEthCall", () => {
     await expect(handleEthCall(ctx(vi.fn()), req)).rejects.toThrow(/dynamic-array input/);
   });
 
-  it("throws when target calldata selector mismatches the policy abi", async () => {
-    const otherAbi = parseAbiItem("function otherFn(address[] xs) view returns (uint256[])") as AbiFunction;
+  it("throws when the policy abi is not a paginated lens", async () => {
+    const unarrayifiedAbi = parseAbiItem("function balancesOf(address[] a) view returns (uint256[])") as AbiFunction;
     const req: EthCallRequest = {
       method: "eth_call",
       params: [
-        { data: buildDeploylessCall(buildTargetCalldata(balancesOfAbi, [addr(1)])) },
+        { data: buildDeploylessCall(buildTargetCalldata(pageAbi, [addr(1)])) },
+        "latest",
+        cachePolicySentinel(unarrayifiedAbi),
+      ],
+    };
+    await expect(handleEthCall(ctx(vi.fn()), req)).rejects.toThrow(
+      /must return \(U\[\] results, uint256\[\] skipped\)/,
+    );
+  });
+
+  it("throws when target calldata selector mismatches the policy abi", async () => {
+    const otherAbi = parseAbiItem(
+      "function otherFn(address[] xs) view returns (uint256[] r, uint256[] s)",
+    ) as AbiFunction;
+    const req: EthCallRequest = {
+      method: "eth_call",
+      params: [
+        { data: buildDeploylessCall(buildTargetCalldata(pageAbi, [addr(1)])) },
         "latest",
         cachePolicySentinel(otherAbi),
       ],
@@ -247,15 +345,14 @@ describe("handleEthCall", () => {
 
   it("fetches on cold cache and caches per-element outputs", async () => {
     const store = new MemoryStore();
-    const requestFn = mockBalancesOfFn();
-    const addrs = [addr(1), addr(2), addr(3)];
-    const req = createRequest(addrs);
+    const requestFn = mockPagedFn();
+    const accounts = addrs(3);
+    const req = createRequest(accounts);
 
     const result = await handleEthCall(ctx(requestFn, store), req);
 
     expect(requestFn).toHaveBeenCalledTimes(1);
-    const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
-    expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
 
     const blobKey = keychain.blobKey(chainId, req)!;
     expect(store.get(blobKey)).not.toBeNull();
@@ -263,12 +360,12 @@ describe("handleEthCall", () => {
 
   it("warm cache: returns cached values without calling RPC", async () => {
     const store = new MemoryStore();
-    const addrs = [addr(1), addr(2), addr(3)];
-    const req = createRequest(addrs);
+    const accounts = addrs(3);
+    const req = createRequest(accounts);
     const blobKey = keychain.blobKey(chainId, req)!;
 
-    const addressElements = addrs.map((a) => pad(a, { size: 32 }));
-    const outputElements = addrs.map((a) => pad(toHex(BigInt(a)), { size: 32 }));
+    const addressElements = accounts.map((a) => pad(a, { size: 32 }));
+    const outputElements = accounts.map((a) => pad(toHex(BigInt(a)), { size: 32 }));
     await populateStore(
       store,
       blobKey,
@@ -282,42 +379,37 @@ describe("handleEthCall", () => {
     const result = await handleEthCall(ctx(requestFn, store), req);
 
     expect(requestFn).not.toHaveBeenCalled();
-    const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
-    expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
   });
 
   it("mixed: fetches only misses, leaves hits alone", async () => {
     const store = new MemoryStore();
-    const addrs = [addr(1), addr(2), addr(3), addr(4)];
-    const req = createRequest(addrs);
+    const accounts = addrs(4);
+    const req = createRequest(accounts);
     const blobKey = keychain.blobKey(chainId, req)!;
 
-    const addressElements = addrs.map((a) => pad(a, { size: 32 }));
-    const outputElements = addrs.map((a) => pad(toHex(BigInt(a)), { size: 32 }));
+    const addressElements = accounts.map((a) => pad(a, { size: 32 }));
+    const outputElements = accounts.map((a) => pad(toHex(BigInt(a)), { size: 32 }));
     await populateStore(store, blobKey, [
       { key: entryKeyFor(addressElements[0]!), value: { output: outputElements[0]!, fetchedAt: Date.now() } },
       { key: entryKeyFor(addressElements[2]!), value: { output: outputElements[2]!, fetchedAt: Date.now() } },
     ]);
 
-    const requestFn = mockBalancesOfFn();
+    const requestFn = mockPagedFn();
     const result = await handleEthCall(ctx(requestFn, store), req);
 
     expect(requestFn).toHaveBeenCalledTimes(1);
     const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
-    const sentAddrs = decodeSentAddresses(sentData);
-    expect(sentAddrs.map((a) => a.toLowerCase()).sort()).toEqual(
-      [addrs[1]!, addrs[3]!].map((a) => a.toLowerCase()).sort(),
-    );
+    expect(decodeSentAddresses(sentData)).toEqual([accounts[1]!, accounts[3]!]);
 
-    const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
-    expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
   });
 
   it("dedupes repeated input elements into a single blob entry", async () => {
     const store = new MemoryStore();
-    const requestFn = mockBalancesOfFn();
-    const addrs = [addr(1), addr(2), addr(1), addr(2)];
-    const req = createRequest(addrs);
+    const requestFn = mockPagedFn();
+    const accounts = [addr(1), addr(2), addr(1), addr(2)];
+    const req = createRequest(accounts);
 
     const result = await handleEthCall(ctx(requestFn, store), req);
 
@@ -325,8 +417,7 @@ describe("handleEthCall", () => {
     const sentData = (requestFn.mock.calls[0]![0] as { params: [{ data: Hex }] }).params[0].data;
     expect(decodeSentAddresses(sentData).length).toBe(2);
 
-    const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
-    expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+    expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
   });
 
   it("empty input array: fast path, no RPC call", async () => {
@@ -336,100 +427,79 @@ describe("handleEthCall", () => {
     const result = await handleEthCall(ctx(requestFn), req);
 
     expect(requestFn).not.toHaveBeenCalled();
-    const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
-    expect(decoded).toEqual([]);
+    expect(decodePage(result)).toEqual({ results: [], skipped: [] });
   });
 
   describe("batching", () => {
     it("batchSize splits misses, never exceeding the byte budget", async () => {
-      const batchSize = 520;
-      const overshootCap = 600;
-      const requestFn = mockBalancesOfFn();
-      const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
-      const req = createRequest(addrs, { batch: { batchSize } });
+      const batchSize = wireBytesFor(3);
+      const requestFn = mockPagedFn();
+      const accounts = addrs(5);
+      const req = createRequest(accounts, { batch: { batchSize } });
 
       const result = await handleEthCall(ctx(requestFn), req);
 
-      expect(requestFn.mock.calls.length).toBeGreaterThan(1);
+      expect(requestFn.mock.calls.length).toBe(2);
       for (const [arg] of requestFn.mock.calls) {
         const data = (arg.params[0] as { data: Hex }).data;
-        expect((data.length - 2) / 2).toBeLessThanOrEqual(overshootCap);
+        expect((data.length - 2) / 2).toBeLessThanOrEqual(batchSize);
       }
 
-      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
-      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+      expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
+    });
+
+    it("pageSizeHint caps the opening wave's chunks", async () => {
+      const requestFn = mockPagedFn();
+      const accounts = addrs(5);
+
+      const result = await handleEthCall(ctx(requestFn), createRequest(accounts, { batch: { pageSizeHint: 2 } }));
+
+      expect(requestFn.mock.calls.length).toBe(3);
+      expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
     });
   });
 
   describe("compress=true", () => {
     it("round-trips addresses correctly", async () => {
-      const addrs = [addr(1), addr(2), addr(3)];
-      const requestFn = mockCompressibleFn(true);
-      const req = createRequest(addrs, { batch: { batchSize: 8192, compress: true } });
+      const accounts = addrs(3);
+      const requestFn = mockPagedFn();
+      const req = createRequest(accounts, { batch: { batchSize: 8192, compress: true } });
 
       const result = await handleEthCall(ctx(requestFn), req);
 
-      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
-      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+      expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
     });
   });
 
   it("TTL expiry: stale entries are refetched", async () => {
     const store = new MemoryStore();
-    const addrs = [addr(1), addr(2)];
-    const req = createRequest(addrs);
+    const accounts = addrs(2);
+    const req = createRequest(accounts);
     const blobKey = keychain.blobKey(chainId, req)!;
 
-    const addressElements = addrs.map((a) => pad(a, { size: 32 }));
+    const addressElements = accounts.map((a) => pad(a, { size: 32 }));
     const staleOutput = pad(toHex(0xdeadbeefn), { size: 32 });
     await populateStore(store, blobKey, [
       { key: entryKeyFor(addressElements[0]!), value: { output: staleOutput, fetchedAt: Date.now() - 2 * ttl } },
       { key: entryKeyFor(addressElements[1]!), value: { output: staleOutput, fetchedAt: Date.now() - 2 * ttl } },
     ]);
 
-    const requestFn = mockBalancesOfFn();
+    const requestFn = mockPagedFn();
     const result = await handleEthCall(ctx(requestFn, store), req);
 
     expect(requestFn).toHaveBeenCalledTimes(1);
-    const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
-    expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
-  });
-
-  it("handles dynamic output element types (string[])", async () => {
-    const getNamesAbi = parseAbiItem("function getNames(address[] accounts) view returns (string[])") as AbiFunction;
-    const addrs = [addr(1), addr(2), addr(3)];
-    const expectedNames = ["one", "two", "three"];
-
-    const requestFn = vi
-      .fn()
-      .mockRejectedValue(revertWithSentinel(encodeAbiParameters([{ type: "string[]" }], [expectedNames])));
-    const req = createRequest(addrs, { abi: getNamesAbi, batch: { batchSize: 8192 } });
-
-    const result = await handleEthCall(ctx(requestFn), req);
-
-    expect(requestFn).toHaveBeenCalledTimes(1);
-    const [decoded] = decodeAbiParameters([{ type: "string[]" }], result);
-    expect(decoded).toEqual(expectedNames);
-  });
-
-  it("throws when upstream returns wrong number of outputs", async () => {
-    const requestFn = vi
-      .fn()
-      .mockRejectedValue(revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [[1n, 2n]])));
-    const req = createRequest([addr(1), addr(2), addr(3)], { batch: { batchSize: 8192 } });
-    await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow(/returned 2.*expected 3/);
+    expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
   });
 
   it("forwards block / cleanStateOverride / blockOverride to upstream", async () => {
-    const requestFn = mockBalancesOfFn();
-    const addrs = [addr(1)];
+    const requestFn = mockPagedFn();
     const extraOverride = { "0x4444444444444444444444444444444444444444": { balance: "0x1" } } as const;
     const req: EthCallRequest = {
       method: "eth_call",
       params: [
-        { data: buildDeploylessCall(buildTargetCalldata(balancesOfAbi, addrs)) },
+        { data: buildDeploylessCall(buildTargetCalldata(pageAbi, [addr(1)])) },
         "0x100" as Hex,
-        { ...cachePolicySentinel(balancesOfAbi), ...extraOverride },
+        { ...cachePolicySentinel(pageAbi), ...extraOverride },
       ],
     };
 
@@ -442,7 +512,7 @@ describe("handleEthCall", () => {
 
   describe("halve-on-error retries", () => {
     it("halves and retries when upstream rejects with a batch-size error", async () => {
-      const addrs = [addr(1), addr(2), addr(3), addr(4)];
+      const accounts = addrs(4);
       let firstCall = true;
       const requestFn = vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
         if (firstCall) {
@@ -450,16 +520,18 @@ describe("handleEthCall", () => {
           throw Object.assign(new Error("request body too large"), { data: "0x" as Hex });
         }
         const data = (args.params[0] as { data: Hex }).data;
-        const outputs = decodeSentAddresses(data).map((a) => BigInt(a));
-        throw revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }], [outputs]));
+        throw pageRevert(
+          "uint256[]",
+          decodeSentAddresses(data).map((a) => BigInt(a)),
+          [],
+        );
       });
-      const req = createRequest(addrs, { batch: { batchSize: 8192 } });
+      const req = createRequest(accounts, { batch: { batchSize: 8192 } });
 
       const result = await handleEthCall(ctx(requestFn), req);
 
       expect(requestFn).toHaveBeenCalledTimes(3);
-      const [decoded] = decodeAbiParameters([{ type: "uint256[]" }], result);
-      expect(decoded).toEqual(addrs.map((a) => BigInt(a)));
+      expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
     });
 
     it("rethrows when a single-element batch fails with a batch-size error", async () => {
@@ -482,124 +554,72 @@ describe("handleEthCall", () => {
   });
 
   it("throws when caller supplies non-cache-keyed tx fields (from/gas/value)", async () => {
-    const addrs = [addr(1)];
     const req: EthCallRequest = {
       method: "eth_call",
       params: [
         {
-          data: buildDeploylessCall(buildTargetCalldata(balancesOfAbi, addrs)),
+          data: buildDeploylessCall(buildTargetCalldata(pageAbi, [addr(1)])),
           from: "0x5555555555555555555555555555555555555555",
           gas: "0xffff",
           value: "0x0",
         },
         "latest",
-        cachePolicySentinel(balancesOfAbi),
+        cachePolicySentinel(pageAbi),
       ],
     };
 
     await expect(handleEthCall(ctx(vi.fn()), req)).rejects.toThrow(/found extras:.*from.*gas.*value/);
   });
 
-  describe("paged lenses", () => {
-    const pageAbi = parseAbiItem(
-      "function page(address[] input) view returns (uint256[] results, uint256[] skipped)",
-    ) as AbiFunction;
-
-    function pagedRequest(addrs: readonly Address[]): EthCallRequest {
-      return {
-        method: "eth_call",
-        params: [
-          { data: buildDeploylessCall(buildTargetCalldata(pageAbi, addrs)) },
-          "latest",
-          {
-            [ETH_CALL_POLICY_ADDRESS]: {
-              code: toHex(JSON.stringify({ abi: pageAbi, paged: true, cache: { blobKey: "test-blob", ttl } })),
-            },
-          },
-        ],
-      };
-    }
-
-    function decodePage(result: Hex) {
-      const [results, skipped] = decodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], result);
-      return { results: [...(results as readonly bigint[])], skipped: (skipped as readonly bigint[]).map(Number) };
-    }
-
-    /** Declines the given address values; serves every other element in a single page. */
-    function mockPagedFn(decline: readonly number[]) {
-      return vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
-        const addrs = decodeSentAddresses((args.params[0] as { data: Hex }).data);
-        const results: bigint[] = [];
-        const skipped: bigint[] = [];
-        addrs.forEach((a, i) => {
-          if (decline.includes(Number(BigInt(a)))) skipped.push(BigInt(i));
-          else results.push(BigInt(a));
-        });
-        throw revertWithSentinel(
-          encodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], [results, skipped]),
-        );
-      });
-    }
-
+  describe("partial pages", () => {
     it("caches the elements it fetched even when the response skips an element", async () => {
       const store = new MemoryStore();
-      const req = pagedRequest([addr(1), addr(2), addr(3)]);
+      const req = createRequest(addrs(3));
 
-      const result = await handleEthCall(ctx(mockPagedFn([2]), store), req);
+      const result = await handleEthCall(ctx(mockPagedFn({ decline: [2] }), store), req);
 
       expect(decodePage(result)).toEqual({ results: [1n, 3n], skipped: [1] });
       const blobKey = keychain.blobKey(chainId, req)!;
-      const cached = new LazyNdjsonMap<CachedEthCallEntry>(codec, { get: () => store.get(blobKey) ?? [] });
-      const keys: string[] = [];
-      await cached.scan((record) => void keys.push(record.key));
-      expect(keys).toEqual([1, 3].map((n) => entryKeyFor(pad(toHex(n), { size: 32 }), pageAbi)));
+      expect(await cachedKeys(store, blobKey)).toEqual(expectedKeys([1, 3]));
     });
 
     it("reports elements_missing against caller inputs, not deduped entries", async () => {
       // addr(2) appears twice, so one declined cache entry stands for two caller indices.
-      const req = pagedRequest([addr(1), addr(2), addr(3), addr(2)]);
+      const req = createRequest([addr(1), addr(2), addr(3), addr(2)]);
 
-      const { logger, events } = createStubLogger();
-      const context = ctx(mockPagedFn([2]), new MemoryStore());
-      // Same id on the boundary as the handler uses, so both write the bare key.
-      const observed = observe(() => handleEthCall(context, req), context.facetId);
-      const result = await withLogging(() => observed({ method: "eth_call" }), { logger });
+      const { result, field } = await withFacet(ctx(mockPagedFn({ decline: [2] })), req);
 
-      const { skipped } = decodePage(result as Hex);
+      const { skipped } = decodePage(result);
       expect(skipped).toEqual([1, 3]);
       // The field has to match the `skipped` array the caller actually receives.
-      expect(findDotted(events[0]!.context, cacheTransportKey, "eth_call.elements_missing")).toBe(skipped.length);
+      expect(field("elements_missing")).toBe(skipped.length);
+    });
+
+    it("expands an element the frame could not resolve across every caller index", async () => {
+      // addr(2) dedupes to one miss that dies alone; both of its caller indices go unresolved.
+      const req = createRequest([addr(2), addr(1), addr(2)]);
+
+      const { result, field } = await withFacet(ctx(mockPagedFn({ starve: [2] })), req);
+
+      expect(decodePage(result)).toEqual({ results: [1n], skipped: [0, 2] });
+      expect(field("elements_missing")).toBe(2);
+      expect(field("elements_unresolved")).toBe(2);
     });
 
     it("waits for a slow sibling chunk to commit before a failing chunk's error escapes", async () => {
       const store = new MemoryStore();
-      const addrs = [addr(1), addr(2), addr(3), addr(4)];
+      const accounts = addrs(4);
       // Two chunks of two. The first rejects at once; the second resolves a few ticks later.
-      const req: EthCallRequest = {
-        method: "eth_call",
-        params: [
-          { data: buildDeploylessCall(buildTargetCalldata(pageAbi, addrs)) },
-          "latest",
-          {
-            [ETH_CALL_POLICY_ADDRESS]: {
-              code: toHex(
-                JSON.stringify({
-                  abi: pageAbi,
-                  paged: true,
-                  cache: { blobKey: "test-blob", ttl },
-                  batch: { gas: { constant: 0, linear: 15_000_000, quadratic: 0 } },
-                }),
-              ),
-            },
-          },
-        ],
-      };
+      const req = createRequest(accounts, { batch: { batchSize: wireBytesFor(2) } });
       const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
         const sent = decodeSentAddresses((args.params[0] as { data: Hex }).data);
         if (sent[0] === addr(1)) throw new Error("upstream exploded");
         await new Promise((resolve) => setTimeout(resolve, 5));
-        const results = sent.map((a) => BigInt(a));
-        throw revertWithSentinel(encodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], [results, []]));
+        throw pageRevert(
+          "uint256[]",
+          sent.map((a) => BigInt(a)),
+          [],
+        );
       });
 
       const error = await handleEthCall(ctx(requestFn, store), req).catch((e) => e);
@@ -607,27 +627,24 @@ describe("handleEthCall", () => {
       // The transport error wins over any partial state, but the slow chunk's work is kept.
       expect(error.message).toMatch(/upstream exploded/);
       const blobKey = keychain.blobKey(chainId, req)!;
-      const cached = new LazyNdjsonMap<CachedEthCallEntry>(codec, { get: () => store.get(blobKey) ?? [] });
-      const keys: string[] = [];
-      await cached.scan((record) => void keys.push(record.key));
-      expect(keys).toEqual([3, 4].map((n) => entryKeyFor(pad(toHex(n), { size: 32 }), pageAbi)));
+      expect(await cachedKeys(store, blobKey)).toEqual(expectedKeys([3, 4]));
     });
 
     it("orders the response correctly when warm hits, fresh misses, and skips interleave", async () => {
       const store = new MemoryStore();
-      const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
-      const req = pagedRequest(addrs);
+      const accounts = addrs(5);
+      const req = createRequest(accounts);
       const blobKey = keychain.blobKey(chainId, req)!;
       // Pre-seed 2 and 4 so the fetch sees only [1, 3, 5]; the lens then declines 3.
       await populateStore(
         store,
         blobKey,
         [2, 4].map((n) => ({
-          key: entryKeyFor(pad(toHex(n), { size: 32 }), pageAbi),
+          key: entryKeyFor(pad(toHex(n), { size: 32 })),
           value: { output: pad(toHex(n * 10), { size: 32 }), fetchedAt: Date.now() },
         })),
       );
-      const requestFn = mockPagedFn([3]);
+      const requestFn = mockPagedFn({ decline: [3] });
 
       const result = await handleEthCall(ctx(requestFn, store), req);
 
@@ -643,29 +660,103 @@ describe("handleEthCall", () => {
     it("reports missing indices against the caller's input, not the deduped miss list", async () => {
       const store = new MemoryStore();
       // addr(2) appears three times but dedupes to one miss; all three indices must be reported.
-      const req = pagedRequest([addr(1), addr(2), addr(2), addr(3), addr(2)]);
+      const req = createRequest([addr(1), addr(2), addr(2), addr(3), addr(2)]);
 
-      const result = await handleEthCall(ctx(mockPagedFn([2]), store), req);
+      const result = await handleEthCall(ctx(mockPagedFn({ decline: [2] }), store), req);
 
       // `results` is the complement in original order; `skipped` names every original index.
       expect(decodePage(result)).toEqual({ results: [1n, 3n], skipped: [1, 2, 4] });
     });
   });
 
-  it("honors gas budget on the cache miss-fetch path", async () => {
-    // 5 elements, gasLimit 30M (default), G(N) = 12M·N → max 2 per chunk → 3 chunks (2+2+1).
-    const addrs = [addr(1), addr(2), addr(3), addr(4), addr(5)];
-    const requestFn = mockBalancesOfFn();
-    const req = createRequest(addrs, {
-      batch: { gas: { constant: 0, linear: 12_000_000, quadratic: 0 } },
+  describe("dynamic element types", () => {
+    const namesAbi = parseAbiItem(
+      "function getNames(address[] accounts) view returns (string[] results, uint256[] skipped)",
+    ) as AbiFunction;
+    const lengthsAbi = parseAbiItem(
+      "function lengths(string[] input) view returns (uint256[] results, uint256[] skipped)",
+    ) as AbiFunction;
+
+    function stringRequest(values: readonly string[], opts: PolicyOpts): EthCallRequest {
+      const targetData = concat([
+        toFunctionSelector(lengthsAbi),
+        encodeAbiParameters([{ type: "string[]" }], [values]),
+      ]);
+      return {
+        method: "eth_call",
+        params: [{ data: buildDeploylessCall(targetData) }, "latest", cachePolicySentinel(lengthsAbi, opts)],
+      };
+    }
+
+    /** A lens over `string[]` answering each element's length, read off its length-prefixed tail. */
+    function lengthsLens() {
+      return vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
+        const { targetData } = unwrapDeploylessFactoryCall((args.params[0] as { data: Hex }).data);
+        const tails = wireToArray(DYNAMIC, targetData);
+        throw pageRevert(
+          "uint256[]",
+          tails.map((t) => BigInt(`0x${t.slice(2, 66)}`)),
+          [],
+        );
+      });
+    }
+
+    /** Bytes the transport puts on the wire for a chunk carrying exactly these strings. */
+    function wireBytesForStrings(values: readonly string[]): number {
+      const wrapped = wrapDeploylessFactoryCall(
+        {
+          target: { address: TARGET_TO, factory: FACTORY, factoryData: FACTORY_DATA },
+          targetData: arrayToWire(DYNAMIC, elementsOf("string[]", values)),
+        },
+        { compress: false, config: envelopeConfig(resolveArrayFunction(lengthsAbi), false) },
+      );
+      return (wrapped.length - 2) / 2;
+    }
+
+    it("handles dynamic result element types (string[])", async () => {
+      const expectedNames = ["one", "two", "three"];
+      const requestFn = vi.fn().mockRejectedValue(pageRevert("string[]", expectedNames, []));
+      const req = createRequest(addrs(3), { abi: namesAbi, batch: { batchSize: 8192 } });
+
+      const result = await handleEthCall(ctx(requestFn), req);
+
+      expect(requestFn).toHaveBeenCalledTimes(1);
+      expect(decodeResults(result, "string[]")).toEqual(expectedNames);
     });
 
-    await handleEthCall(ctx(requestFn), req);
+    it("sends dynamic input elements of any size as length-prefixed tails, with no bound to declare", async () => {
+      const values = ["alpha", "x".repeat(40), "bee", "y".repeat(500)];
+      const requestFn = lengthsLens();
 
-    expect(requestFn).toHaveBeenCalledTimes(3);
-    for (const [arg] of requestFn.mock.calls) {
-      const data = (arg.params[0] as { data: Hex }).data;
-      expect(decodeSentAddresses(data).length).toBeLessThanOrEqual(2);
-    }
+      const { result, field } = await withFacet(
+        ctx(requestFn as unknown as HandlerContext["requestFn"]),
+        stringRequest(values, {}),
+      );
+
+      expect(requestFn).toHaveBeenCalledTimes(1);
+      expect(decodePage(result)).toEqual({ results: [5n, 40n, 3n, 500n], skipped: [] });
+      expect(field("elements_declined_oversize")).toBe(0);
+    });
+
+    it("declines an element that cannot fit a chunk alone under the wire cap, without asking upstream", async () => {
+      const big = "x".repeat(200);
+      const requestFn = lengthsLens();
+
+      const { result, field } = await withFacet(
+        ctx(requestFn as unknown as HandlerContext["requestFn"]),
+        stringRequest(["alpha", big, "bee", big], { batch: { batchSize: wireBytesForStrings(["alpha", "bee"]) } }),
+      );
+
+      // The oversize element splits its neighbours into two chunks; it is never sent itself.
+      const sent = requestFn.mock.calls.flatMap((call) =>
+        wireToArray(DYNAMIC, unwrapDeploylessFactoryCall((call[0] as EthCallRequest).params[0].data as Hex).targetData),
+      );
+      expect(sent).toEqual(elementsOf("string[]", ["alpha", "bee"]));
+
+      // The repeated element dedupes to one miss but is reported at every caller index.
+      expect(decodePage(result)).toEqual({ results: [5n, 3n], skipped: [1, 3] });
+      expect(field("elements_declined_oversize")).toBe(2);
+      expect(field("elements_missing")).toBe(2);
+    });
   });
 });

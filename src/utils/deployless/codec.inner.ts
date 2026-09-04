@@ -2,6 +2,67 @@ import type { AbiFunction, AbiParameter, Hex } from "viem";
 import { toFunctionSelector } from "viem";
 
 /**
+ * The array-shaped fragment `f(T[]) returns (U[] results, uint256[] skipped)` derived from a
+ * per-item lens function `f(T) returns (U)`. Types are transformed alongside values, so viem
+ * decodes `results` with `U`'s field names intact.
+ */
+export type ArrayifiedAbi<F extends AbiFunction> = Omit<F, "inputs" | "outputs"> & {
+  readonly inputs: readonly [Omit<F["inputs"][0], "type"> & { readonly type: `${F["inputs"][0]["type"]}[]` }];
+  readonly outputs: readonly [
+    Omit<F["outputs"][0], "type" | "name"> & {
+      readonly name: "results";
+      readonly type: `${F["outputs"][0]["type"]}[]`;
+    },
+    { readonly name: "skipped"; readonly type: "uint256[]" },
+  ];
+};
+
+/**
+ * Derives the array-shaped fragment the transports read a paginated lens through from the lens's
+ * real per-item function. The function must take exactly one parameter and return exactly one
+ * value; take it from the contract's ABI (`getAbiItem`) so the name and types are the compiler's.
+ * {@link itemFragmentOf} inverts it up to the output's name, which becomes `results`.
+ */
+export function arrayifiedAbi<const F extends AbiFunction>(item: F): ArrayifiedAbi<F> {
+  if (item.type !== "function") throw new Error("arrayifiedAbi: expected a function fragment");
+  if (item.stateMutability !== "view" && item.stateMutability !== "pure") {
+    throw new Error(`arrayifiedAbi: ${item.name} must be view or pure`);
+  }
+  const input = item.inputs[0];
+  const output = item.outputs[0];
+  if (item.inputs.length !== 1 || !input) {
+    throw new Error(`arrayifiedAbi: ${item.name} must take exactly one parameter`);
+  }
+  if (item.outputs.length !== 1 || !output) {
+    throw new Error(`arrayifiedAbi: ${item.name} must return exactly one value`);
+  }
+  return {
+    ...item,
+    inputs: [{ ...input, type: `${input.type}[]` }],
+    outputs: [
+      { ...output, name: "results", type: `${output.type}[]` },
+      { name: "skipped", type: "uint256[]" },
+    ],
+  } as ArrayifiedAbi<F>;
+}
+
+/**
+ * Recovers the per-item fragment `f(T) returns (U)` from an array-shaped
+ * `f(T[]) returns (U[] results, uint256[] skipped)` by removing the terminal `[]` from the sole
+ * input and the first output; parameter names (as they stand on `fragment`) and tuple components
+ * are preserved. Its selector is what the envelope calls.
+ */
+export function itemFragmentOf(fragment: AbiFunction): AbiFunction {
+  const input = fragment.inputs[0]!;
+  const output = fragment.outputs[0]!;
+  return {
+    ...fragment,
+    inputs: [{ ...input, type: input.type.slice(0, -2) }],
+    outputs: [{ ...output, type: output.type.slice(0, -2) }],
+  };
+}
+
+/**
  * Structural ABI codec for a single dynamic array `T[]`. We only decode the outer array
  * structure — element bytes are sliced raw and passed through to the cache and back to
  * the caller without ever instantiating their JS values. This keeps the hot path byte-
@@ -20,49 +81,45 @@ import { toFunctionSelector } from "viem";
 export type ElementLayout = { mode: "static"; size: number } | { mode: "dynamic" };
 
 export type ResolvedArrayFunction = {
-  /** 4-byte function selector computed from the original fragment. */
+  /** 4-byte selector of the array-shaped fragment — what the caller's calldata is encoded with. */
   selector: Hex;
+  /** 4-byte selector of the per-item function the envelope calls, see {@link itemFragmentOf}. */
+  itemSelector: Hex;
   /** Element layout for the input array. */
   inputLayout: ElementLayout;
-  /** Element layout for the output array. */
+  /** Element layout for the result array `U[]`. */
   outputLayout: ElementLayout;
-  /** Whether the fragment is a paged lens — see {@link resolveArrayFunction}. */
-  paged: boolean;
 };
 
 /**
- * Validates that `fragment` is a single-input function whose input is a dynamic array, and
- * resolves the element layout of that input and of the result array.
- *
- * With `paged`, the fragment must return `(U[] results, uint256[] skipped)` instead of a bare
- * `U[]`; `outputLayout` describes `U` either way. The paged contract — index order, "attempt at
- * least one item", deterministic skips — is documented on `policy`'s `paged` option.
+ * Validates that `fragment` is a paginated lens's array-shaped fragment — one dynamic-array
+ * input, returning `(U[] results, uint256[] skipped)` — and resolves the element layouts and the
+ * per-item selector.
  */
-export function resolveArrayFunction(fragment: AbiFunction, paged = false): ResolvedArrayFunction {
+export function resolveArrayFunction(fragment: AbiFunction): ResolvedArrayFunction {
   if (fragment.type !== "function") {
     throw new Error("eth_call policy abi must be a function fragment");
   }
+  if (fragment.stateMutability !== "view" && fragment.stateMutability !== "pure") {
+    throw new Error(`function ${fragment.name}: a lens is called with STATICCALL, so it must be view or pure`);
+  }
   const input = fragment.inputs[0];
   const output = fragment.outputs[0];
+  const skipped = fragment.outputs[1];
   if (fragment.inputs.length !== 1 || !input?.type.endsWith("[]")) {
     throw new Error(`function ${fragment.name}: expected exactly one dynamic-array input`);
   }
-  if (paged) {
-    const skipped = fragment.outputs[1];
-    if (fragment.outputs.length !== 2 || !output?.type.endsWith("[]")) {
-      throw new Error(`function ${fragment.name}: paged lenses must return (U[] results, uint256[] skipped)`);
-    }
-    if (skipped?.type !== "uint256[]") {
-      throw new Error(`function ${fragment.name}: paged output 1 must be uint256[], got ${skipped?.type}`);
-    }
-  } else if (fragment.outputs.length !== 1 || !output?.type.endsWith("[]")) {
-    throw new Error(`function ${fragment.name}: expected exactly one dynamic-array output`);
+  if (fragment.outputs.length !== 2 || !output?.type.endsWith("[]")) {
+    throw new Error(`function ${fragment.name}: paginated lenses must return (U[] results, uint256[] skipped)`);
+  }
+  if (skipped?.type !== "uint256[]") {
+    throw new Error(`function ${fragment.name}: paginated output 1 must be uint256[], got ${skipped?.type}`);
   }
   return {
     selector: toFunctionSelector(fragment),
+    itemSelector: toFunctionSelector(itemFragmentOf(fragment)),
     inputLayout: layoutOf(input),
     outputLayout: layoutOf(output),
-    paged,
   };
 }
 
@@ -85,51 +142,130 @@ export function hexToArray(layout: ElementLayout, encoded: Hex): readonly Hex[] 
   return sliceArray(layout, encoded, readUint256(encoded, 0), hexByteLength(encoded));
 }
 
-/** A paged lens's return tuple — see {@link hexToPage}. */
+/** The envelope's gas telemetry for one page, ahead of its records — see {@link hexToPage}. */
+export type PageGas = {
+  /** What the loop could spend on attempts: the frame's gas at the loop's start, less the reserve every admission keeps. */
+  budget: bigint;
+  /** Over the per-attempt gas of every record but a death: the sum, the sum of squares, the maximum. */
+  sum: bigint;
+  sumSquares: bigint;
+  max: bigint;
+};
+
+/** A page: what one envelope call adjudicated, in the order it was attempted — see {@link hexToPage}. */
 export type Page = {
   /** Raw element bytes for the attempted-and-served items, in input order. */
   results: readonly Hex[];
-  /** Indices (into *this call's* input) the lens attempted and declined. */
+  /** Indices (into *this call's* input) the per-item call reverted on. */
   skipped: readonly number[];
+  /**
+   * Index (into *this call's* input) gas could not resolve — the page's last adjudicated element,
+   * carried on the wire as `~index` in the stream's last record and never surfaced past the client.
+   */
+  died?: number;
+  gas: PageGas;
 };
 
+/** `nA` and the four {@link PageGas} words. */
+const PAGE_HEADER_BYTES = 160;
+const UINT256_MAX = (1n << 256n) - 1n;
+const SUCCESS_BIT = 1n << 255n;
+
 /**
- * Slices a paged lens's `(U[] results, uint256[] skipped)` return tuple, keeping `results`
- * as raw element bytes the way {@link hexToArray} does and instantiating only `skipped`.
- *
- * Bounding `results` needs both head words: with one array the body runs to end-of-buffer, but
- * here `skipped`'s offset is where `results` stops. Reusing {@link hexToArray} would let the
- * final `U` swallow the whole `skipped` array whenever `U` is dynamic.
+ * Decodes the envelope's outcome stream: `nA`, the four gas words, then one record per adjudicated
+ * element in attempt order — success `(1 << 255) | L ‖ L bytes of raw U`, decline `i`, death `~i`
+ * (last only). Every record is bound to its ordinal, the payload must be consumed exactly, and the
+ * gas words must be consistent with each other, so anything this accepts is a well-formed page; it
+ * is the protocol boundary for responses.
  */
 export function hexToPage(layout: ElementLayout, encoded: Hex): Page {
-  if (encoded.length < 2 + 128) {
-    throw new Error("paged encoding shorter than a two-parameter head");
-  }
   const totalBytes = hexByteLength(encoded);
-  const resultsAt = readUint256(encoded, 0);
-  const skippedAt = readUint256(encoded, 32);
-  // `skippedAt` doubles as the end bound for `results`, so a head-relative offset would truncate it.
-  if (
-    resultsAt < 64 ||
-    resultsAt % 32 !== 0 ||
-    skippedAt % 32 !== 0 ||
-    resultsAt >= skippedAt ||
-    skippedAt > totalBytes
-  ) {
-    throw new Error("paged encoding parameter offsets out of order or out of range");
+  if (totalBytes < PAGE_HEADER_BYTES) throw new Error("page shorter than its header");
+  const attempted = readUint256(encoded, 0);
+  if (attempted < 1) throw new Error("page adjudicated no elements");
+  if (attempted > (totalBytes - PAGE_HEADER_BYTES) / 32) {
+    throw new Error(`page claims ${attempted} records in ${totalBytes} bytes`);
   }
+  const gas: PageGas = {
+    budget: readWord(encoded, 32),
+    sum: readWord(encoded, 64),
+    sumSquares: readWord(encoded, 96),
+    max: readWord(encoded, 128),
+  };
+  const results: Hex[] = [];
+  const skipped: number[] = [];
+  let died: number | undefined;
+  let at = PAGE_HEADER_BYTES;
+  for (let j = 0; j < attempted; j++) {
+    if (at + 32 > totalBytes) throw new Error(`page record ${j} is missing`);
+    const word = readWord(encoded, at);
+    at += 32;
+    switch (word >> 254n) {
+      case 0n:
+        if (word !== BigInt(j)) throw new Error(`page record ${j} declines element ${word}`);
+        skipped.push(j);
+        break;
+      case 3n:
+        if ((word ^ UINT256_MAX) !== BigInt(j) || j !== attempted - 1) {
+          throw new Error(`page record ${j} of ${attempted} reports a gas death at ${word ^ UINT256_MAX}`);
+        }
+        died = j;
+        break;
+      case 2n: {
+        const length = word ^ SUCCESS_BIT;
+        const fits = layout.mode === "static" ? length === BigInt(layout.size) : length >= 32n && length % 32n === 0n;
+        if (!fits) throw new Error(`page record ${j} carries a ${length}-byte result, which does not fit the layout`);
+        const end = at + Number(length);
+        if (end > totalBytes) throw new Error(`page record ${j} runs past the payload`);
+        results.push(`0x${encoded.slice(2 + at * 2, 2 + end * 2)}` as Hex);
+        at = end;
+        break;
+      }
+      default:
+        throw new Error(`page record ${j} is neither a success, a decline nor a death`);
+    }
+  }
+  if (at !== totalBytes) throw new Error("page has trailing bytes");
+  checkPageGas(gas, BigInt(attempted - (died === undefined ? 0 : 1)));
+  return died === undefined ? { results, skipped, gas } : { results, skipped, died, gas };
+}
 
-  const skippedLength = readUint256(encoded, skippedAt);
-  const skippedStart = 2 + (skippedAt + 32) * 2;
-  if (encoded.length < skippedStart + skippedLength * 64) {
-    throw new Error("paged skipped array shorter than declared length");
-  }
-  const skipped = new Array<number>(skippedLength);
-  for (let i = 0; i < skippedLength; i++) {
-    skipped[i] = readUint256(encoded, skippedAt + 32 + i * 32);
-  }
+/**
+ * The relations any sum, sum of squares and maximum of `served` non-negative samples satisfy:
+ * `sum² ≤ served·sumSquares` (Cauchy–Schwarz) and `max ≤ sum`, `sumSquares ≤ sum·max`. The sum may
+ * exceed the budget: the last attempt admitted can spend into the reserve.
+ */
+function checkPageGas({ sum, sumSquares, max }: PageGas, served: bigint): void {
+  const consistent =
+    served === 0n
+      ? sum === 0n && sumSquares === 0n && max === 0n
+      : sum > 0n && max <= sum && sum * sum <= served * sumSquares && sumSquares <= sum * max;
+  if (!consistent) throw new Error("page gas telemetry is inconsistent");
+}
 
-  return { results: sliceArray(layout, encoded, resultsAt, skippedAt), skipped };
+/** Inverse of {@link hexToPage}; builds envelope responses in tests and mocks. */
+export function pageToWire({ results, skipped, died, gas }: Page): Hex {
+  const attempted = results.length + skipped.length + (died === undefined ? 0 : 1);
+  const declined = new Set(skipped);
+  if (declined.size !== skipped.length || skipped.some((i) => i >= attempted || i === died)) {
+    throw new Error("page skips an index it did not attempt");
+  }
+  if (died !== undefined && died !== attempted - 1) throw new Error("page death is not its last record");
+  let out =
+    writeUint256(attempted) +
+    writeWord(gas.budget) +
+    writeWord(gas.sum) +
+    writeWord(gas.sumSquares) +
+    writeWord(gas.max);
+  for (let j = 0, served = 0; j < attempted; j++) {
+    if (j === died) out += writeWord(BigInt(j) ^ UINT256_MAX);
+    else if (declined.has(j)) out += writeUint256(j);
+    else {
+      const result = results[served++]!;
+      out += writeWord(SUCCESS_BIT | BigInt(hexByteLength(result))) + result.slice(2);
+    }
+  }
+  return `0x${out}` as Hex;
 }
 
 /**
@@ -141,13 +277,11 @@ export function arrayToHex(layout: ElementLayout, elements: readonly Hex[]): Hex
   return `0x${writeUint256(32)}${encodeArrayBody(layout, elements)}` as Hex;
 }
 
-/** Inverse of {@link hexToPage}; used to build paged responses in tests and fixtures. */
-export function pageToHex(layout: ElementLayout, { results, skipped }: Page): Hex {
+/** Encodes the caller-facing `(U[] results, uint256[] skipped)` ABI tuple; a death never reaches it. */
+export function pageToHex(layout: ElementLayout, { results, skipped }: Pick<Page, "results" | "skipped">): Hex {
   const resultsBody = encodeArrayBody(layout, results);
-  const skippedBody = encodeArrayBody(
-    { mode: "static", size: 32 },
-    skipped.map((i) => `0x${writeUint256(i)}` as Hex),
-  );
+  const skippedWords = skipped.map((i) => `0x${writeUint256(i)}` as Hex);
+  const skippedBody = encodeArrayBody({ mode: "static", size: 32 }, skippedWords);
   const skippedAt = 64 + resultsBody.length / 2;
   return `0x${writeUint256(64)}${writeUint256(skippedAt)}${resultsBody}${skippedBody}` as Hex;
 }
@@ -242,7 +376,7 @@ function hexByteLength(hex: Hex): number {
 }
 
 /*//////////////////////////////////////////////////////////////
-                        CALLDATA <-> ARRAY
+                     CALLDATA / WIRE <-> ARRAY
 //////////////////////////////////////////////////////////////*/
 
 /**
@@ -261,12 +395,40 @@ export function calldataToArray(resolved: ResolvedArrayFunction, calldata: Hex):
 }
 
 /**
- * Builds a full target calldata payload from a selector and an array of pre-sliced
- * raw element bytes.
+ * The envelope's input wire, `n ‖ bodyLen ‖ body`: the body is `n` strides for a static layout
+ * (byte-identical to the ABI array body) or `n` records `L ‖ E` for a dynamic one, `E` the padded
+ * ABI tail {@link hexToArray} yields. Compression, when used, applies to the body alone.
  */
-export function arrayToCalldata(resolved: ResolvedArrayFunction, inputElements: readonly Hex[]): Hex {
-  const arrayEncoding = arrayToHex(resolved.inputLayout, inputElements);
-  return `${resolved.selector}${arrayEncoding.slice(2)}` as Hex;
+export function arrayToWire(layout: ElementLayout, elements: readonly Hex[]): Hex {
+  const body = elements
+    .map((e) => (layout.mode === "static" ? e.slice(2) : writeUint256(hexByteLength(e)) + e.slice(2)))
+    .join("");
+  return `0x${writeUint256(elements.length)}${writeUint256(body.length / 2)}${body}` as Hex;
+}
+
+/** Inverse of {@link arrayToWire}, with the envelope's own checks; for tests and mocks. */
+export function wireToArray(layout: ElementLayout, wire: Hex): readonly Hex[] {
+  const totalBytes = hexByteLength(wire);
+  if (totalBytes < 64) throw new Error("wire shorter than its header");
+  const n = readUint256(wire, 0);
+  if (64 + readUint256(wire, 32) !== totalBytes) throw new Error("wire body length does not match the payload");
+  const out: Hex[] = new Array(n);
+  let at = 64;
+  for (let i = 0; i < n; i++) {
+    let length: number;
+    if (layout.mode === "static") length = layout.size;
+    else {
+      if (at + 32 > totalBytes) throw new Error(`wire element ${i} has no length word`);
+      length = readUint256(wire, at);
+      at += 32;
+      if (length < 32 || length % 32 !== 0) throw new Error(`wire element ${i} declares ${length} bytes`);
+    }
+    if (at + length > totalBytes) throw new Error(`wire element ${i} runs past the body`);
+    out[i] = `0x${wire.slice(2 + at * 2, 2 + (at + length) * 2)}` as Hex;
+    at += length;
+  }
+  if (at !== totalBytes) throw new Error("wire has trailing bytes");
+  return out;
 }
 
 /*//////////////////////////////////////////////////////////////
@@ -289,6 +451,14 @@ function writeUint256(n: number): string {
   return n.toString(16).padStart(64, "0");
 }
 
+function readWord(hex: string, byteOffset: number): bigint {
+  return BigInt(`0x${hex.slice(2 + byteOffset * 2, 2 + byteOffset * 2 + 64)}`);
+}
+
+function writeWord(n: bigint): string {
+  return n.toString(16).padStart(64, "0");
+}
+
 /**
  * Computes the static ABI size of a type, or returns `null` if the type is dynamic.
  * Recurses through tuple components and fixed-size arrays.
@@ -297,7 +467,7 @@ function staticSizeOf(param: AbiParameter): number | null {
   const type = param.type;
 
   if (type === "bytes" || type === "string") return null;
-  if (/^u?int\d*$/.test(type) || type === "bool" || type === "address") return 32;
+  if (/^u?int\d*$/.test(type) || type === "bool" || type === "address" || type === "function") return 32;
   const bytesMatch = /^bytes(\d+)$/.exec(type);
   if (bytesMatch) {
     const n = Number(bytesMatch[1]);

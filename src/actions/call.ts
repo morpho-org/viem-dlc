@@ -4,70 +4,38 @@ import { toHex } from "viem";
 import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state-overrides.js";
 
 /**
- * Returns a StateOverride entry encoding the `eth_call` policy. Pass it in the
- * `stateOverride` array.
+ * EIP-3860 initcode cap. Deployless calldata rides inside initcode, so this is the natural
+ * `batch.batchSize`.
+ */
+export const MAX_INITCODE_SIZE = 49_152;
+
+/**
+ * Returns a StateOverride entry encoding the `eth_call` policy. Pass it in the `stateOverride`
+ * array; `readLens` does so for you.
  *
- * Marks a single-input, single-output array function invoked via viem's deployless-factory
- * pattern (`call({ factory, factoryData, to, data, ... })`) for special handling by the
- * `deployless` or `cache` transport.
- *
- * Both transports decode the outer dynamic array structurally (without instantiating element
- * values) and can re-pack subsets of elements into new deployless-factory calls to honor
- * `batchSize`. When used with `cache`, raw element bytes are additionally keyed by
- * `(targetTo, factory, factoryData, selector, element)` and cached per element.
+ * Marks a deployless `eth_call` (`call({ factory, factoryData, to, data, ... })`) over a paginated
+ * lens for the `deployless` or `cache` transport: elements are re-packed into chunks, the envelope
+ * calls the per-item function once per element and pages, and the pages aggregate back into the
+ * shape `abi` declares. With `cache`, element bytes are keyed by
+ * `(targetTo, factory, factoryData, selector, element)` and cached individually.
  *
  * Requirements:
- * - The callee must be elementwise: for an input array `[x0, ..., xn]`, it must return
- *   an output array `[y0, ..., yn]` with the same length and order, where each `yi`
- *   depends only on `xi` plus shared chain state (`block`, state overrides, etc.), not
- *   on other input elements, their multiplicity, or their order.
+ * - Elementwise: each value, and each decline (a per-item revert), depends only on its own element
+ *   plus shared chain state, never on other elements, their order or multiplicity, or gas.
  * - The request must not depend on tx envelope fields outside `data` (`from`, `gas`,
  *   `value`, etc.). Those fields are intentionally excluded from cache identity.
  *
- * ABI restrictions:
- * - Must be a `function` fragment with exactly one input, which must be a dynamic array (`T[]`).
- * - Must return exactly one dynamic array (`U[]`), or — with `paged` — exactly
- *   `(U[] results, uint256[] skipped)`.
- * - Element types may be static (uint/int/bool/address/bytesN, tuples, fixed-size arrays)
- *   or dynamic (string, bytes, nested arrays, dynamic tuples).
- *
- * @param opts.paged Marks `abi` as a *paged* lens: it returns `(U[] results, uint256[] skipped)`
- *   and may stop before consuming its whole input, letting the transport re-request the
- *   remainder instead of bisecting.
- *
- *   The chunked calls aggregate into a single page over the caller's whole input, so the
- *   response keeps the shape `abi` declares and stays readable through `readContract`,
- *   `decodeFunctionResult`, and the rest of viem. `skipped` names the indices no chunk could
- *   serve, rebased onto the caller's input — a partial result is a successful response, not a
- *   throw, so check `skipped` if you need every element. It merges elements the lens declined
- *   with elements that exhausted the frame even alone; the latter depend on the node's gas cap
- *   and another provider might serve them. The full lens contract is in the README under
- *   "Paged lenses".
- * @param opts.batch Optional batching config. Omit to send all elements in a single
- *   upstream `eth_call`. When set, chunks honor both `batchSize` and `gas`.
- * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk.
- *   Input elements are greedy-packed under this limit and fetched in parallel. Omit to
- *   skip byte-budget enforcement (useful when the gas budget is the only relevant cap).
- * @param opts.batch.compress Whether to use FastLZ (LZ77) compression on the wire (to RPC).
- *   EIP-3860 limits initcode to 49_152 bytes. For deployless reads, that constrains calldata,
- *   so compression can help squeeze more entities into the request at the cost of extra
- *   pre-request encoding time.
- * @param opts.batch.gas Polynomial gas-cost model `G(N) = constant + linear·N + quadratic·N²`
- *   for the lens. Combined with the transport's `gasLimit`, the chunker picks the largest
- *   per-chunk item count `N` such that `G(N) ≤ gasLimit` and enforces it alongside `batchSize`.
- *   Omit to skip gas-budget enforcement. No internal safety factor is applied — pad your
- *   estimate if you want headroom.
- *
- *   Each coefficient is a property of the lens, not of any specific RPC's gas cap:
- *   - `constant`: fixed per-call overhead (selector dispatch, decoder, encoder). Pass 0 if
- *     negligible.
- *   - `linear`: asymptotic per-item rate. The dominant term for typical lenses; for many
- *     lenses this is the only non-zero term.
- *   - `quadratic`: per-item² cost — typically memory expansion (`memWords² / 512`). Pass 0
- *     if memory expansion is negligible at the chunk sizes you'll see.
- *
- *   Calibrate by measuring `G(N)` at a few values of `N` and fitting; or measure `N_max` at
- *   one cap via binary search and back out coefficients with knowledge of the lens shape.
+ * @param opts.abi The array-shaped fragment from `arrayifiedAbi`, built from the contract's real
+ *   ABI: the per-item selector the envelope calls is derived from it.
+ * @param opts.batch Optional batching config. Omit to send all elements in one upstream
+ *   `eth_call`.
+ * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk; elements
+ *   are greedy-packed under it and fetched in parallel. {@link MAX_INITCODE_SIZE} is the usual value.
+ * @param opts.batch.compress FastLZ-compress calldata on the wire so more elements fit per chunk,
+ *   at the cost of encoding time and decompression gas.
+ * @param opts.batch.pageSizeHint Elements per chunk in the opening wave; later waves size themselves
+ *   from what the pages report. Too high costs one continuation wave, too low costs extra parallel
+ *   requests. Read `page_size_suggested` off the wide event to set it.
  * @param opts.cache Optional cache config. Honored by the `cache` transport only; if omitted,
  *   or when used with `deployless`, `batch` is still honored without caching.
  * @param opts.cache.blobKey Identifies the backing cache blob. Requests with the same
@@ -81,7 +49,6 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
  *   `ttl`. Desynchronizes refreshes across many keys populated together, avoiding stampedes.
  *   Based on the XFetch algorithm from Vattani et al., "Optimal Probabilistic Cache Stampede
  *   Prevention" (2015), assuming constant recompute cost. Defaults to 0 (disabled).
- * @param opts.abi The function fragment describing the marked callee.
  */
 export function policy(opts: EthCallPolicy): StateOverride[number] {
   return {

@@ -65,11 +65,11 @@
     "format": "pnpm exec biome format --write",
     "lint": "pnpm exec biome lint --write",
     "build": "tsc",
-    "build:RevertEnvelope": "solc --optimize --optimize-runs=1 --strict-assembly --bin src/utils/deployless/RevertEnvelope.yul | awk '/Binary representation:/{getline;n=length($0)/2;sub(/62bbbbbb/,sprintf(\"62%06x\",n));print \"0x\"$0}'",
-    "build:RevertEnvelopeCompressed": "solc --optimize --optimize-runs=1 --strict-assembly --bin src/utils/deployless/RevertEnvelopeCompressed.yul | awk '/Binary representation:/{getline;n=length($0)/2;sub(/62bbbbbb/,sprintf(\"62%06x\",n));print \"0x\"$0}'",
+    "build:Envelope": "solc --optimize --optimize-runs=1 --strict-assembly --bin src/utils/deployless/Envelope.yul | awk '/Binary representation:/{getline;n=length($0)/2;sub(/62bbbbbb/,sprintf(\"62%06x\",n));print \"0x\"$0}'",
     "typecheck": "tsc --project tsconfig.json --noEmit --incremental",
     "pretest": "pnpm build",
     "test": "vitest run",
+    "test:forge": "forge test --root test/forge",
     "prepare": "pnpm build",
     "loc": "tokei src"
   },

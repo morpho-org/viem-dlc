@@ -44,3 +44,7 @@ out/
 .env
 .env.*
 !.env.example
+
+# Foundry envelope tests
+test/forge/out/
+test/forge/cache/
