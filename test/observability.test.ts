@@ -1,7 +1,7 @@
 import { custom } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { createFacetId, getObservability, observe, withLogging } from "../src/observability.js";
+import { createFacetId, getObservability, isObserved, observe, withLogging } from "../src/observability.js";
 import { failover } from "../src/transports/failover/index.js";
 import { handleEthGetLogs } from "../src/transports/logs-divider/handlers.js";
 import { logsDividerTransportKey } from "../src/transports/logs-divider/schema.js";
@@ -49,18 +49,71 @@ describe("observability", () => {
 
     it("emits exactly one error-status wide event when the wrapped fn rejects", async () => {
       const { logger, events } = createStubLogger();
+      const thrown = new Error("boom");
+      const keysBefore = Object.keys(thrown);
 
       const observed = observe(async () => {
-        throw new Error("boom");
+        throw thrown;
       }, ROOT);
 
-      await expect(withLogging(() => observed({}), { logger })).rejects.toThrow("boom");
+      await expect(withLogging(() => observed({}), { logger })).rejects.toBe(thrown);
 
       expect(events).toHaveLength(1);
       expect(events[0]!.name).toBe("concluded");
       expect(events[0]!.context.status).toBe("error");
       expect(events[0]!.error).toBeInstanceOf(Error);
       expect(typeof events[0]!.context.duration_ms).toBe("number");
+      expect(isObserved(thrown)).toBe(true);
+      expect(Object.keys(thrown)).toEqual(keysBefore);
+      expect(thrown.message).toBe("boom");
+    });
+
+    it("isObserved walks the cause chain", async () => {
+      const { logger } = createStubLogger();
+      const inner = new Error("inner");
+      const observed = observe(async () => {
+        throw inner;
+      }, ROOT);
+
+      await expect(withLogging(() => observed({}), { logger })).rejects.toBe(inner);
+
+      const outer = new Error("outer", { cause: inner });
+      expect(isObserved(outer)).toBe(true);
+      expect(isObserved(new Error("fresh"))).toBe(false);
+      expect(isObserved("string")).toBe(false);
+      expect(isObserved(null)).toBe(false);
+      expect(isObserved(undefined)).toBe(false);
+    });
+
+    it("errors thrown outside a withLogging scope are not marked", async () => {
+      const thrown = new Error("outside");
+      const observed = observe(async () => {
+        throw thrown;
+      }, ROOT);
+
+      await expect(observed({})).rejects.toBe(thrown);
+      expect(isObserved(thrown)).toBe(false);
+    });
+
+    it("non-object rejections rethrow unchanged", async () => {
+      const { logger, events } = createStubLogger();
+      const observed = observe(async () => {
+        throw "plain";
+      }, ROOT);
+
+      await expect(withLogging(() => observed({}), { logger })).rejects.toBe("plain");
+      expect(events).toHaveLength(1);
+    });
+
+    it("frozen errors still rethrow", async () => {
+      const { logger } = createStubLogger();
+      const thrown = Object.freeze(new Error("frozen"));
+      const observed = observe(async () => {
+        throw thrown;
+      }, ROOT);
+
+      await expect(withLogging(() => observed({}), { logger })).rejects.toBe(thrown);
+      expect(isObserved(thrown)).toBe(false);
     });
 
     it("nested observe boundaries reuse the per-call logger and call_id", async () => {

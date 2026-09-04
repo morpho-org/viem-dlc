@@ -18,6 +18,38 @@ export interface Logger {
   metadataOnly(metadata: Record<string, unknown>): void;
 }
 
+/** Brand stamped on errors whose failure `observe` has already emitted as a wide event. */
+const observedSymbol = Symbol.for("viem-dlc.observed");
+
+/** Marks `error` as already reported by `observe`; a no-op for non-object values. */
+function markObserved(error: unknown): void {
+  if ((typeof error !== "object" && typeof error !== "function") || error === null) return;
+  try {
+    Object.defineProperty(error, observedSymbol, { value: true, enumerable: false, configurable: true });
+  } catch {
+    // Frozen/non-extensible errors can't be branded; the rethrow must still proceed.
+  }
+}
+
+/**
+ * Whether `error` — or any error on its `cause` chain — was already reported by
+ * {@link observe} as an error-level wide event. Hosts that also log escaped errors
+ * (e.g. an oRPC error-logging middleware) can use this to skip or downgrade the duplicate. The
+ * chain walk matters because viem wraps transport failures (e.g. `HttpRequestError` →
+ * `ContractFunctionExecutionError`) before they reach the host, so the branded error is usually
+ * a `cause`, not the top-level one.
+ */
+export function isObserved(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current = error;
+  while ((typeof current === "object" || typeof current === "function") && current !== null && !seen.has(current)) {
+    if ((current as Record<PropertyKey, unknown>)[observedSymbol] === true) return true;
+    seen.add(current);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /**
  * Accumulates one transport instance's fields on the call's wide event, under the
  * prefix its {@link FacetId} claims.
@@ -331,6 +363,7 @@ export function observe<F extends (req: never) => Promise<unknown>>(fn: F, id: F
         },
         (error) => {
           conclude("error", error);
+          markObserved(error);
           throw error;
         },
       );

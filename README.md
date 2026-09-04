@@ -47,7 +47,9 @@ given composition. Every layer also stamps a per-instance `crossings` count, so 
 event records which transports the call traversed and how many times each. Call-level
 fields are `call_id`, `duration_ms`, and `status` (`"ok"` or `"error"`). Failed calls
 emit at `error` level with the error attached via `withError`, so hosts that forward
-`withError` entries to an error reporter (e.g. Sentry) capture them automatically.
+`withError` entries to an error reporter (e.g. Sentry) capture them automatically. The
+rethrown error is branded, so `isObserved(error)` (which walks `cause`) returns `true`,
+letting hosts that also log escaped errors dedupe the duplicate.
 
 ## Transports
 
