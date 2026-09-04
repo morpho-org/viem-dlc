@@ -172,13 +172,13 @@ object "Envelope" {
                     let Lout := outLen
                     switch outDyn(config)
                     case 0 {
-                        if iszero(eq(returndatasize(), outLen)) { malformed(i) }
+                        if iszero(eq(returndatasize(), outLen)) { malformedResult(F, config, i) }
                     }
                     default {
-                        if lt(returndatasize(), 0x40) { malformed(i) }
+                        if lt(returndatasize(), 0x40) { malformedResult(F, config, i) }
                         Lout := sub(returndatasize(), 0x20)
                         returndatacopy(0x00, 0, 0x20)
-                        if or(and(Lout, 31), iszero(eq(mload(0x00), 0x20))) { malformed(i) }
+                        if or(and(Lout, 31), iszero(eq(mload(0x00), 0x20))) { malformedResult(F, config, i) }
                         // A dynamic result's size is only known now: admit its expansion and copy
                         // against the gas actually retained, or report the element unresolved.
                         let top := add(add(P, 0x20), Lout)
@@ -249,6 +249,9 @@ object "Envelope" {
             if iszero(gt(gas(), add(expansion(add(add(P, 0x20), touch)), mload(add(F, 0x180))))) { leave }
 
             argsLen := len
+            // The attempt's memory is touched now, so the call's expansion never lands after the
+            // death heuristic's gas sample.
+            mstore(sub(add(add(P, 0x20), touch), 0x20), 0)
             mstore(add(P, 0x20), mload(add(F, 0x1a0)))
             let cur := mload(add(F, 0xe0))
             mcopy(add(P, 0x24), cur, L)
@@ -286,6 +289,7 @@ object "Envelope" {
             if iszero(gt(gas(), add(expansion(add(add(P, 0x20), touch)), floor))) { leave }
 
             argsLen := len
+            mstore(sub(add(add(P, 0x20), touch), 0x20), 0)
             mstore(add(P, 0x20), mload(add(F, 0x1a0)))
             let dst := add(P, 0x24)
             let cur := mload(add(F, 0xe0))
@@ -414,6 +418,12 @@ object "Envelope" {
 
         function inSize(config) -> s { s := and(shr(64, config), 0xffffffffffffffff) }
         function outSize(config) -> s { s := and(config, 0xffffffffffffffff) }
+
+        // The last element's wire is judged before its result: a codec bug outranks a lens bug.
+        function malformedResult(F, config, i) {
+            if eq(add(i, 1), mload(add(F, 0x20))) { exhausted(F, config, i) }
+            malformed(i)
+        }
 
         function malformed(index) {
             // bytes4(keccak256("MalformedResult(uint256,uint256)")) = 0xace36ecd
