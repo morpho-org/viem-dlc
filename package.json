@@ -1,6 +1,6 @@
 {
   "name": "@morpho-org/viem-dlc",
-  "version": "0.0.17",
+  "version": "0.0.16",
   "description": "A collection of flexible viem extensions with a focus on intelligent caching.",
   "license": "MIT",
   "keywords": [
