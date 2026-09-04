@@ -62,16 +62,18 @@ export type ReadLensParameters<abi extends Abi, functionName extends LensFunctio
 export type ReadLensReturnType<abi extends Abi, functionName extends LensFunctionName<abi>> = {
   /** In input order, dense: one per element not in `skipped`. */
   results: ContractFunctionReturnType<abi, ViewMutability, functionName>[];
-  /** Ascending indices into `args` the lens declined, that were declined for size, or that gas could not resolve. */
+  /**
+   * Ascending indices into `args` no chunk could serve: declined by the lens, declined for size, or
+   * unresolved by gas.
+   */
   skipped: number[];
 };
 
 /**
- * Reads a paginated lens: calls the per-item function `functionName` once per element of `args`
- * through the `deployless` or `cache` transport, which packs the elements into chunks, pages,
- * retries what gas could not resolve, and aggregates. The array-shaped fragment the wire carries
- * ({@link arrayifiedAbi}) is derived here from the contract's real ABI, so it never has to be
- * written by hand and the per-item selector cannot drift from what the lens implements.
+ * Reads a paginated lens: calls `functionName` once per element of `args` through the `deployless`
+ * or `cache` transport, which packs the elements into chunks, pages, retries what gas could not
+ * resolve, and aggregates. The array-shaped fragment the wire carries ({@link arrayifiedAbi}) is
+ * derived from `abi`, so the per-item selector is the compiler's.
  *
  * A partial result is a successful response — check `skipped` if you need every element.
  */

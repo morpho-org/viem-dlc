@@ -23,10 +23,9 @@
  * success `(1 << 255) | L ‖ L bytes`, decline `i`, death `~i` (always last). Ahead of the records,
  * four words of gas telemetry (docs/000016-tib-page-telemetry.md): the usable budget the loop
  * started with, then the sum, sum of squares and maximum of the per-attempt gas of every record
- * but a death. The guarantee:
- * nothing is touched before it is admitted, and nothing after the call costs more than the callee
- * is unable to take away. Gas before the call's EIP-150 split reaches the retained reserve at
- * 1/64; gas after it reaches the admission floor at 64× — see `prepare`.
+ * but a death. The guarantee: nothing is touched before it is admitted, and nothing after the call
+ * costs more than the callee is unable to take away. Gas before the call's EIP-150 split reaches
+ * the retained reserve at 1/64; gas after it reaches the admission floor at 64× — see `prepare`.
  *
  * Frame `F` (words), the state between the input cursor and the output cursor:
  *   0x00 target · 0x20 n · 0x40 body · 0x60 bodyLen · 0x80 config · 0xa0 ip · 0xc0 op · 0xe0 cur

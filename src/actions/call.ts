@@ -13,11 +13,10 @@ export const MAX_INITCODE_SIZE = 49_152;
  * Returns a StateOverride entry encoding the `eth_call` policy. Pass it in the `stateOverride`
  * array; `readLens` does so for you.
  *
- * Marks a deployless `eth_call` (`call({ factory, factoryData, to, data, ... })`) encoded against
- * the array-shaped fragment `arrayifiedAbi` derives from a lens's per-item function, for the
- * `deployless` or `cache` transport: elements are re-packed into chunks under byte budgets, the
- * envelope calls the per-item function once per element and pages, and the pages aggregate back
- * into the shape `abi` declares. With `cache`, element bytes are keyed by
+ * Marks a deployless `eth_call` (`call({ factory, factoryData, to, data, ... })`) over a paginated
+ * lens for the `deployless` or `cache` transport: elements are re-packed into chunks, the envelope
+ * calls the per-item function once per element and pages, and the pages aggregate back into the
+ * shape `abi` declares. With `cache`, element bytes are keyed by
  * `(targetTo, factory, factoryData, selector, element)` and cached individually.
  *
  * Requirements:

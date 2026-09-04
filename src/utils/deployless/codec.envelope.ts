@@ -79,7 +79,10 @@ export const MALFORMED_RESULT_SELECTOR: Hex = "0xace36ecd";
  */
 export const MALFORMED_INPUT_SELECTOR: Hex = "0xf5880484";
 
-/** Selector of `CounterfactualDeployFailed(bytes)`: `target` already had code, or the factory call failed (not of gas) or left no code. */
+/**
+ * Selector of `CounterfactualDeployFailed(bytes)`: `target` already had code, or the factory call
+ * failed (not of gas) or left no code.
+ */
 export const COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR: Hex = "0x101bb98d";
 
 const VIEM_CONSTRUCTOR_PARAMS = parseAbiParameters("address, bytes, address, bytes");
@@ -92,7 +95,7 @@ export type DeploylessTarget = {
   factoryData: Hex;
 };
 
-/** A deployless factory call: its {@link DeploylessTarget} plus the per-call `targetData` bytes (clear, never compressed). */
+/** A deployless factory call: its {@link DeploylessTarget} plus the per-call `targetData` bytes, always clear. */
 export type DeploylessFactoryCall = {
   target: DeploylessTarget;
   targetData: Hex;

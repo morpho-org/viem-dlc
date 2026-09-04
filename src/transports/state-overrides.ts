@@ -8,7 +8,7 @@ export const ETH_CALL_POLICY_ADDRESS: Address = getAddress(`0x${keccak256(toHex(
 const ETH_CALL_POLICY_ADDRESS_LOWER = ETH_CALL_POLICY_ADDRESS.toLowerCase() as Address;
 
 export type EthCallPolicy = {
-  /** The array-shaped fragment of a paginated lens, from `arrayifiedAbi`: `f(T[]) returns (U[] results, uint256[] skipped)`. */
+  /** The array-shaped fragment `arrayifiedAbi` derives: `f(T[]) returns (U[] results, uint256[] skipped)`. */
   abi: AbiFunction;
   batch?: {
     batchSize?: number;

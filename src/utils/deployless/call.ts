@@ -285,10 +285,9 @@ function pool(stats: GasStats | undefined, page: PageGas, served: number): GasSt
 }
 
 /**
- * Deviations of headroom a predicted chunk keeps below the budget. Were attempt costs uncorrelated,
- * a chunk's deviation would be `σ·√k` and Cantelli would bound overshoot at `1 / (1 + z²)`, one in
- * five at `z = 2`; warm storage and ordering correlate them, so this is a target, not a bound. An
- * overshoot costs one continuation, packed from more data.
+ * Deviations of headroom a predicted chunk keeps below the budget. A target, not a bound: attempt
+ * costs are correlated, so Cantelli's `1 / (1 + z²)` does not hold (see the page-telemetry TIB).
+ * An overshoot costs one continuation, packed from more data.
  */
 const PACKING_SIGMAS = 2;
 
@@ -338,9 +337,8 @@ async function settleAll(promises: readonly Promise<void>[]): Promise<void> {
 }
 
 /**
- * Returns the number of elements the page adjudicated. The decoder has already bound every record
- * to its ordinal; what only the request knows is the count, and the `attempted >= 1` floor is what
- * bounds the wave loop: without it a lens could stall forever.
+ * Returns the number of elements the page adjudicated, in `1..count`. The floor is what keeps every
+ * wave making progress; the decoder has already bound each record to its ordinal.
  */
 function validatePage({ results, skipped, died }: Page, count: number): number {
   const attempted = results.length + skipped.length + (died === undefined ? 0 : 1);
@@ -377,7 +375,7 @@ type PackBatchesArgs = {
  * Greedy packer: each batch takes the longest prefix of the remainder that `fits`, at most
  * `maxItems` long, found by binary search with a defensive linear shrink for measures that are
  * not perfectly monotonic. An element that does not fit alone is reported in `oversize` and
- * left out rather than sent — a chunk that cannot fit is never the way to make progress.
+ * left out rather than sent.
  */
 function packBatches({ count, maxItems, fits }: PackBatchesArgs): { ranges: BatchRange[]; oversize: number[] } {
   const ranges: BatchRange[] = [];
