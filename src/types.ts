@@ -164,25 +164,6 @@ export interface Store {
   flush(): MaybePromise<void>;
 }
 
-/**
- * A read that also says where the value came from. `provisional` marks a value the store intends to
- * write but has not persisted: a tier above MUST NOT retain it, and MUST treat it as terminal — a
- * `null` provisional value is a pending-delete tombstone, not a miss to pass down to a lower tier.
- */
-export type StoreRead = { value: Buffer[] | null; provisional: boolean };
-
-/**
- * A {@link Store} that can answer reads from its own unpersisted writes. `HierarchicalStore`
- * feature-detects this to decide whether a hit is safe to warm higher tiers with; a store without
- * it is read through `get` and treated as authoritative.
- *
- * @dev Decorators wrapping such a store SHOULD forward `getWithProvenance`. One that does not still
- * behaves correctly — the hit is just treated as authoritative, as it is today.
- */
-export interface ProvenanceAwareStore extends Store {
-  getWithProvenance(key: string): MaybePromise<StoreRead>;
-}
-
 export type BlockNumberish = BlockNumber | BlockTag | Hex;
 
 export type BlockRange = { fromBlock: bigint; toBlock: bigint };
