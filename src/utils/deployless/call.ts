@@ -26,8 +26,10 @@ type FactorisedFactoryCallParams = {
   batch?: {
     batchSize?: number;
     compress?: boolean;
-    pageSizeHint?: number;
+    gas?: LensGas;
   };
+  /** The provider's `eth_call` gas cap; with `batch.gas`, sizes the opening wave. */
+  gasLimit?: number;
   restOfEthCallParams: RestOfEthCallParams;
   /**
    * Invoked with each freshly fetched element as its chunk lands, before siblings finish, and
@@ -36,6 +38,13 @@ type FactorisedFactoryCallParams = {
   onResolved?: (entries: readonly ResolvedElement[]) => void | Promise<void>;
   facet?: Facet;
 };
+
+/**
+ * A lens's cost as the caller states it, in the units the wide event reports: `fixed` is what a
+ * frame spends before its first attempt (`fixed_gas`), `item` the per-attempt mean and deviation
+ * (`item_gas_avg`, `item_gas_stddev`). Both are properties of the lens, not of any provider.
+ */
+export type LensGas = { fixed: number; item: { avg: number; stddev?: number } };
 
 /** An input element's index paired with the raw output bytes fetched for it. */
 export type ResolvedElement = { index: number; output: Hex };
@@ -53,14 +62,15 @@ export type FactorisedFactoryCallResult = {
 
 /**
  * Packs `elements` into deployless-factory `eth_call` chunks under the wire budget
- * (`batch.batchSize`, at most EIP-3860's initcode cap) and, for the opening wave, `batch.pageSizeHint`
- * elements; fetches them in parallel; returns per-element outputs aligned to `elements`. Every
- * page reports how far it got and what its attempts cost, so the waves after the first are packed
- * by {@link predictItems} and an element gas could not resolve is retried once alone.
+ * (`batch.batchSize`, at most EIP-3860's initcode cap) and, for the opening wave, under the gas
+ * `gasLimit` and `batch.gas` predict; fetches them in parallel; returns per-element outputs aligned
+ * to `elements`. Every page reports how far it got and what its attempts cost, so the waves after
+ * the first are packed by {@link predictItems} and an element gas could not resolve is retried once
+ * alone.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  { target, elements, solidity, batch, restOfEthCallParams, onResolved, facet }: FactorisedFactoryCallParams,
+  { target, elements, solidity, batch, gasLimit, restOfEthCallParams, onResolved, facet }: FactorisedFactoryCallParams,
 ): Promise<FactorisedFactoryCallResult> {
   const compress = batch?.compress ?? false;
   const missing: number[] = [];
@@ -82,26 +92,45 @@ export async function factorisedFactoryCall(
   // Static layouts contribute `layout.size` per element; dynamic ones a length word plus their
   // padded bytes. Both are multiples of 32, so the wrapper's own padding is a per-batch constant.
   const prefixBytes = [0];
+  const prefixZeros = [0];
+  const layout = solidity.inputLayout;
   for (let pos = 0; pos < elements.length; pos++) {
-    const bytes =
-      solidity.inputLayout.mode === "static" ? solidity.inputLayout.size : 32 + hexByteLength(elements[pos]!);
+    const element = elements[pos]!;
+    const bytes = layout.mode === "static" ? layout.size : 32 + hexByteLength(element);
+    const zeros = zeroBytes(element) + (layout.mode === "static" ? 0 : 32 - nonzeroBytesOf(hexByteLength(element)));
     prefixBytes.push(prefixBytes[pos]! + bytes);
+    prefixZeros.push(prefixZeros[pos]! + zeros);
   }
-  let overheadBytes: number | undefined;
-  const measureWireBytes = compress
-    ? (start: number, end: number) =>
-        hexByteLength(start === 0 && end === elements.length ? getReferenceWrapped() : wrap(start, end))
-    : (start: number, end: number) => {
-        overheadBytes ??= hexByteLength(getReferenceWrapped()) - prefixBytes[elements.length]!;
-        return overheadBytes + prefixBytes[end]! - prefixBytes[start]!;
+  let overhead: WireSize | undefined;
+  const measureWire = compress
+    ? (start: number, end: number): WireSize =>
+        wireSize(start === 0 && end === elements.length ? getReferenceWrapped() : wrap(start, end))
+    : (start: number, end: number): WireSize => {
+        if (overhead === undefined) {
+          const whole = wireSize(getReferenceWrapped());
+          overhead = {
+            bytes: whole.bytes - prefixBytes[elements.length]!,
+            zeros: whole.zeros - prefixZeros[elements.length]!,
+          };
+        }
+        return {
+          bytes: overhead.bytes + prefixBytes[end]! - prefixBytes[start]!,
+          zeros: overhead.zeros + prefixZeros[end]! - prefixZeros[start]!,
+        };
       };
 
   const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
-  const fits = (start: number, end: number) => wireCap === Infinity || measureWireBytes(start, end) <= wireCap;
-  const hint = batch?.pageSizeHint;
-  const pageSizeHint = hint !== undefined && Number.isSafeInteger(hint) && hint > 0 ? hint : Infinity;
+  const opening = openingBudget(gasLimit, batch?.gas);
+  const fits = (start: number, end: number) => {
+    if (wireCap === Infinity && opening === undefined) return true;
+    const size = measureWire(start, end);
+    if (size.bytes > wireCap) return false;
+    if (opening === undefined) return true;
+    const k = end - start;
+    return intrinsicGas(size) + opening.fixed + chunkCost(k, opening.avg, opening.stddev) <= opening.gasLimit;
+  };
 
-  const packed = packBatches({ count: elements.length, maxItems: pageSizeHint, fits });
+  const packed = packBatches({ count: elements.length, maxItems: Infinity, fits });
   oversize.push(...packed.oversize);
   missing.push(...oversize);
   const ranges = packed.ranges;
@@ -110,12 +139,12 @@ export async function factorisedFactoryCall(
   facet?.set({
     elements_requested: elements.length,
     nominal_batches: ranges.length,
-    ...(pageSizeHint === Infinity ? {} : { page_size_hint: pageSizeHint }),
+    ...(opening === undefined ? {} : { gas_limit: opening.gasLimit }),
   });
   // Sizes of the *initial* packing, to compare realized utilization against the wire budget.
   // Halved children and continuations are not resampled. Guarded rather than
   // `facet?.stat(...)` so unobserved calls skip re-measuring.
-  if (facet) for (const [start, end] of ranges) facet.stat("batch_bytes", measureWireBytes(start, end));
+  if (facet) for (const [start, end] of ranges) facet.stat("batch_bytes", measureWire(start, end).bytes);
   let fetched = 0;
   const splits = { count: 0, size: 0, timeout: 0, maxDepth: 0 };
   // A lens stopping early is a continuation, a mid-page gas death an escalation; neither is a
@@ -199,7 +228,7 @@ export async function factorisedFactoryCall(
 
     const page = hexToPage(solidity.outputLayout, returndata);
     const attempted = validatePage(page, count);
-    gas = pool(gas, page.gas, attempted - (page.died === undefined ? 0 : 1));
+    gas = pool(gas, page.gas, attempted - (page.died === undefined ? 0 : 1), intrinsicGas(wireSize(wrapped)));
     facet?.stat("page_adjudicated", attempted);
     if (page.died === undefined && page.results.length === 0 && page.skipped.length > 0) pages.allSkipped += 1;
 
@@ -270,18 +299,71 @@ export async function factorisedFactoryCall(
   };
 }
 
-/** The gas telemetry of every page a request has seen, pooled; `budget` is the smallest frame's. */
-type GasStats = { budget: bigint; served: bigint; sum: bigint; sumSquares: bigint; max: bigint };
+/**
+ * The gas telemetry of every page a request has seen, pooled: `budget` is the smallest frame's,
+ * `fixed` the largest prologue, `cap` the smallest gas limit a page's frame implies.
+ */
+type GasStats = PageGas & { served: bigint; cap: bigint };
 
-function pool(stats: GasStats | undefined, page: PageGas, served: number): GasStats {
-  if (stats === undefined) return { ...page, served: BigInt(served) };
+/** `intrinsic` is what the node deducted for the chunk's calldata before the frame began. */
+function pool(stats: GasStats | undefined, page: PageGas, served: number, intrinsic: number): GasStats {
+  const cap = BigInt(intrinsic) + page.fixed + page.budget;
+  if (stats === undefined) return { ...page, served: BigInt(served), cap };
   return {
     budget: page.budget < stats.budget ? page.budget : stats.budget,
+    fixed: page.fixed > stats.fixed ? page.fixed : stats.fixed,
     served: stats.served + BigInt(served),
     sum: stats.sum + page.sum,
     sumSquares: stats.sumSquares + page.sumSquares,
     max: page.max > stats.max ? page.max : stats.max,
+    cap: cap < stats.cap ? cap : stats.cap,
   };
+}
+
+/** `gasLimit` and `batch.gas` as the opening wave uses them, or nothing when either is missing or unusable. */
+function openingBudget(gasLimit: number | undefined, gas: LensGas | undefined) {
+  if (gasLimit === undefined || gas === undefined) return undefined;
+  const fixed = gas.fixed;
+  const avg = gas.item?.avg;
+  const stddev = gas.item?.stddev ?? 0;
+  const usable =
+    Number.isSafeInteger(gasLimit) &&
+    gasLimit > 0 &&
+    Number.isFinite(fixed) &&
+    fixed >= 0 &&
+    Number.isFinite(avg) &&
+    avg > 0 &&
+    Number.isFinite(stddev) &&
+    stddev >= 0;
+  return usable ? { gasLimit, fixed, avg, stddev } : undefined;
+}
+
+type WireSize = { bytes: number; zeros: number };
+
+function wireSize(hex: Hex): WireSize {
+  return { bytes: hexByteLength(hex), zeros: zeroBytes(hex) };
+}
+
+/**
+ * What a node deducts from its cap before a contract-creation `eth_call` runs: the transaction and
+ * creation base, calldata by byte (EIP-2028) and initcode by word (EIP-3860). Ethereum's schedule;
+ * a chain that prices differently shifts `gas_limit_observed` by the difference.
+ */
+function intrinsicGas({ bytes, zeros }: WireSize): number {
+  return 21_000 + 32_000 + 4 * zeros + 16 * (bytes - zeros) + 2 * Math.ceil(bytes / 32);
+}
+
+function zeroBytes(hex: Hex): number {
+  let zeros = 0;
+  for (let i = 2; i < hex.length; i += 2) if (hex.charCodeAt(i) === 48 && hex.charCodeAt(i + 1) === 48) zeros++;
+  return zeros;
+}
+
+/** Non-zero bytes in the 32-byte big-endian encoding of `n`. */
+function nonzeroBytesOf(n: number): number {
+  let count = 0;
+  for (let rest = n; rest > 0; rest = Math.floor(rest / 256)) if (rest % 256 !== 0) count++;
+  return count;
 }
 
 /**
@@ -291,15 +373,20 @@ function pool(stats: GasStats | undefined, page: PageGas, served: number): GasSt
  */
 const PACKING_SIGMAS = 2;
 
+/** The cost of a chunk of `k` attempts at mean `mean` and deviation `sigma` each, with headroom for the spread. */
+function chunkCost(k: number, mean: number, sigma: number): number {
+  return k * mean + PACKING_SIGMAS * sigma * Math.sqrt(k);
+}
+
 /**
- * The largest chunk whose cost, `k·μ + z·σ·√k` for the pooled mean and deviation of one attempt,
- * fits the budget. `Infinity` before any attempt has been costed.
+ * The largest chunk whose {@link chunkCost}, at the pooled mean and deviation of one attempt, fits
+ * the budget. `Infinity` before any attempt has been costed.
  */
 function predictItems(gas: GasStats): number {
   if (gas.served === 0n) return Infinity;
   const { mean, sigma, budget } = moments(gas);
   const z = PACKING_SIGMAS;
-  const fits = (k: number) => k * mean + z * sigma * Math.sqrt(k) <= budget;
+  const fits = (k: number) => chunkCost(k, mean, sigma) <= budget;
   const root = (-z * sigma + Math.sqrt(z * z * sigma * sigma + 4 * mean * budget)) / (2 * mean);
   let k = Math.floor(root * root);
   if (fits(k + 1)) k += 1;
@@ -318,10 +405,11 @@ function moments({ budget, served, sum, sumSquares }: GasStats) {
 }
 
 function gasFields(gas: GasStats): Record<string, number> {
-  if (gas.served === 0n) return { frame_gas: Number(gas.budget) };
-  const { budget, mean, sigma } = moments(gas);
+  const frame = { frame_gas: Number(gas.budget), fixed_gas: Number(gas.fixed), gas_limit_observed: Number(gas.cap) };
+  if (gas.served === 0n) return frame;
+  const { mean, sigma } = moments(gas);
   return {
-    frame_gas: budget,
+    ...frame,
     item_gas_avg: mean,
     item_gas_stddev: sigma,
     item_gas_max: Number(gas.max),

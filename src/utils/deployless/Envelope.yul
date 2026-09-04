@@ -21,8 +21,9 @@
  * The envelope calls the lens's per-item function once per element in its own frame, with all
  * remaining gas, and appends one record per adjudicated element to an outcome stream:
  * success `(1 << 255) | L ‖ L bytes`, decline `i`, death `~i` (always last). Ahead of the records,
- * four words of gas telemetry (docs/000016-tib-page-telemetry.md): the usable budget the loop
- * started with, then the sum, sum of squares and maximum of the per-attempt gas of every record
+ * five words of gas telemetry (docs/000016-tib-page-telemetry.md, docs/000016-tib-opening-wave.md):
+ * the usable budget the loop started with, what the frame spent before it (prologue, deploy and
+ * the reserve), then the sum, sum of squares and maximum of the per-attempt gas of every record
  * but a death. The guarantee: nothing is touched before it is admitted, and nothing after the call
  * costs more than the callee is unable to take away. Gas before the call's EIP-150 split reaches
  * the retained reserve at 1/64; gas after it reaches the admission floor at 64× — see `prepare`.
@@ -31,7 +32,7 @@
  *   0x00 target · 0x20 n · 0x40 body · 0x60 bodyLen · 0x80 config · 0xa0 ip · 0xc0 op · 0xe0 cur
  *   0x100 ipEnd · 0x120 consumed · 0x140 i · 0x160… history (compressed only), then the slab
  *
- * On page:              revert(OK_SENTINEL ‖ nA ‖ budget ‖ Σg ‖ Σg² ‖ gmax ‖ records)
+ * On page:              revert(OK_SENTINEL ‖ nA ‖ budget ‖ fixed ‖ Σg ‖ Σg² ‖ gmax ‖ records)
  * On malformed result:  revert(MalformedResult(index, returndataSize))   — lens bug
  * On malformed input:   revert(MalformedInput(index))                    — codec bug
  * On deploy OOG:        revert(OOG_SENTINEL)                             — factory/constructor drained
@@ -45,6 +46,8 @@ object "Envelope" {
         // measured init-code length by substituting the immediate in `0x62BBBBBB`.
         // `verbatim_0i_1o` keeps the PUSH fixed-width so that patch stays byte-for-byte stable.
         {
+            // The frame's gas on arrival, read back in `paginate` to cost the prologue.
+            mstore(0x00, gas())
             let bytecodeLen := verbatim_0i_1o(hex"62BBBBBB")
             // Everything but [0, 0x80) scratch lives at or above `base`, which is what lets the
             // optimizer spill stack variables to memory if the loop needs it.
@@ -117,19 +120,21 @@ object "Envelope" {
         // Runs the page over the `n` elements described by the frame `F` and reverts with the
         // outcome stream.
         //
-        // The slab starts at `slab`: OK_SENTINEL, nA (patched at exit), the four telemetry words
+        // The slab starts at `slab`: OK_SENTINEL, nA (patched at exit), the five telemetry words
         // (accumulated in place), then records. `P` is one past the last record; attempt `i` is
         // staged at `P + 0x20`, where its record's bytes will go, so a static result lands on its
         // own arguments and abandoned bytes lie at or past `P`, outside the reverted prefix. `hw`
         // is the highest byte this frame has deliberately touched — never above the true
         // high-water — so every admission prices memory expansion exactly or conservatively.
         function paginate(F, slab) {
-            // OK_SENTINEL = bytes4(keccak256("ViemDlcPage2()")) = 0x1824683e
-            mstore(slab, 0x1824683e00000000000000000000000000000000000000000000000000000000)
-            // The budget attempts can spend. Fresh memory zeroes the three accumulators.
+            // OK_SENTINEL = bytes4(keccak256("ViemDlcPage3()")) = 0xa55835c3
+            mstore(slab, 0xa55835c300000000000000000000000000000000000000000000000000000000)
+            // The budget attempts can spend, and what arriving here cost. Fresh memory zeroes the
+            // three accumulators.
             mstore(0x20, gas())
             mstore(add(slab, 0x24), usable(mload(0x20)))
-            let P := add(slab, 0xa4)
+            mstore(add(slab, 0x44), sub(mload(0x00), mload(add(slab, 0x24))))
+            let P := add(slab, 0xc4)
             mstore(P, 0)
             let hw := add(P, 0x20)
             let n := mload(add(F, 0x20))
@@ -205,9 +210,9 @@ object "Envelope" {
             let now := gas()
             let d := sub(mload(0x20), now)
             mstore(0x20, now)
-            mstore(add(slab, 0x44), add(mload(add(slab, 0x44)), d))
-            mstore(add(slab, 0x64), add(mload(add(slab, 0x64)), mul(d, d)))
-            if gt(d, mload(add(slab, 0x84))) { mstore(add(slab, 0x84), d) }
+            mstore(add(slab, 0x64), add(mload(add(slab, 0x64)), d))
+            mstore(add(slab, 0x84), add(mload(add(slab, 0x84)), mul(d, d)))
+            if gt(d, mload(add(slab, 0xa4))) { mstore(add(slab, 0xa4), d) }
         }
 
         // Locates element `i` (the frame's) and prices its attempt: `L` its byte length, `end` the

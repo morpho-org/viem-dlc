@@ -90,6 +90,12 @@ const result = await call(client, {
 If `policy.cache` is present, `deployless(...)` ignores it and still behaves as split-only mode.
 Use `cache(...)` when you want the same marked calls to populate and read from a backing store.
 
+Both transports take an optional `gasLimit`, the provider's `eth_call` gas cap:
+`deployless(http(rpcUrl), { gasLimit: 50_000_000 })`, or `gasLimit` beside `binSize` in the
+`cache` config. It is read only together with the policy's `batch.gas`, to size the opening wave;
+every later wave sizes itself from what the pages report, so a wrong value costs a round trip,
+never a result. Behind `failover`, each branch states its own.
+
 With observability enabled, batching reports `elements_requested` / `elements_fetched`,
 `nominal_batches` and `batch_bytes` (sizes of the initial packing against the wire budget;
 halved and continued chunks are not resampled), and `splits_*` for chunks halved after an
@@ -108,17 +114,18 @@ a chunk alone under `batch.batchSize` and `elements_unresolved` were gas-termina
 the subset another provider with a higher cap might still serve.
 
 Every page also reports what its attempts cost, and the request pools it: `frame_gas` (the gas a
-frame had for attempts, on the smallest frame seen), `item_gas_avg` / `item_gas_stddev` /
-`item_gas_max` per attempt, and `page_size_suggested`, the chunk size the transport would open
-with given those numbers — the value for `batch.pageSizeHint`, which is stamped as `page_size_hint` when
-set. To pick a hint, run without one under observability and take the median suggestion over a
-representative window; a hint far from the suggestion is stale, and `pages_continued` at zero
-with the suggestion above the hint means it undershoots. To keep learning once a hint is set,
-scale it on a sampled fraction of requests, e.g. `(Math.random() < 0.1 ? 2 : 1) * hint`. Costs
-depend on which items share a frame: grouping related elements warms storage they share and
-lowers `item_gas_avg`, shuffling makes the rate uniform across chunks; results align to `args` in
-either order. A full cache hit or an empty input makes no upstream call and carries none of
-these fields.
+frame had for attempts, on the smallest frame seen), `fixed_gas` (what a frame spent before its
+first attempt: prologue, lens deploy and reserve), `item_gas_avg` / `item_gas_stddev` /
+`item_gas_max` per attempt, `page_size_suggested` (the chunk size a continuation would be packed
+at) and `gas_limit_observed`, the `eth_call` gas cap the provider actually granted, read back from
+the frame, the prologue and the calldata's intrinsic gas. These are the numbers the opening wave
+takes as configuration: `fixed_gas`, `item_gas_avg` and `item_gas_stddev` go to the policy's
+`batch.gas`, and `gas_limit_observed` to each transport's `gasLimit` (stamped as `gas_limit` when it
+applied). Take them over a representative window; a `gas_limit` above `gas_limit_observed` is a
+cap the provider has since lowered. Costs depend on which items share a frame: grouping related
+elements warms storage they share and lowers `item_gas_avg`, shuffling makes the rate uniform
+across chunks; results align to `args` in either order. A full cache hit or an empty input makes
+no upstream call and carries none of these fields.
 
 ### `cache`
 
@@ -454,7 +461,7 @@ policy(opts: {
   batch?: {
     batchSize?: number
     compress?: boolean
-    pageSizeHint?: number
+    gas?: { fixed: number; item: { avg: number; stddev?: number } }
   }
   cache?: {
     blobKey: string
@@ -476,10 +483,14 @@ policy(opts: {
   chunk at the cost of encoding time and decompression gas. The envelope decompresses element by
   element as it attempts them, so a highly compressible chunk pages like any other and costs
   nothing before its first element.
-- **`opts.batch.pageSizeHint`** — elements per chunk in the opening wave, beside the byte budget.
-  Later waves size themselves from what the pages report, so this only matters before the first
-  response: too high costs one continuation wave, too low costs extra parallel requests. Read
-  `page_size_suggested` off the wide event of a request made without it.
+- **`opts.batch.gas`** — the lens's cost, in the units the wide event reports it: `fixed` from
+  `fixed_gas` (what a frame spends before its first attempt), `item.avg` and `item.stddev` from
+  `item_gas_avg` and `item_gas_stddev`. Together with the transport's `gasLimit` it sizes the
+  opening wave: a chunk is as many elements as fit the cap after the calldata's intrinsic gas and
+  `fixed`, with the same headroom for the spread that continuations keep. Later waves size
+  themselves from what the pages report, so this only matters before the first response:
+  understating the cost costs one continuation wave, overstating it costs extra parallel
+  requests. A property of the lens, so one value serves every provider and chain.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
   or when used with `deployless(...)`, `batch` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same

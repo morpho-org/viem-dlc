@@ -1,6 +1,7 @@
 import type { AbiFunction, Address, RpcStateOverride } from "viem";
 import { fromHex, getAddress, keccak256, toHex } from "viem";
 
+import type { LensGas } from "../utils/deployless/call.js";
 import { omit } from "../utils/omit.js";
 
 export const ETH_CALL_POLICY_ADDRESS: Address = getAddress(`0x${keccak256(toHex("viem-dlc-policy")).slice(26)}`);
@@ -13,7 +14,7 @@ export type EthCallPolicy = {
   batch?: {
     batchSize?: number;
     compress?: boolean;
-    pageSizeHint?: number;
+    gas?: LensGas;
   };
   cache?: {
     blobKey: string;

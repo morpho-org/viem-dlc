@@ -110,7 +110,7 @@ export function createSimpleInvalidation(
  */
 export function cache(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  [{ binSize, store, invalidationStrategy }, logsDividerConfig, ...otherConfigs]: [
+  [{ binSize, store, invalidationStrategy, gasLimit }, logsDividerConfig, ...otherConfigs]: [
     CacheConfig,
     Omit<LogsDividerConfig, "alignTo">,
     LogsEnricherConfig,
@@ -135,6 +135,7 @@ export function cache(
       store,
       binSize,
       invalidationStrategy,
+      gasLimit,
       chainId,
       requestFn: transport.request,
       coalesce,

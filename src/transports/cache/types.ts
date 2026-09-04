@@ -3,6 +3,7 @@ import type { EIP1193RequestFn } from "viem";
 import type { FacetId } from "../../observability.js";
 import type { Store } from "../../types.js";
 import type { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
+import type { DeploylessConfig } from "../deployless/index.js";
 import type { LogsDividerSchema } from "../logs-divider/schema.js";
 
 export interface InvalidationContext {
@@ -26,6 +27,8 @@ export interface CacheConfig {
   binSize: number;
   /** Returns the probability [0,1] that a cached chunk should be refetched. */
   invalidationStrategy: InvalidationStrategy;
+  /** See {@link DeploylessConfig.gasLimit}. */
+  gasLimit?: number;
 }
 
 export type HandlerContext = CacheConfig & {

@@ -12,13 +12,15 @@ interface Vm {
 library Env {
     Vm constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     bytes32 constant SALT = bytes32(uint256(1));
-    bytes4 constant OK = 0x1824683e;
-    /// Sentinel, nA and the four telemetry words.
-    uint256 constant HEADER = 4 + 32 + 128;
+    bytes4 constant OK = 0xa55835c3;
+    /// Sentinel, nA and the five telemetry words.
+    uint256 constant HEADER = 4 + 32 + 160;
 
     struct Page {
         uint256 nA;
         uint256 budget;
+        /// The wire's `fixed` word; `fixed` is reserved in Solidity.
+        uint256 prologue;
         uint256 sum;
         uint256 sumSq;
         uint256 gmax;
@@ -136,7 +138,8 @@ library Env {
         require(ret.length >= HEADER, "no header");
         p.nA = word(ret, 4);
         require(p.nA >= 1, "nA >= 1");
-        (p.budget, p.sum, p.sumSq, p.gmax) = (word(ret, 36), word(ret, 68), word(ret, 100), word(ret, 132));
+        (p.budget, p.prologue, p.sum, p.sumSq, p.gmax) =
+            (word(ret, 36), word(ret, 68), word(ret, 100), word(ret, 132), word(ret, 164));
         p.results = new bytes[](p.nA);
         p.skipped = new uint256[](p.nA);
         uint256 nR;

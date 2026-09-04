@@ -9,6 +9,10 @@ related:
 
 # TIB — Page telemetry: every page an observation, every later wave a prediction
 
+> **Superseded in part by 000016-tib-opening-wave.md**: `batch.pageSizeHint` and `page_size_hint`
+> are replaced by the transport's `gasLimit` and the policy's `batch.gas`; the response carries a
+> fifth word, `fixed`, after `budget`, under the sentinel `ViemDlcPage3()`.
+
 The client of TIB 000016 packs by bytes and learns a lens's rate only from the count a page
 adjudicated, and only when that page stopped for gas. That sample is conditionally heavy — a page
 stops because its items cost more than its neighbours' — so continuations are packed to the
