@@ -123,20 +123,18 @@ export async function factorisedFactoryCall(
 
   const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
   const opening = openingBudget(gasLimit, batch?.gas);
-  const fitsWire = (start: number, end: number) => wireCap === Infinity || measureWire(start, end).bytes <= wireCap;
-  // The prediction only ever shortens an opening chunk: a lone element is sent whatever it is
-  // predicted to cost, so the envelope, not the estimate, decides whether it is served.
-  const fitsOpening = (start: number, end: number) => {
-    if (opening === undefined) return fitsWire(start, end);
+  // The prediction only ever shortens a chunk: a lone element is sent whatever it is predicted to
+  // cost, so the envelope, not the estimate, decides whether it is served.
+  const fits = (start: number, end: number) => {
+    if (wireCap === Infinity && opening === undefined) return true;
     const size = measureWire(start, end);
     if (size.bytes > wireCap) return false;
     const k = end - start;
-    return (
-      k === 1 || intrinsicGas(size) + opening.fixed + chunkCost(k, opening.avg, opening.stddev) <= opening.gasLimit
-    );
+    if (opening === undefined || k === 1) return true;
+    return intrinsicGas(size) + opening.fixed + chunkCost(k, opening.avg, opening.stddev) <= opening.gasLimit;
   };
 
-  const packed = packBatches({ count: elements.length, maxItems: Infinity, fits: fitsOpening });
+  const packed = packBatches({ count: elements.length, maxItems: Infinity, fits });
   oversize.push(...packed.oversize);
   missing.push(...oversize);
   const ranges = packed.ranges;
@@ -164,12 +162,12 @@ export async function factorisedFactoryCall(
     if (entries.length > 0) await onResolved?.(entries);
   };
 
-  /** Re-packs `[from, to)` under the wire budget and an item cap; the stated cost plays no part. */
+  /** Re-packs `[from, to)` under the wire budget and an item cap; a tail is a sub-range of a chunk that fit, so the prediction cannot bind. */
   const packRange = (from: number, to: number, maxItems: number): BatchRange[] =>
     packBatches({
       count: to - from,
       maxItems,
-      fits: (s, e) => fitsWire(from + s, from + e),
+      fits: (s, e) => fits(from + s, from + e),
     }).ranges.map(([s, e]) => [from + s, from + e] as const);
 
   const fetchRecursive = async (
