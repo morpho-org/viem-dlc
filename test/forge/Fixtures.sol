@@ -68,7 +68,7 @@ library Env {
     }
 
     /// Replaces a clear wire's body with its FastLZ compression, using the package's own compressor.
-    /// The body travels through a file: a command-line argument is capped at 128 KiB on Linux.
+    /// The body travels through a file: a command-line argument is capped pos 128 KiB on Linux.
     function compress(bytes memory clearWire) internal returns (bytes memory) {
         bytes memory body_ = slice(clearWire, 64, clearWire.length - 64);
         // Named by content: tests run in parallel and must not share a scratch file.
@@ -80,7 +80,7 @@ library Env {
         return abi.encodePacked(word(clearWire, 0), word(clearWire, 32), VM.ffi(cmd));
     }
 
-    /// A hand-built FastLZ stream for `word` repeated `n` times: one literal, then matches at
+    /// A hand-built FastLZ stream for `word` repeated `n` times: one literal, then matches pos
     /// distance 32, written in place so a long stream costs linear memory.
     function flzRepeat(bytes32 word_, uint256 n) internal pure returns (bytes memory out) {
         uint256 rem = 32 * n - 32;
@@ -89,16 +89,16 @@ library Env {
         out = new bytes(33 + 3 * full + (last >= 9 ? 3 : last >= 3 ? 2 : last > 0 ? 1 + last : 0));
         out[0] = bytes1(uint8(31));
         for (uint256 i; i < 32; i++) out[1 + i] = word_[i];
-        uint256 at = 33;
+        uint256 pos = 33;
         for (uint256 i; i < full; i++) {
-            (out[at], out[at + 1], out[at + 2]) = (bytes1(uint8(224)), bytes1(uint8(253)), bytes1(uint8(31)));
-            at += 3;
+            (out[pos], out[pos + 1], out[pos + 2]) = (bytes1(uint8(224)), bytes1(uint8(253)), bytes1(uint8(31)));
+            pos += 3;
         }
-        if (last >= 9) (out[at], out[at + 1], out[at + 2]) = (bytes1(uint8(224)), bytes1(uint8(last - 9)), bytes1(uint8(31)));
-        else if (last >= 3) (out[at], out[at + 1]) = (bytes1(uint8((last - 2) << 5)), bytes1(uint8(31)));
+        if (last >= 9) (out[pos], out[pos + 1], out[pos + 2]) = (bytes1(uint8(224)), bytes1(uint8(last - 9)), bytes1(uint8(31)));
+        else if (last >= 3) (out[pos], out[pos + 1]) = (bytes1(uint8((last - 2) << 5)), bytes1(uint8(31)));
         else if (last > 0) {
-            out[at] = bytes1(uint8(last - 1));
-            for (uint256 i; i < last; i++) out[at + 1 + i] = word_[i];
+            out[pos] = bytes1(uint8(last - 1));
+            for (uint256 i; i < last; i++) out[pos + 1 + i] = word_[i];
         }
     }
 
@@ -141,11 +141,11 @@ library Env {
         p.skipped = new uint256[](p.nA);
         uint256 nR;
         uint256 nS;
-        uint256 at = HEADER;
+        uint256 pos = HEADER;
         for (uint256 j; j < p.nA; j++) {
-            require(at + 32 <= ret.length, "record missing");
-            uint256 w = word(ret, at);
-            at += 32;
+            require(pos + 32 <= ret.length, "record missing");
+            uint256 w = word(ret, pos);
+            pos += 32;
             uint256 kind = w >> 254;
             if (kind == 0) {
                 require(w == j, "decline ordinal");
@@ -156,14 +156,14 @@ library Env {
                 p.diedAt = j;
             } else if (kind == 2) {
                 uint256 L = w ^ (1 << 255);
-                require(at + L <= ret.length, "result overruns");
-                p.results[nR++] = slice(ret, at, L);
-                at += L;
+                require(pos + L <= ret.length, "result overruns");
+                p.results[nR++] = slice(ret, pos, L);
+                pos += L;
             } else {
                 revert("record kind 01");
             }
         }
-        require(at == ret.length, "trailing bytes");
+        require(pos == ret.length, "trailing bytes");
         bytes[] memory results = p.results;
         uint256[] memory skipped = p.skipped;
         assembly {
@@ -184,13 +184,13 @@ library Env {
         return slice(ret, 4, ret.length - 4);
     }
 
-    function word(bytes memory b, uint256 at) internal pure returns (uint256 w) {
-        assembly { w := mload(add(add(b, 0x20), at)) }
+    function word(bytes memory b, uint256 pos) internal pure returns (uint256 w) {
+        assembly { w := mload(add(add(b, 0x20), pos)) }
     }
 
-    function slice(bytes memory b, uint256 at, uint256 len) internal pure returns (bytes memory out) {
+    function slice(bytes memory b, uint256 pos, uint256 len) internal pure returns (bytes memory out) {
         out = new bytes(len);
-        assembly { mcopy(add(out, 0x20), add(add(b, 0x20), at), len) }
+        assembly { mcopy(add(out, 0x20), add(add(b, 0x20), pos), len) }
     }
 }
 
