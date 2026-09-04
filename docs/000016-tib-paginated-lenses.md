@@ -211,46 +211,66 @@ The frame `F`, the state between the input cursor and the output cursor:
 | `0x100` | `ipEnd` | end of the compressed input |
 | `0x120` | `consumed` | logical bytes handed out (compressed; clear derives it from `cur`) |
 | `0x140` | `i` | the element being attempted, for `MalformedInput` |
-| `0x160…` | history | compressed only; the slab follows |
+| `0x160` | `len` | the static input stride; the attempt's byte length under the static layout |
+| `0x180` | `floor` | the static layout's pre-split floor, `apre + 64·cpost [+ dwork]`, computed once |
+| `0x1a0` | `selector` | the per-item selector, left-aligned |
+| `0x1c0…` | history | compressed only; the slab follows |
 
 The loop reads its invariants from `F` rather than holding them on the stack: the loop body is
 close to the stack limit, and standalone Yul has no `via-ir` escape. `memoryguard(0x80)` lets the
 optimizer spill to memory under its contract: the program touches only `[0, 0x80)` — scratch the
-envelope owns (`0x00` holds the frame's gas on arrival, `0x20` the gas level between attempts, and
-both serve the error paths and the dynamic-result head check) — and memory at or above the
-returned pointer.
+envelope owns (`0x00` holds the frame's gas on arrival, `0x20` the gas level between attempts,
+`0x40` the memory cost of the high-water, and the first two also serve the error paths and the
+dynamic-result head check) — and memory at or above the returned pointer.
 
 **The loop.** `P` is one past the last record; attempt `i` is staged at `P + 0x20`, where its
 record's bytes will go, so a static result lands on its own arguments and abandoned bytes lie at or
-past `P`, outside the reverted prefix. `hw` is the highest byte the frame has deliberately touched,
-so every admission prices expansion exactly or conservatively.
+past `P`, outside the reverted prefix. Scratch `0x40` holds the memory cost of the highest byte the
+frame has deliberately touched, so every admission prices expansion exactly or conservatively with
+one `memcost`.
 
 ```
 paginate(F, slab):
   mstore(slab, OK_SENTINEL)
   budget := usable(gas());  fixed := arrivalGas − budget         // telemetry header words
-  P := slab + 0xc4;  mstore(P, 0);  hw := P + 0x20
+  P := slab + 0xc4;  mstore(P, 0);  expansion(P + 0x20)          // seed the high-water's cost
+  outLen := outDyn ? 0 : outSize;  strided := !inDyn && !compressed
   for i in 0 ..< n:                                             // post block: account(slab)
-    L, end, need := prepare(F, config, P, hw)                   // locate element i, price the attempt
-    if gas() ≤ need:
-      if i == 0 { mstore(P, ~0); P += 0x20; nA := 1 }          // head refusal, in touched memory
+    argsLen := strided ? admitStride(F, P, outLen) : admit(F, config, P, outLen, i)
+    if argsLen == 0:                                            // refused
+      if i == 0 { mstore(P, ~0); nA := 1; revert(slab, P + 0x20 − slab) }   // head, in touched memory
       break                                                     // i > 0: the prefix so far is the page
-    mstore(end − 0x20, 0);  hw := max(hw, end)                  // the expansion, paid pre-split
-    argsLen := stage(F, config, P, L)                           // selector ‖ [0x20 ‖] element at P + 0x20
     g := gas()
-    switch staticcall(gas(), target, P + 0x20, argsLen, P + 0x20, outDyn ? 0 : outSize)
+    switch staticcall(gas(), target, P + 0x20, argsLen, P + 0x20, outLen)
     case 1:
-      static:   malformed(i) unless returndatasize() == outSize;  Lout := outSize
-      dynamic:  malformed(i) if returndatasize() < 0x40 or head ≠ 0x20 or (Lout := size − 0x20) % 32 ≠ 0
-                if gas() ≤ expansion(P + 0x20 + Lout, hw) + 3 + 3·words(Lout) + cpost:
+      static:   malformedResult(i) unless returndatasize() == outLen;  Lout := outLen
+      dynamic:  malformedResult(i) if returndatasize() < 0x40 or head ≠ 0x20 or (Lout := size − 0x20) % 32 ≠ 0
+                if gas() ≤ expansion(P + 0x20 + Lout) + 3 + 3·words(Lout) + cpost:
                   mstore(P, ~i); P += 0x20; nA := i + 1; break  // unaffordable result: a death
-                returndatacopy(P + 0x20, 0x20, Lout);  hw := max(hw, top)
+                returndatacopy(P + 0x20, 0x20, Lout)
       mstore(P, (1 << 255) | Lout);  P += 0x20 + Lout
     default:
       if returndatasize() == 0 and gas() ≤ g/64 + 32 { mstore(P, ~i); P += 0x20; nA := i + 1; break }
       mstore(P, i);  P += 0x20                                  // deterministic revert: a decline
+  if i == n { exhausted(F, config, n − 1) }                     // every element was staged
   mstore(slab + 4, nA);  revert(slab, P − slab)
+
+admit(F, config, P, outLen, i):                                 // admitStride: the static uncompressed case,
+  L, len, floor := locate element i                             //   with L, len and floor read from the frame
+  touch := max(len, outLen)
+  if gas() ≤ expansion(P + 0x20 + touch) + floor { return 0 }  // `expansion` raises the high-water
+  mstore(P + 0x20 + touch − 0x20, 0)                            // the memory is touched before the call
+  stage selector ‖ [0x20 ‖] element at P + 0x20;  return len
 ```
+
+`admit` locates element `i`, prices the attempt and stages it, or returns zero having touched
+nothing. Under the uncompressed static layout the attempt's length and floor are the page's, so
+`admitStride` reads both from the frame and admission is one expansion price and one comparison;
+`strided` is decided once. `expansion(b)` prices the growth from the high-water's cost in scratch
+`0x40` to `memcost(b)` and raises it, which is sound because every caller either touches `b` or
+leaves the loop. Exhaustion of the body is checked once after the loop, which `i == n` reaches only
+when every element was staged (a head refusal reverts on its own); `malformedResult` checks it
+first when the offending element is the last, so a codec bug outranks a lens bug.
 
 **Static output is deposited by the call itself** into memory expanded before the split, so nothing
 after the call expands memory and no copy is needed. **Dynamic output is admitted after the call**:
@@ -281,13 +301,13 @@ a decline. Both selectors are checked by exact revert-data length.
 
 #### Admission
 
-`memcost(b)` is over byte ends: `w = ⌈b/32⌉`, `3w + ⌊w²/512⌋`. `expansion(b, hw) = memcost(b) −
-memcost(hw)` when `b > hw`, else zero.
+`memcost(b)` is over byte ends: `w = ⌈b/32⌉`, `3w + ⌊w²/512⌋`. `expansion(b)` is `memcost(b)` less
+the high-water's cost when larger, else zero, and raises the high-water.
 
 **Two currencies, one exchange rate.** Gas spent before the call's EIP-150 split and gas needed
 after it are not the same money. EIP-150 retains 1/64 of what is available at the call, so a
 pre-split cost reaches the reserve divided by 64 and a post-split cost reaches the floor
-multiplied by 64. `need = expansion(end, hw) + apre(argsLen) + 64·cpost [+ dwork(L)]` is that
+multiplied by 64. `need = expansion(touch) + apre(len) + 64·cpost [+ dwork(L)]` is that
 statement: the pre-split terms are paid once and their error is 1/64 of itself, while `cpost` is
 the reserve itself and every unit of it costs 64 at the floor. Consequences: `apre` and `dwork` may
 be rough; `cpost` is the whole question; the tail of every page leaves `64·cpost` unused; and only
@@ -296,10 +316,10 @@ than the post-call path needs.
 
 | term | currency | what |
 |---|---|---|
-| `expansion(end, hw)` | pre-split | memory to this attempt's touch, exact against the high-water |
-| `apre(argsLen)` | pre-split | the touch store, the selector and head stores, the staging copy, argument setup, the `gas()` sample, the warm call access: `200 + 3·⌈argsLen/32⌉` |
+| `expansion(touch)` | pre-split | memory to this attempt's touch, exact against the high-water |
+| `apre(len)` | pre-split | the touch store, the selector and head stores, the staging copy, argument setup, the `gas()` sample, the warm call access: `200 + 3·⌈len/32⌉` |
 | `dwork(L)` | pre-split, compressed only | producing and copying out `L` bytes: the worst per-byte token cost, one overshooting token, one rebase and the copy-out: `300·L + 3·⌈L/32⌉ + 9000` |
-| `cpost` | post-split | the longest path from the call's return to a valid exit: classification, the head check and deposit calculation for dynamic output, one record store, the telemetry accounting, the header patch, `revert` over expanded memory, or the next iteration's admission and its refusal: `1400` |
+| `cpost` | post-split | the longest path from the call's return to a valid exit: classification, the head check and deposit calculation for dynamic output, one record store, the telemetry accounting, the exhaustion check after a last-element death, the header patch, `revert` over expanded memory, or the next iteration's admission and its refusal: `1400` |
 
 The values are set in the Yul and guarded by the adversary fixtures in Verification, which are
 the fixtures that fail when a constant is too low. `cpost`'s adversary is a callee that returns
@@ -358,7 +378,7 @@ because everything pending belongs to the record being assembled. The trigger im
 `op − histStart = 8,192 ≥` any distance, so the back-reference check only fires in a stream's first
 8 KiB.
 
-For a dynamic compressed element the length is in the stream, so `prepare` materializes the length
+For a dynamic compressed element the length is in the stream, so `admit` materializes the length
 word first under a fixed reserve (`dwork(0x20) + apre(0x24) + 64·cpost`) and then admits the record
 against the actual `L`. Elements are copied out of the history into the record slot rather than
 called from it, because the history is live: a selector written before a record, or a result
@@ -528,12 +548,13 @@ Behind `failover`, each branch states its own.
 
 ### Accounting
 
-- Envelope initcode: 2,621 bytes, under 6% of the 49,152-byte cap.
-- Per element on a trivial lens (`test/forge/Gas.t.sol`, `page(110) − page(10)`): about 2,850 gas
-  clear and 4,780 compressed, including the warm `STATICCALL`, staging, admission, the record
-  write and the telemetry; the snapshot lines are 1,393,350 and 1,658,772 per hundred. The
-  downstream fleet's lenses, by their previously fitted per-element coefficients, cost 7k–100k per
-  element, so the overhead is 5–40% on the clear path.
+- Envelope initcode: 2,618 bytes, under 6% of the 49,152-byte cap.
+- Per element on a trivial lens (`test/forge/Gas.t.sol`, `page(110) − page(10)`, which includes
+  the fixture lens's own 969 gas and the 100-gas warm `STATICCALL`): about 1,890 gas clear and
+  4,035 compressed, so the envelope's own work — admission, staging, the record write and the
+  telemetry — is about 820 gas per element on the clear path; the snapshot lines are 1,318,165 and
+  1,587,377 per hundred. The downstream fleet's lenses, by their previously fitted per-element
+  coefficients, cost 7k–100k per element, so the overhead is 1–12% on the clear path.
 - Constants: `apre(argsLen) = 200 + 3·⌈argsLen/32⌉`, `cpost = 1400`, `dwork(L) = 300·L +
   3·⌈L/32⌉ + 9000`, history `2·8192 + 320`, death slack 32, deploy-death threshold `gasBefore/32`,
   `PACKING_SIGMAS = 2` (a policy target, not a measurement). The suites run the adversaries at the
@@ -542,9 +563,9 @@ Behind `failover`, each branch states its own.
 
 ## Scope & files
 
-- `src/utils/deployless/Envelope.yul`: `deploy`, `paginate`, `prepare`, `stage`, `materialize`,
-  `account`, admission, the floor constants, the error selectors. `pnpm build:Envelope` prints the
-  constant.
+- `src/utils/deployless/Envelope.yul`: `deploy`, `paginate`, `admit`, `admitStride`, `exhausted`,
+  `materialize`, `account`, `expansion`, `pageFloor`, the floor constants, the error selectors.
+  `pnpm build:Envelope` prints the constant.
 - `src/utils/deployless/codec.envelope.ts`: the pasted constant, `OK_SENTINEL`, `OOG_SENTINEL`, the
   error selectors and their exact-length detectors, `envelopeConfig`, wrap/unwrap with the
   `n ‖ bodyLen ‖ body` framing and the compression bit, the `cause`-chain revert-data walk.
@@ -667,9 +688,12 @@ element accounted for and no corpse.
   reserves far more than producing it costs and a compression bomb's elements are refused at grants
   that could serve them; `min(per-byte·L, per-input-byte·remaining)` would tighten it by orders of
   magnitude and needs its own witness.
-- **Per-element overhead.** About 2,850 gas clear and 4,780 compressed on top of the lens's own
-  work; the resumable decoder costs ~230 gas per token because the optimizer inlines it among the
-  loop's live variables. A leaner path is a performance question, not a correctness one.
+- **Per-element overhead.** About 820 gas of the envelope's own work per element on the clear path
+  and ~3,000 compressed, where `materialize` costs roughly 21 gas per decompressed byte because the
+  optimizer inlines it among the loop's live variables; `account` (~115 gas) is the largest single
+  remaining item and is all real work. A leaner compressed path needs a cursor-on-stack loop or a
+  word-aligned token format; cheaper telemetry needs different words. Performance questions, not
+  correctness ones.
 - **Composition.** `μ` depends on which items share a frame: warm storage makes related items
   cheaper together, so a grouped input reads cheaper than a shuffled one. The caller orders `args`;
   `readLens` aligns results to any order.
@@ -773,7 +797,18 @@ codec bug as a skipped element.
 
 **Why one envelope.** In `eth_call` no calldata is billed and initcode meters at 2 gas per word,
 so keeping a smaller uncompressed variant buys nothing; the loop is written once and compression is
-a branch in `prepare` and `stage`, with one constant and one drift guard.
+a branch in `admit`, with one constant and one drift guard.
+
+**Why the static uncompressed layout has its own admission.** Its attempt length and floor are the
+page's, so `admitStride` reads both from the frame and skips the layout branches; measured, the
+shipped loop is within 1% of a fully layout-specialised one, so no further duplication is worth its
+bytes.
+
+**Why the high-water is kept as a cost, and touched before the call.** Holding `memcost(hw)` in
+scratch makes each admission one `memcost` rather than two, and keeps `hw` off a full stack.
+Touching the attempt's memory before the call, though the call would expand it pre-split anyway,
+keeps the death heuristic's gas sample after all memory work: otherwise a static out range wider
+than the arguments would loosen `gas() ≤ g/64 + 32` by its expansion over 64.
 
 **Why a fixed history and not a record-sized ring.** A ring sized by the chunk's largest record
 puts an element-sized expansion back into the prologue and makes every attempt reserve for the
@@ -898,6 +933,18 @@ and that tails must wait for the wave's pool. `cpost` rose from 1,200 to 1,400 f
 accounting: the drained-callee adversary failed at 1,100 and passed at 1,200 when swept during
 calibration, and 1,400 carries the margin.
 
+**Gas** (2026-09-04). An `anvil --steps-tracing` trace with a program-counter to Yul-offset map
+attributed the clear path's ~1,456 gas of envelope work per element: about 350 was control flow
+from Yul function boundaries and layout branches, admission computed `memcost` twice, staging
+re-checked exhaustion every element, and the compressed branch's inlined `materialize` taxed the
+clear path through register spills. Fusing `prepare` and `stage` into `admit`, specialising the
+static uncompressed layout, caching the high-water's cost, hoisting per-page values into the frame,
+and moving exhaustion after the loop brought it to ~820. Optimizer flags moved nothing on the final
+code (`--optimize-runs` is inert; FullInliner trades the clear path against the compressed one).
+Sweeping `cpost` against the adversaries put the cliff in (700, 1000]; 1,400 was kept for margin.
+Review of the change found two regressions, fixed: a malformed result on the last element masked
+trailing wire bytes, and the death heuristic's sample preceded the call's out-range expansion.
+
 **The opening wave** (2026-09-04). A count hint (`batch.pageSizeHint`) shipped and was withdrawn as
 provider-dependent. Dividing the cap by a stated per-item cost alone was declined for the numerator;
 reporting the deploy's gas alone was declined because the prologue and the reserve are small next to
@@ -931,6 +978,10 @@ Declined along the way:
   length**; **a recursive out-of-line `materialize`** (measured ~10% cheaper; rests on inliner
   heuristics and bounds element size by the EVM stack); **input-bounded `dwork`** (helps only
   compressible single elements of tens to hundreds of KB).
+- **Hand-inlining the expansion arithmetic** into `admitStride` (−20 gas for duplicated lines); **a
+  linear expansion bound** in place of the exact `memcost` (−17, and it would contradict the exact
+  admission); **splitting `paginate` per layout** (within 1% of the shipped loop); **lowering
+  `cpost` to 1,000** (in the maintainer's hands, with the sweep as evidence).
 - **A remembered rate across requests**; **per-item gas records** in the stream; **a median or
   histogram**; **`batch.shuffle`**; **a probing knob** (scaling the count hint on a sampled fraction
   of requests was the callsite's business; moot once the count hint went); **mean-only packing** as
