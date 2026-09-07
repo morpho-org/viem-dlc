@@ -209,6 +209,7 @@ const BLOCK_RANGE_ERROR_PATTERNS: { code?: number; message?: RegExp }[] = [
   { code: -32000 },
   { message: /range.*exceed/i },
   { message: /range.*too/i },
+  { message: /limited to.*range/i },
   { message: /exceed.*block/i },
   { message: /max.*block/i },
   { message: /blocks/i },

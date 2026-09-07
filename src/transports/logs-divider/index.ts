@@ -65,7 +65,7 @@ export function logsDivider(
     LogsSieveConfig,
     RateLimiterConfig,
   ],
-): Transport<typeof logsDividerTransportKey, unknown, EIP1193RequestFn<LogsDividerSchema>> {
+): Transport<typeof logsDividerTransportKey, Record<string, never>, EIP1193RequestFn<LogsDividerSchema>> {
   if (Number.isNaN(logsDividerConfig.maxBlockRange) || logsDividerConfig.maxBlockRange < 1) {
     throw new Error(`[logsDivider] maxBlockRange must be >= 1 (got ${logsDividerConfig.maxBlockRange})`);
   }

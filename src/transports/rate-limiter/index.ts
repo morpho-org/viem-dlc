@@ -42,7 +42,7 @@ export function rateLimiter(
   [{ maxRequestsPerSecond = 20, maxBurstRequests = 1, maxConcurrentRequests = Infinity, dedupe = false }]: [
     RateLimiterConfig,
   ],
-): Transport<typeof rateLimiterTransportKey, unknown, EIP1193RequestFn<RateLimiterSchema>> {
+): Transport<typeof rateLimiterTransportKey, Record<string, never>, EIP1193RequestFn<RateLimiterSchema>> {
   const facetId = createFacetId(rateLimiterTransportKey);
 
   return (params) => {

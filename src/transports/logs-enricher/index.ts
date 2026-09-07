@@ -16,7 +16,7 @@ export const logsEnricherTransportKey = "viem-dlc-logs-enricher" as const;
 export function logsEnricher<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
   [{ retryCount, retryDelay, blockTimestamp }]: [LogsEnricherConfig],
-): Transport<typeof logsEnricherTransportKey, unknown, EIP1193RequestFn<T>> {
+): Transport<typeof logsEnricherTransportKey, Record<string, never>, EIP1193RequestFn<T>> {
   const facetId = createFacetId(logsEnricherTransportKey);
 
   return (params) => {
