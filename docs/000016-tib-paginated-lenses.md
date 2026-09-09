@@ -682,7 +682,11 @@ element accounted for and no corpse.
 
 - **EVM repricing erodes margins.** `apre`, `cpost`, `dwork`, the death slack and the 1/64
   retention are fee-schedule-derived; a repricing or an L2 with a nonstandard schedule can shrink
-  them. All live in the envelope; re-verify the adversaries on hard forks of target chains.
+  them. All live in the envelope; re-verify the adversaries on hard forks of target chains. The
+  client's intrinsic term is the one schedule-derived figure outside it: on a chain that prices
+  calldata differently, `gas_limit_observed` is off by the difference and the prediction by the
+  difference's change with chunk size. How the target L2s charge their L1 data component inside
+  `eth_call` is the case to check.
 - **Floor terms are compiled-path values.** The adversaries pin them; an optimizer change that
   lengthens a path fails the adversary rather than shipping, and one that merely slows a path shows
   in the snapshot.
@@ -918,9 +922,20 @@ figure, but on a heterogeneous lens it under-packs by the ratio of the maximum t
 one wave for many parallel requests. The mean and deviation give the opening wave exactly the
 headroom continuations get, from one constant.
 
-**Why the intrinsic gas is computed exactly.** It is cheap, the bytes are known, and it is the one
-term whose approximation would bias every opening chunk the same way. It includes the 2 gas of the
-`gas()` that samples the arrival, so `gas_limit_observed` is the cap itself.
+**Why the intrinsic gas is computed exactly, and from Ethereum's schedule.** It is cheap, the
+bytes are known, and it is the one term whose approximation would bias every opening chunk the same
+way. It includes the 2 gas of the `gas()` that samples the arrival, so `gas_limit_observed` is the
+cap itself. It is the only term that depends on a fee schedule: `fixed` and `budget` are measured in
+the frame. On a chain that prices calldata differently the observed cap shifts by the difference,
+but the prediction after the first page mostly cancels it, since the cap was reconstructed with the
+same function: what survives is the mispricing's *difference* between the observed page and the
+candidate, a fraction of the intrinsic delta that ignoring the term would cost on every chain.
+Dropping the term would reinstate that delta; a per-chain schedule would be a knob. If a target
+chain ever shows the residual costing a round trip, the slope is measurable without knowing the
+schedule: arrival gas is `fixed + budget`, the cap is constant across one provider's pages, so the
+change in arrival over the change in bytes is the chain's real cost per byte before the first
+attempt, and it absorbs `fixed`'s growth too. A two-point fit inside one request; declined until
+needed.
 
 **Why a singleton is never refused by the prediction.** An estimate that could withhold an element
 would be load-bearing; the byte cap alone can, and that is a wire limit rather than a guess.
@@ -1045,4 +1060,6 @@ Declined along the way:
   `fits` predicate for continuations** (moot once one predicate packs every chunk); **a coalescing
   timer** (`coalesceMs`); **modelling `fixed` against bytes** in the client; **a concurrency cap**
   on flushes (the rate limiter shapes them); **`page_size_suggested`** (a data-independent count
-  made sense against a count hint; the tunables are stamped in their own units).
+  made sense against a count hint; the tunables are stamped in their own units); **dropping or
+  configuring the intrinsic term** for chains priced unlike Ethereum (the error mostly cancels after
+  the first page; measuring the slope from arrival gas is the fix if it ever binds).
