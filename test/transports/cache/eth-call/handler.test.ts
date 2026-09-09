@@ -27,6 +27,7 @@ import type { HandlerContext } from "../../../../src/transports/cache/types.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
+import type { LensGas } from "../../../../src/utils/deployless/call.js";
 import {
   envelopeConfig,
   OK_SENTINEL,
@@ -104,7 +105,7 @@ function wireBytesFor(count: number): number {
 }
 
 type PolicyOpts = {
-  batch?: { batchSize?: number; compress?: boolean; pageSizeHint?: number };
+  batch?: { batchSize?: number; compress?: boolean; gas?: LensGas };
 };
 
 function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
@@ -448,11 +449,15 @@ describe("handleEthCall", () => {
       expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
     });
 
-    it("pageSizeHint caps the opening wave's chunks", async () => {
+    it("the gas prediction caps the opening wave's chunks", async () => {
       const requestFn = mockPagedFn();
       const accounts = addrs(5);
+      const gas = { fixed: 0, item: { avg: 1_000_000 } };
 
-      const result = await handleEthCall(ctx(requestFn), createRequest(accounts, { batch: { pageSizeHint: 2 } }));
+      const result = await handleEthCall(
+        { ...ctx(requestFn), gasLimit: 2_500_000 },
+        createRequest(accounts, { batch: { gas } }),
+      );
 
       expect(requestFn.mock.calls.length).toBe(3);
       expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));

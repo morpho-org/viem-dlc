@@ -68,7 +68,7 @@ export function rateLimiter(
     return createTransport({
       key: rateLimiterTransportKey,
       name: "[viem-dlc] rate-limiter",
-      request: observe(request, facetId) as EIP1193RequestFn,
+      request: observe(request, facetId, params.chain?.id) as EIP1193RequestFn,
       retryCount: 0,
       type: rateLimiterTransportKey,
     });

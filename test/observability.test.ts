@@ -47,6 +47,18 @@ describe("observability", () => {
       expect(typeof events[0]!.context.duration_ms).toBe("number");
     });
 
+    it("stamps chain_id when the boundary knows its chain, and omits it otherwise", async () => {
+      const { logger, events } = createStubLogger();
+      const onMainnet = observe(async (_req: { method: string }) => "ok", ROOT, 1);
+      const chainless = observe(async (_req: { method: string }) => "ok", ROOT);
+
+      await withLogging(() => onMainnet({ method: "eth_blockNumber" }), { logger });
+      await withLogging(() => chainless({ method: "eth_blockNumber" }), { logger });
+
+      expect(events[0]!.context.chain_id).toBe(1);
+      expect(events[1]!.context).not.toHaveProperty("chain_id");
+    });
+
     it("emits exactly one error-status wide event when the wrapped fn rejects", async () => {
       const { logger, events } = createStubLogger();
 

@@ -59,7 +59,7 @@ export function logsSieve<T extends Base>(
     return createTransport({
       key: logsSieveTransportKey,
       name: "[viem-dlc] logs-sieve",
-      request: observe(request, facetId) as EIP1193RequestFn,
+      request: observe(request, facetId, params.chain?.id) as EIP1193RequestFn,
       retryCount: 0,
       type: logsSieveTransportKey,
     });

@@ -11,17 +11,27 @@ type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
 export const deploylessTransportKey = "viem-dlc-deployless" as const;
 
+export type DeploylessConfig = {
+  /**
+   * The provider's `eth_call` gas cap. Read only with `policy().batch.gas`, to size the opening
+   * wave; every later chunk is sized from what the pages report, so a wrong value costs a round
+   * trip, never a result. `gas_limit_observed` on the wide event is the value a provider granted.
+   */
+  gasLimit?: number;
+};
+
 /**
  * Creates a thin transport wrapper that chunks marked deployless `eth_call`s under the wire byte
- * budget and aggregates the pages. No gas cap is configured: the lens adapts to whatever frame
- * each node grants.
+ * budget and aggregates the pages. The lens adapts to whatever frame each node grants;
+ * {@link DeploylessConfig.gasLimit} only lets the opening wave anticipate it.
  *
  * Requests are only intercepted when they carry the `policy(...)` sentinel in `stateOverride`.
  * All other requests are forwarded unchanged.
  */
 export function deployless<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
-): Transport<typeof deploylessTransportKey, Record<string, never>, EIP1193RequestFn<T>> {
+  { gasLimit }: DeploylessConfig = {},
+): Transport<typeof deploylessTransportKey, DeploylessConfig, EIP1193RequestFn<T>> {
   const facetId = createFacetId(deploylessTransportKey);
 
   return (params) => {
@@ -32,18 +42,18 @@ export function deployless<T extends Base>(
         return requestFn(args);
       }
 
-      return handleEthCall(requestFn, args as EIP1193Parameters<PublicRpcSchema, "eth_call">, facetId);
+      return handleEthCall(requestFn, args as EIP1193Parameters<PublicRpcSchema, "eth_call">, gasLimit, facetId);
     };
 
     return createTransport(
       {
         key: deploylessTransportKey,
         name: "[viem-dlc] deployless",
-        request: observe(request, facetId) as EIP1193RequestFn,
+        request: observe(request, facetId, params.chain?.id) as EIP1193RequestFn,
         retryCount: 0,
         type: deploylessTransportKey,
       },
-      {},
+      { gasLimit },
     );
   };
 }
@@ -51,6 +61,7 @@ export function deployless<T extends Base>(
 async function handleEthCall(
   requestFn: EIP1193RequestFn<Base>,
   req: EIP1193Parameters<PublicRpcSchema, "eth_call">,
+  gasLimit: number | undefined,
   facetId: FacetId,
 ) {
   const extracted = extractEthCallPolicy(req.params[2]);
@@ -96,6 +107,7 @@ async function handleEthCall(
     elements: inputElements,
     solidity,
     batch: extracted.policy.batch,
+    gasLimit,
     restOfEthCallParams,
     facet,
   });

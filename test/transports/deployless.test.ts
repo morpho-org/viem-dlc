@@ -19,9 +19,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { MAX_INITCODE_SIZE } from "../../src/actions/call.js";
 import { withLogging } from "../../src/observability.js";
-import { deployless } from "../../src/transports/deployless/index.js";
+import { type DeploylessConfig, deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
+import type { LensGas } from "../../src/utils/deployless/call.js";
 import {
   COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR,
   envelopeConfig,
@@ -98,7 +99,7 @@ function wireBytesFor(count: number, compress = false): number {
 const byteLength = (hex: Hex) => (hex.length - 2) / 2;
 
 type PolicyOpts = {
-  batch?: { batchSize?: number; compress?: boolean; pageSizeHint?: number };
+  batch?: { batchSize?: number; compress?: boolean; gas?: LensGas };
   withCache?: boolean;
 };
 
@@ -168,8 +169,8 @@ function mockPagedFn() {
   });
 }
 
-function createTransport(requestFn: ReturnType<typeof vi.fn>) {
-  return deployless(custom({ request: requestFn as never }))({ retryCount: 0 } as never);
+function createTransport(requestFn: ReturnType<typeof vi.fn>, config?: DeploylessConfig) {
+  return deployless(custom({ request: requestFn as never }), config)({ retryCount: 0 } as never);
 }
 
 function decodeResults(result: unknown): readonly bigint[] {
@@ -272,8 +273,8 @@ describe("deployless", () => {
       expect(field("splits_size")).toBe(0);
       expect(field("splits_timeout")).toBe(0);
       expect(field("splits_max_depth")).toBe(0);
-      expect(field("pages_waves")).toBe(1);
       expect(field("pages_continued")).toBe(0);
+      expect(field("flushes")).toBe(0);
       expect(field("pages_escalated")).toBe(0);
       expect(field("attempts_unresolved")).toBe(0);
       expect(field("elements_declined_oversize")).toBe(0);
@@ -285,15 +286,20 @@ describe("deployless", () => {
       expect(field("batch_bytes.max")).toBeLessThanOrEqual(batchSize);
     });
 
-    it("lets the smaller of pageSizeHint and batchSize bind the opening wave", async () => {
+    it("lets the smaller of the gas prediction and batchSize bind the opening wave", async () => {
       const batchSize = wireBytesFor(3);
-      const hinted = mockPagedFn();
+      const gas = { fixed: 0, item: { avg: 1_000_000 } };
+      const predicted = mockPagedFn();
       const capped = mockPagedFn();
 
-      await createTransport(hinted).request(createRequest(addrs(5), { batch: { batchSize, pageSizeHint: 2 } }));
-      await createTransport(capped).request(createRequest(addrs(5), { batch: { batchSize, pageSizeHint: 4 } }));
+      await createTransport(predicted, { gasLimit: 2_500_000 }).request(
+        createRequest(addrs(5), { batch: { batchSize, gas } }),
+      );
+      await createTransport(capped, { gasLimit: 4_500_000 }).request(
+        createRequest(addrs(5), { batch: { batchSize, gas } }),
+      );
 
-      expect(hinted.mock.calls.length).toBe(3);
+      expect(predicted.mock.calls.length).toBe(3);
       expect(capped.mock.calls.length).toBe(2);
     });
 
