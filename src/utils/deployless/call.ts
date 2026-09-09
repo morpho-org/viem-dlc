@@ -1,5 +1,6 @@
-import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema } from "viem";
+import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema, toHex } from "viem";
 
+import type { ChainDefinition } from "../../chains/index.js";
 import type { Facet } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
 import { isTimeoutLikeError } from "../errors.js";
@@ -29,8 +30,13 @@ type FactorisedFactoryCallParams = {
     gas?: LensGas;
     continuations?: ContinuationMode;
   };
-  /** The provider's `eth_call` gas cap; with `batch.gas`, sizes the opening wave. */
+  /**
+   * The provider's `eth_call` gas cap. With `batch.gas`, sizes the opening wave; on a chain whose
+   * nodes give an unspecified `gas` a fixed default ({@link ChainDefinition.ethCall}), sent as every
+   * chunk's `gas`.
+   */
   gasLimit?: number;
+  chain: ChainDefinition;
   restOfEthCallParams: RestOfEthCallParams;
   /**
    * Invoked with each freshly fetched element as its chunk lands, before siblings finish, and
@@ -80,7 +86,17 @@ export type FactorisedFactoryCallResult = {
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  { target, elements, solidity, batch, gasLimit, restOfEthCallParams, onResolved, facet }: FactorisedFactoryCallParams,
+  {
+    target,
+    elements,
+    solidity,
+    batch,
+    gasLimit,
+    chain,
+    restOfEthCallParams,
+    onResolved,
+    facet,
+  }: FactorisedFactoryCallParams,
 ): Promise<FactorisedFactoryCallResult> {
   const compress = batch?.compress ?? false;
   const missing: number[] = [];
@@ -158,6 +174,13 @@ export async function factorisedFactoryCall(
   };
 
   const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
+  const sentGas =
+    chain.ethCall.gasWhenUnspecified === "fixedDefault" &&
+    gasLimit !== undefined &&
+    Number.isSafeInteger(gasLimit) &&
+    gasLimit > 0
+      ? toHex(gasLimit)
+      : undefined;
   const stated = statedGas(gasLimit, batch?.gas);
   let gas: GasStats | undefined;
   /** The stated figures until a page has landed, the pooled observations after. */
@@ -228,7 +251,7 @@ export async function factorisedFactoryCall(
 
     let returndata: Hex;
     try {
-      returndata = await fetchChunk(requestFn, wrapped, restOfEthCallParams);
+      returndata = await fetchChunk(requestFn, wrapped, restOfEthCallParams, sentGas);
     } catch (e) {
       if (isMalformedResultRevert(e)) {
         throw new Error("[deployless] lens returned a per-item result that does not fit its declared layout", {
@@ -549,9 +572,22 @@ function validatePage({ results, skipped, died }: Page, count: number): number {
   return attempted;
 }
 
-async function fetchChunk(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: Hex, rest: RestOfEthCallParams) {
+/**
+ * Sends one chunk. `gas` is the stated cap on a chain whose nodes give an unspecified `gas` a fixed
+ * default ({@link ChainDefinition.ethCall}); elsewhere nothing is sent and the node's cap is what
+ * the page observes.
+ */
+async function fetchChunk(
+  requestFn: EIP1193RequestFn<PublicRpcSchema>,
+  data: Hex,
+  rest: RestOfEthCallParams,
+  gas: Hex | undefined,
+) {
   try {
-    await requestFn({ method: "eth_call", params: [{ data }, ...rest] }, { retryCount: 0 });
+    await requestFn(
+      { method: "eth_call", params: [gas === undefined ? { data } : { data, gas }, ...rest] },
+      { retryCount: 0 },
+    );
   } catch (e) {
     const decoded = extractRevertData(e);
     if (!decoded.ok) throw e;

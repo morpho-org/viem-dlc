@@ -1164,3 +1164,36 @@ describe("viem interop", () => {
     expect(skipped).toEqual([1n]);
   });
 });
+
+describe("stated cap on the wire", () => {
+  const onChain = (id: number, requestFn: ReturnType<typeof vi.fn>, config?: DeploylessConfig) =>
+    deployless(custom({ request: requestFn as never }), config)({ retryCount: 0, chain: { id } } as never);
+
+  it("sends gasLimit as every chunk's gas on a chain whose nodes give an unspecified gas a fixed default", async () => {
+    const requestFn = mockPagedLens();
+    const { gasLimit, batch } = openAt(2);
+
+    await onChain(143, requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4].map(addr), batch));
+
+    expect(requestFn).toHaveBeenCalledTimes(2);
+    for (const call of requestFn.mock.calls) {
+      expect((call[0] as { params: readonly unknown[] }).params[0]).toMatchObject({ gas: toHex(gasLimit) });
+    }
+  });
+
+  it("sends no gas where an unspecified gas is the cap, on an unknown chain, or without a gasLimit", async () => {
+    const { gasLimit, batch } = openAt(2);
+    const txnOf = (requestFn: ReturnType<typeof vi.fn>) =>
+      (requestFn.mock.calls[0]![0] as { params: readonly unknown[] }).params[0] as Record<string, unknown>;
+
+    const mainnet = mockPagedLens();
+    await onChain(1, mainnet, { gasLimit }).request(createRequest([1, 2].map(addr), batch));
+    const unknown = mockPagedLens();
+    await onChain(999_999, unknown, { gasLimit }).request(createRequest([1, 2].map(addr), batch));
+    const unstated = mockPagedLens();
+    await onChain(143, unstated).request(createRequest([1, 2].map(addr)));
+
+    for (const requestFn of [mainnet, unknown, unstated])
+      expect(txnOf(requestFn)).toEqual({ data: txnOf(requestFn).data });
+  });
+});

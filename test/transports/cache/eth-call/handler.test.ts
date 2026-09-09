@@ -15,6 +15,7 @@ import {
 } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
+import { chainDefinition } from "../../../../src/chains/index.js";
 import { LazyNdjsonMap } from "../../../../src/internal/index.js";
 import { createFacetId, observe, withLogging } from "../../../../src/observability.js";
 import { MemoryStore } from "../../../../src/stores/memory.js";
@@ -142,6 +143,7 @@ function ctx(requestFn: HandlerContext["requestFn"], store = new MemoryStore()):
     coalesce: createCoalescingMutex().coalesce,
     requestFn,
     chainId,
+    chain: chainDefinition(chainId),
     binSize: 10_000,
     invalidationStrategy: () => 0,
     facetId: createFacetId(cacheTransportKey),

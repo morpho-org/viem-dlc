@@ -483,7 +483,8 @@ may shorten a chunk but never withhold an element, so the envelope decides what 
 
 The parameters have two sources. Before any page has landed they are stated:
 `deployless(http(url), { gasLimit })` and `gasLimit` in the `cache` config name the provider's
-`eth_call` cap, one per transport instance; `policy({ batch: { gas: { fixed, item: { avg, stddev? }
+`eth_call` cap, one per transport instance, sent as each chunk's `gas` on chains whose definition
+says the nodes need it (see Notes); `policy({ batch: { gas: { fixed, item: { avg, stddev? }
 } } })` states the lens's cost in the units the wide event reports it. With either side missing, or
 any figure unusable or malformed, the opening wave packs by bytes alone. From the first page on they
 are observed. Every page's telemetry is pooled over the request — `cap` the smallest
@@ -492,8 +493,8 @@ are observed. Every page's telemetry is pooled over the request — `cap` the sm
 `σ² = (served·sumSquares − sum²) / served²`. While no attempt has been costed the stated item cost
 fills in against the observed cap, else bytes alone. `PageGas.budget` excludes the reserve and
 `fixed` includes it, so `cap − intrinsic − fixed` counts it once. The stated cap therefore sizes
-the opening wave and nothing else, and the stated cost nothing after the first costed attempt, by
-construction: no later chunk consults them.
+the opening wave and nothing else in the prediction, and the stated cost nothing after the first
+costed attempt, by construction: no later chunk consults them.
 
 Two terms are estimates, both under Open risks: `fixed` grows with the chunk's bytes, and `min cap`
 with `max fixed` may combine pages that never co-occurred, which is conservative. On the compressed
@@ -740,6 +741,17 @@ element accounted for and no corpse.
   about 1.5k gas at 4 KiB and 15k at the wire cap. A chunk far larger than any page observed
   over-packs by up to that, one continuation. Modelling it would put the envelope's memory layout
   into the client; fitting a slope from two pages needs none if it ever matters.
+- **The cap is sent where the node needs it, and only there.** Probed on Monad mainnet
+  (2026-09-09): an `eth_call` with `gas` unspecified runs in a fixed 8.1M default, promoted to the
+  node's larger pool only on out-of-gas, which a paging envelope never is; with `gas` set it was
+  granted 150M and refused 199M as `gas limit too high`. On geth an unspecified `gas` is the cap and
+  a higher one is clamped, so sending would gain nothing and would hide the cap from
+  `gas_limit_observed` whenever the stated value is below it. Both are facts of the chain, so they
+  live in `src/chains` (`ethCall.gasWhenUnspecified`: `providerCap` | `fixedDefault`;
+  `ethCall.gasAboveCap`: `clamped` | `rejected`), keyed by the client's chain id with geth's
+  behaviour as the default, and `gasLimit` rides as `gas` only on a `fixedDefault` chain. There a
+  value above the cap is rejected and propagates as any other error, and `gas_limit_observed` reads
+  the stated value by construction.
 - **Route.** `budget` varies by provider; the pool takes the minimum over the request, so a request
   served by several nodes behind one URL packs to the smallest.
 - **The death is still censored.** Its cost is unknown by definition, and the only element whose

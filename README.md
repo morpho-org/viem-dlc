@@ -60,8 +60,9 @@ deployless-factory calls under a wire byte budget (`batch.batchSize`), aggregate
 come back, and forwards everything else unchanged.
 No gas figure is load-bearing: the envelope calls the lens's per-item function once per element
 in its own frame and reports how far it got, so a chunk adapts to whatever gas the node grants —
-see [Paginated lenses](#paginated-lenses). An optional `gasLimit` only lets the opening wave
-anticipate the grant. Most callers reach it through
+see [Paginated lenses](#paginated-lenses). An optional `gasLimit` lets the opening wave
+anticipate the grant, and rides as each chunk's `gas` on chains that need it (see
+[Chains](#chains)). Most callers reach it through
 [`readLens`](#readlens) rather than building the call by hand.
 
 ```ts
@@ -94,9 +95,14 @@ Use `cache(...)` when you want the same marked calls to populate and read from a
 
 Both transports take an optional `gasLimit`, the provider's `eth_call` gas cap:
 `deployless(http(rpcUrl), { gasLimit: 50_000_000 })`, or `gasLimit` beside `binSize` in the
-`cache` config. It is read only together with the policy's `batch.gas`, to size the opening wave;
-every later chunk is sized from what the pages report, so a wrong value costs a round trip,
-never a result. Behind `failover`, each branch states its own.
+`cache` config. Together with the policy's `batch.gas` it sizes the opening wave; every later chunk
+is sized from what the pages report, so a value too low costs a round trip, never a result. On a
+chain whose nodes give an `eth_call` with `gas` unspecified a fixed default below the cap — Monad
+grants 8.1M and promotes only on out-of-gas, which a paging envelope never is — the transports also
+send it as every chunk's `gas`, and there a value above the provider's cap is rejected by the node
+and fails the request, so state the cap the provider documents; which chains those are is what
+[Chains](#chains) records. Behind `failover`, each
+branch states its own.
 
 With observability enabled, batching reports `elements_requested` / `elements_fetched`,
 `nominal_batches` and `batch_bytes` (sizes of the initial packing against the wire budget;
@@ -186,7 +192,7 @@ Two invalidation strategies are provided:
 Request-level fallback dispatcher for fronting multiple RPC providers with provider-specific
 limits. Each branch is a fully-built per-provider stack carrying its own `maxBlockRange` and,
 optionally, its own `gasLimit`; deployless lenses adapt to each node's grant on their own, and the
-cap only sizes the opening wave. Branches are constructed once at composition time, so stateful inner transports
+cap sizes the opening wave. Branches are constructed once at composition time, so stateful inner transports
 (coalescing mutexes, rate-limiter token buckets) persist across requests instead of being
 rebuilt per call — unlike viem's stock `fallback`, which rebuilds the active branch on every
 request and effectively disables those features.
@@ -339,6 +345,24 @@ await client.request({
   ],
 })
 ```
+
+## Chains
+
+The `deployless` and `cache` transports look the client's chain up in a small internal table of what
+this package knows about a chain beyond viem's own definition. Today that is how the chain's nodes
+run an `eth_call`, as far as gas goes:
+
+- the frame a request that leaves `gas` unspecified runs in — the provider's whole cap (geth), or a
+  fixed default below it (Monad: 8.1M, promoted to a larger pool only when the call runs out of gas,
+  which a paging envelope never does);
+- what the node does with a `gas` above the provider's cap — clamped (geth) or rejected (Monad,
+  `gas limit too high`).
+
+The transports send `gasLimit` as each chunk's `gas` on a fixed-default chain and nothing elsewhere,
+so `gas_limit_observed` reads the true cap wherever a node would reveal it. A chain without an entry
+is taken to behave like geth. Entries: Ethereum, Base, Arbitrum One, Robinhood Chain, Monad. The
+table is not part of the public API yet; a chain that prices or frames differently belongs in it
+rather than in a transport option.
 
 ## Stores
 
