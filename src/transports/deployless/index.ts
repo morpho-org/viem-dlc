@@ -1,12 +1,10 @@
-import { createTransport, type EIP1193RequestFn, type Hex, type PublicRpcSchema, type Transport } from "viem";
+import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
-import { type ChainDefinition, chainDefinition } from "../../chains/index.js";
+import { chainDefinition } from "../../chains/index.js";
 import { createFacetId, type FacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
-import { factorisedFactoryCall } from "../../utils/deployless/call.js";
-import { unwrapDeploylessFactoryCall } from "../../utils/deployless/codec.envelope.js";
-import { calldataToArray, pageToHex, resolveArrayFunction } from "../../utils/deployless/codec.inner.js";
-import { extractEthCallPolicy } from "../state-overrides.js";
+import { factorisedFactoryCall, type Provider, provider } from "../../utils/deployless/call.js";
+import { aggregatedPage, parseMarkedEthCall } from "../state-overrides.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
@@ -42,19 +40,14 @@ export function deployless<T extends Base>(
 
   return (params) => {
     const requestFn = baseTransportFn(params).request;
-    const chain = chainDefinition(params.chain?.id);
+    const node = provider(chainDefinition(params.chain?.id), gasLimit);
 
     const request = (args: EIP1193Parameters<T>) => {
       if (args.method !== "eth_call") {
         return requestFn(args);
       }
 
-      return handleEthCall(
-        requestFn,
-        args as EIP1193Parameters<PublicRpcSchema, "eth_call">,
-        { gasLimit, chain },
-        facetId,
-      );
+      return handleEthCall(requestFn, args as EIP1193Parameters<PublicRpcSchema, "eth_call">, node, facetId);
     };
 
     return createTransport(
@@ -73,63 +66,30 @@ export function deployless<T extends Base>(
 async function handleEthCall(
   requestFn: EIP1193RequestFn<Base>,
   req: EIP1193Parameters<PublicRpcSchema, "eth_call">,
-  { gasLimit, chain }: { gasLimit: number | undefined; chain: ChainDefinition },
+  node: Provider,
   facetId: FacetId,
 ) {
-  const extracted = extractEthCallPolicy(req.params[2]);
-  if (!extracted) {
+  const marked = parseMarkedEthCall(req);
+  if (!marked) {
     return requestFn(req);
   }
-
-  const [txn, ...restOfEthCallParams] = req.params;
-  if (txn.data === undefined) {
-    throw new Error("[deployless] eth_call with policy requires `data`");
-  }
-  {
-    const txnKeys = Object.keys(txn).filter((k) => txn[k as keyof typeof txn] !== undefined);
-    // `txn.data` must be the only field on `txn`
-    if (txnKeys.length > 1) {
-      const extras = txnKeys.filter((k) => k !== "data");
-      throw new Error(
-        `[deployless] eth_call with policy: tx object may only set \`data\` (found extras: ${extras.join(", ")})`,
-      );
-    }
-  }
-  // `stateOverride` must be overwritten with the cleaned/extracted version.
-  // trailing undefined args must be removed for RPC compatibility.
-  if (restOfEthCallParams.length >= 2) {
-    restOfEthCallParams[1] = extracted.stateOverride ?? (restOfEthCallParams[2] ? {} : undefined);
-    const lastDefinedParamIdx = restOfEthCallParams.reduce((acc, x, i) => (x === undefined ? acc : i), -1);
-    restOfEthCallParams.splice(lastDefinedParamIdx + 1);
-  }
-
-  const { target, targetData } = unwrapDeploylessFactoryCall(txn.data);
-  const solidity = resolveArrayFunction(extracted.policy.abi);
-  const inputElements = calldataToArray(solidity, targetData);
+  const { policy, target, lens, elements, rest } = marked;
 
   const facet = getObservability()?.facet(facetId).sub("eth_call");
-  facet?.set({ input_elements: inputElements.length });
+  facet?.set({ input_elements: elements.length });
 
-  if (inputElements.length === 0) {
-    return pageToHex(solidity.outputLayout, { results: [], skipped: [] });
+  if (elements.length === 0) {
+    return aggregatedPage(lens, [], []);
   }
 
   const { outputs, missing } = await factorisedFactoryCall(requestFn, {
     target,
-    elements: inputElements,
-    solidity,
-    batch: extracted.policy.batch,
-    gasLimit,
-    chain,
-    restOfEthCallParams,
+    elements,
+    solidity: lens,
+    batch: policy.batch,
+    provider: node,
+    restOfEthCallParams: rest,
     facet,
   });
-  // The chunked calls aggregate into a single page over the caller's whole input, so the response
-  // keeps the `(U[] results, uint256[] skipped)` shape the ABI promises.
-  return pageToHex(solidity.outputLayout, { results: definedOnly(outputs), skipped: missing });
-}
-
-/** Drops the holes an unservable element leaves, preserving input order. */
-function definedOnly(outputs: readonly (Hex | undefined)[]): Hex[] {
-  return outputs.filter((o) => o !== undefined);
+  return aggregatedPage(lens, outputs, missing);
 }

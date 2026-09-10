@@ -28,7 +28,7 @@ import type { HandlerContext } from "../../../../src/transports/cache/types.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
-import type { LensGas } from "../../../../src/utils/deployless/call.js";
+import { type LensGas, provider } from "../../../../src/utils/deployless/call.js";
 import {
   ENVELOPE_ADDRESS,
   envelopeConfig,
@@ -145,7 +145,7 @@ function ctx(requestFn: HandlerContext["requestFn"], store = new MemoryStore()):
     coalesce: createCoalescingMutex().coalesce,
     requestFn,
     chainId,
-    chain: chainDefinition(chainId),
+    provider: provider(chainDefinition(chainId), undefined),
     binSize: 10_000,
     invalidationStrategy: () => 0,
     facetId: createFacetId(cacheTransportKey),
@@ -465,7 +465,7 @@ describe("handleEthCall", () => {
       const gas = { fixed: 0, item: { avg: 1_000_000 } };
 
       const result = await handleEthCall(
-        { ...ctx(requestFn), gasLimit: 2_500_000 },
+        { ...ctx(requestFn), provider: provider(chainDefinition(chainId), 2_500_000) },
         createRequest(accounts, { batch: { gas } }),
       );
 
@@ -782,7 +782,8 @@ describe("handleEthCall", () => {
       const req = createRequest(addrs(3), { batch });
       const requestFn = mockPagedFn();
 
-      await handleEthCall(ctx(requestFn, store), req);
+      const context = ctx(requestFn, store);
+      await handleEthCall({ ...context, provider: { ...context.provider, delivery } }, req);
 
       return {
         keys: await cachedKeys(store, keychain.blobKey(chainId, req)!),

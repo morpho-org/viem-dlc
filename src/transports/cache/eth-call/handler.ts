@@ -4,16 +4,9 @@ import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
 import { getObservability } from "../../../observability.js";
 import type { EIP1193Parameters } from "../../../types.js";
 import { cyrb64Hash } from "../../../utils/hash.js";
-import {
-  calldataToArray,
-  factorisedFactoryCall,
-  pageToHex,
-  type ResolvedArrayFunction,
-  resolveArrayFunction,
-  unwrapDeploylessFactoryCall,
-} from "../../../utils/index.js";
+import { factorisedFactoryCall } from "../../../utils/index.js";
 import { parse, stringify } from "../../../utils/json.js";
-import { extractEthCallPolicy } from "../../state-overrides.js";
+import { aggregatedPage, parseMarkedEthCall } from "../../state-overrides.js";
 import { keychain } from "../keychain.js";
 import type { CacheSchema } from "../schema.js";
 import type { HandlerContext } from "../types.js";
@@ -21,50 +14,24 @@ import type { HandlerContext } from "../types.js";
 import type { CachedEthCallEntry } from "./types.js";
 
 export async function handleEthCall(
-  { store, coalesce, requestFn, chainId, chain, gasLimit, facetId }: HandlerContext,
+  { store, coalesce, requestFn, chainId, provider, facetId }: HandlerContext,
   req: EIP1193Parameters<CacheSchema, "eth_call">,
 ): Promise<Hex> {
-  const extracted = extractEthCallPolicy(req.params[2]);
-  if (!extracted) {
+  const marked = parseMarkedEthCall(req);
+  if (!marked) {
     return requestFn(req);
   }
+  const { policy, target, lens, elements: inputElements, rest: restOfEthCallParams } = marked;
 
   const facet = getObservability()?.facet(facetId).sub("eth_call");
-
-  const [txn, ...restOfEthCallParams] = req.params;
-  if (txn.data === undefined) {
-    throw new Error("[cache] eth_call with policy requires `data`");
-  }
-  {
-    const txnKeys = Object.keys(txn).filter((k) => txn[k as keyof typeof txn] !== undefined);
-    // `txn.data` must be the only field on `txn`
-    if (txnKeys.length > 1) {
-      const extras = txnKeys.filter((k) => k !== "data");
-      throw new Error(
-        `[cache] eth_call with policy: tx object may only set \`data\` (found extras: ${extras.join(", ")})`,
-      );
-    }
-  }
-  // `stateOverride` must be overwritten with the cleaned/extracted version.
-  // trailing undefined args must be removed for RPC compatibility.
-  if (restOfEthCallParams.length >= 2) {
-    restOfEthCallParams[1] = extracted.stateOverride ?? (restOfEthCallParams[2] ? {} : undefined);
-    const lastDefinedParamIdx = restOfEthCallParams.reduce((acc, x, i) => (x === undefined ? acc : i), -1);
-    restOfEthCallParams.splice(lastDefinedParamIdx + 1);
-  }
-
-  const { target, targetData } = unwrapDeploylessFactoryCall(txn.data);
-  const solidity = resolveArrayFunction(extracted.policy.abi);
-  const inputElements = calldataToArray(solidity, targetData);
-
   facet?.set({ input_elements: inputElements.length });
 
   if (inputElements.length === 0) {
-    return encodeResponse(solidity, [], []);
+    return aggregatedPage(lens, [], []);
   }
 
   const blobKey = keychain.blobKey(chainId, req);
-  const { ttl, delta } = extracted.policy.cache ?? {};
+  const { ttl, delta } = policy.cache ?? {};
 
   // No TTL → caching disabled. Still honor `batch` by splitting the call, but skip
   // all cache reads, writes, coalescing, and dedup.
@@ -72,28 +39,23 @@ export async function handleEthCall(
     const { outputs, missing } = await factorisedFactoryCall(requestFn, {
       target,
       elements: inputElements,
-      solidity,
-      batch: extracted.policy.batch,
-      gasLimit,
-      chain,
+      solidity: lens,
+      batch: policy.batch,
+      provider,
       restOfEthCallParams,
       facet,
     });
-    return encodeResponse(solidity, outputs, missing);
+    return aggregatedPage(lens, outputs, missing);
   }
 
   facet?.set({ blob_key: blobKey, ttl_ms: ttl, delta_ms: delta });
   return coalesce(blobKey, req, async (_leaderReq, collectFollowers) => {
-    /*//////////////////////////////////////////////////////////////
-                               LEADER OPS
-    //////////////////////////////////////////////////////////////*/
-
     // Dedup identical input elements so repeated keys map to a single blob entry.
     const keyToInfo = new Map<string, { indices: number[]; element: Hex }>();
     inputElements.forEach((element, i) => {
       const ek = keychain.entryKey(chainId, "eth_call", {
         target,
-        selector: solidity.selector,
+        selector: lens.selector,
         element,
         restOfEthCallParams,
       }).data;
@@ -163,10 +125,9 @@ export async function handleEthCall(
         const fetchedResult = await factorisedFactoryCall(requestFn, {
           target,
           elements: misses.map((m) => m.element),
-          solidity,
-          batch: extracted.policy.batch,
-          gasLimit,
-          chain,
+          solidity: lens,
+          batch: policy.batch,
+          provider,
           restOfEthCallParams,
           facet,
           // Buffer per chunk, so a later chunk failing doesn't discard the siblings that landed.
@@ -199,12 +160,8 @@ export async function handleEthCall(
       }
     }
 
-    /*//////////////////////////////////////////////////////////////
-                                FAN OUT
-    //////////////////////////////////////////////////////////////*/
-
-    const result = encodeResponse(
-      solidity,
+    const result = aggregatedPage(
+      lens,
       hits,
       unservable.sort((a, b) => a - b),
     );
@@ -219,16 +176,4 @@ export async function handleEthCall(
       followers: matching.map((f) => ({ slot: f.slot, action: "resolve" as const, result })),
     };
   });
-}
-
-/**
- * Encodes the aggregated `(U[] results, uint256[] skipped)` page, with `outputs` sparse at every
- * skipped index and `skipped` already expressed against the caller's input array.
- */
-function encodeResponse(
-  solidity: ResolvedArrayFunction,
-  outputs: readonly (Hex | undefined)[],
-  skipped: readonly number[],
-): Hex {
-  return pageToHex(solidity.outputLayout, { results: outputs.filter((o) => o !== undefined), skipped });
 }

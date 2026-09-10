@@ -1,9 +1,9 @@
 import type { EIP1193RequestFn } from "viem";
 
-import type { ChainDefinition } from "../../chains/index.js";
 import type { FacetId } from "../../observability.js";
 import type { Store } from "../../types.js";
 import type { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
+import type { Provider } from "../../utils/deployless/call.js";
 import type { LogsDividerSchema } from "../logs-divider/schema.js";
 
 export interface InvalidationContext {
@@ -39,9 +39,10 @@ export interface CacheConfig {
   gasLimit?: number;
 }
 
-export type HandlerContext = CacheConfig & {
+export type HandlerContext = Omit<CacheConfig, "gasLimit"> & {
   chainId: number;
-  chain: ChainDefinition;
+  /** The node this transport instance talks to, with {@link CacheConfig.gasLimit} resolved. */
+  provider: Provider;
   requestFn: EIP1193RequestFn<LogsDividerSchema>;
   coalesce: ReturnType<typeof createCoalescingMutex>["coalesce"];
   /** Owning transport's facet identity; see {@link FacetId}. */

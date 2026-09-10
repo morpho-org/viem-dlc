@@ -1,6 +1,6 @@
 import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema, toHex } from "viem";
 
-import type { ChainDefinition } from "../../chains/index.js";
+import type { ChainDefinition, EthCallGas } from "../../chains/index.js";
 import type { Facet } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
 import { causeChain, isTimeoutLikeError } from "../errors.js";
@@ -32,26 +32,14 @@ import {
   zeroBytes,
 } from "./pricing.js";
 
-type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
+export type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
 type FactorisedFactoryCallParams = {
   target: DeploylessTarget;
   elements: readonly Hex[];
   solidity: ResolvedArrayFunction;
-  batch?: {
-    batchSize?: number;
-    compress?: boolean;
-    gas?: LensGas;
-    continuations?: ContinuationMode;
-    envelope?: EnvelopeDelivery;
-  };
-  /**
-   * The provider's `eth_call` gas cap. Sizes the opening wave's bytes, and with `batch.gas` its
-   * items; on a chain whose nodes give an unspecified `gas` a fixed default
-   * ({@link ChainDefinition.ethCall}), sent as every chunk's `gas`.
-   */
-  gasLimit?: number;
-  chain: ChainDefinition;
+  batch?: BatchOptions;
+  provider: Provider;
   restOfEthCallParams: RestOfEthCallParams;
   /**
    * Invoked with each freshly fetched element as its chunk lands, before siblings finish, and
@@ -60,6 +48,72 @@ type FactorisedFactoryCallParams = {
   onResolved?: (entries: readonly ResolvedElement[]) => void | Promise<void>;
   facet?: Facet;
 };
+
+/** `policy().batch`: how a paginated lens's elements are chunked, priced and delivered. */
+export type BatchOptions = {
+  /**
+   * Maximum bytes of a chunk's `eth_call` `data`; elements are greedy-packed under it and fetched in
+   * parallel. The chain's initcode cap (`MAX_INITCODE_SIZE` on Ethereum) is the usual value for
+   * initcode delivery; by override the provider's request size limit is the bound.
+   */
+  batchSize?: number;
+  /**
+   * FastLZ-compress calldata on the wire so more elements fit per chunk, at the cost of encoding
+   * time and decompression gas.
+   */
+  compress?: boolean;
+  /**
+   * The lens's cost, as the wide event reports it: `fixed` from `fixed_gas`, `item.avg` and
+   * `item.stddev` from `item_gas_avg` and `item_gas_stddev`. With the transport's `gasLimit`, sizes
+   * the opening wave; every later chunk is sized from what the pages report, the stated cost standing
+   * in only until an attempt has been costed. Over-estimating costs extra parallel requests,
+   * under-estimating costs one continuation.
+   */
+  gas?: LensGas;
+  /**
+   * When the elements a page did not reach are re-sent. `fill` (default) pools them across pages and
+   * sends full pages at once and the remainder once no earlier chunk that could still add to it is
+   * in flight: fewer requests. `eager` sends every tail as its page lands: more requests, no waiting.
+   */
+  continuations?: ContinuationMode;
+  /**
+   * How a chunk reaches the node. `initcode` (default) creates the envelope with the elements
+   * trailing it, bounded by the chain's initcode cap. `override` calls the envelope at a fixed
+   * address placed by `eth_call`'s state-override parameter, so the frame's gas is the only bound; a
+   * provider that does not honour overrides is detected on the opening wave and the range re-fetched
+   * as initcode, with unambiguous non-support remembered per transport instance. Pays only when
+   * bytes bind: `(gas_limit_observed − fixed_gas) / item_gas_avg` well above
+   * `elements_requested / nominal_batches` on the wide event.
+   */
+  envelope?: EnvelopeDelivery;
+};
+
+/**
+ * A transport instance's view of the node it talks to, resolved once when the transport is created
+ * by {@link provider}.
+ */
+export type Provider = {
+  /**
+   * The stated `eth_call` cap, when usable: sizes the opening wave's bytes and, with `batch.gas`,
+   * its items; every later chunk is sized from what the pages report.
+   */
+  cap?: number;
+  /**
+   * Sent as every chunk's `gas`: the cap, on a chain whose nodes give an unspecified `gas` a fixed
+   * default ({@link EthCallGas}); nothing elsewhere, where the node grants its cap unasked.
+   */
+  gas?: Hex;
+  delivery: DeliveryMemo;
+};
+
+export function provider(chain: ChainDefinition, gasLimit: number | undefined): Provider {
+  const cap = gasLimit !== undefined && Number.isSafeInteger(gasLimit) && gasLimit > 0 ? gasLimit : undefined;
+  return {
+    cap,
+    gas: cap !== undefined && chain.ethCall.gasWhenUnspecified === "fixedDefault" ? toHex(cap) : undefined,
+    delivery: { unsupported: false },
+  };
+}
 
 /**
  * A lens's cost as the caller states it, in the units the wide event reports: `fixed` is what a
@@ -110,8 +164,7 @@ export async function factorisedFactoryCall(
     elements,
     solidity,
     batch,
-    gasLimit,
-    chain,
+    provider: { cap, gas: sentGas, delivery: memo },
     restOfEthCallParams,
     onResolved,
     facet,
@@ -197,14 +250,7 @@ export async function factorisedFactoryCall(
   };
 
   const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
-  const sentGas =
-    chain.ethCall.gasWhenUnspecified === "fixedDefault" &&
-    gasLimit !== undefined &&
-    Number.isSafeInteger(gasLimit) &&
-    gasLimit > 0
-      ? toHex(gasLimit)
-      : undefined;
-  const stated = statedGas(gasLimit, batch?.gas);
+  const stated = statedGas(cap, batch?.gas);
   let gas: GasStats | undefined;
   /** The stated figures until a page has landed, the pooled observations after. */
   const gasParams = (): GasParams | undefined => {
@@ -568,16 +614,16 @@ function fitsGas(
   return k === 1 || item === undefined || bytes + item.fixed + chunkCost(k, item.avg, item.stddev) <= cap;
 }
 
-/** `gasLimit` and `batch.gas` as the prediction uses them: nothing without a usable cap, the cap alone without a usable cost. */
-function statedGas(gasLimit: number | undefined, gas: LensGas | undefined): GasParams | undefined {
-  if (gasLimit === undefined || !Number.isSafeInteger(gasLimit) || gasLimit <= 0) return undefined;
-  const capOnly = { cap: gasLimit };
+/** The provider's cap and `batch.gas` as the prediction uses them: nothing without a cap, the cap alone without a usable cost. */
+function statedGas(cap: number | undefined, gas: LensGas | undefined): GasParams | undefined {
+  if (cap === undefined) return undefined;
+  const capOnly = { cap };
   if (typeof gas !== "object" || gas === null || typeof gas.item !== "object" || gas.item === null) return capOnly;
   const { fixed } = gas;
   const { avg, stddev = 0 } = gas.item;
   const usable =
     Number.isFinite(fixed) && fixed >= 0 && Number.isFinite(avg) && avg > 0 && Number.isFinite(stddev) && stddev >= 0;
-  return usable ? { cap: gasLimit, item: { fixed, avg, stddev } } : capOnly;
+  return usable ? { cap, item: { fixed, avg, stddev } } : capOnly;
 }
 
 /**

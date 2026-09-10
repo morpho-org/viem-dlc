@@ -4,6 +4,7 @@ import { chainDefinition } from "../../chains/index.js";
 import { createFacetId, observe } from "../../observability.js";
 import type { EIP1193Parameters, Store } from "../../types.js";
 import { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
+import { provider } from "../../utils/deployless/call.js";
 import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
 import type { LogsEnricherConfig } from "../logs-enricher/types.js";
 import type { LogsSieveConfig } from "../logs-sieve/types.js";
@@ -126,7 +127,7 @@ export function cache(
       throw new Error("You must pass a chain to the cache transport.");
     }
     const chainId = params.chain.id;
-    const chain = chainDefinition(chainId);
+    const node = provider(chainDefinition(chainId), gasLimit);
 
     const { coalesce } = createCoalescingMutex();
     const transport = logsDivider(baseTransportFn, [{ ...logsDividerConfig, alignTo: binSize }, ...otherConfigs])(
@@ -137,9 +138,8 @@ export function cache(
       store,
       binSize,
       invalidationStrategy,
-      gasLimit,
       chainId,
-      chain,
+      provider: node,
       requestFn: transport.request,
       coalesce,
       facetId,
