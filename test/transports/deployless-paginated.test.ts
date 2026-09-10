@@ -1443,7 +1443,7 @@ describe("override delivery", () => {
 
     const { result, field } = await withFacet(() => createTransport(requestFn).request(createRequest(four, OVERRIDE)));
 
-    // Nothing was learned about the provider, so the tail the initcode retry's page left opens by override.
+    // The tail the initcode retry's page left opens by override, as every chunk of the request does.
     expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n]);
     expect(requestedIndices(requestFn)).toEqual([
       [1, 2, 3, 4],
@@ -1453,7 +1453,6 @@ describe("override delivery", () => {
     expect(deliveries(requestFn)).toEqual(["override", "initcode", "override"]);
     expect(paramsOf(requestFn, 2)[0]).toEqual({ to: ENVELOPE_ADDRESS, data: paramsOf(requestFn, 2)[0].data });
     expect(field("override_fallbacks_unproven")).toBe(1);
-    expect(field("delivery_memo")).toBe(false);
   });
 
   it.each([

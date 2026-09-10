@@ -92,7 +92,6 @@ export type Provider = {
    * default ({@link EthCallGas}); nothing elsewhere, where the node grants its cap unasked.
    */
   gas?: Hex;
-  memo: DeliveryMemo;
 };
 
 export function providerOf(chain: ChainDefinition, gasLimit: number | undefined): Provider {
@@ -100,17 +99,8 @@ export function providerOf(chain: ChainDefinition, gasLimit: number | undefined)
   return {
     cap,
     gas: cap !== undefined && chain.ethCall.gasWhenUnspecified === "fixedDefault" ? toHex(cap) : undefined,
-    memo: { unsupported: false },
   };
 }
-
-/**
- * One transport instance's memory that its provider does not honour `eth_call` state overrides:
- * set only on unambiguous evidence (a call that returned instead of reverting, or an invalid-params
- * refusal), never cleared, and never consulted by a request without `batch.envelope: "override"`.
- * Correctness never depends on it; only the count of wasted requests does.
- */
-export type DeliveryMemo = { unsupported: boolean };
 
 /**
  * When the tails pages leave behind are sent. `fill` sends a tail once enough of them are pending
@@ -176,7 +166,7 @@ export async function factorisedFactoryCall(
     elements,
     lens,
     batch,
-    provider: { cap, gas: sentGas, memo },
+    provider: { cap, gas: sentGas },
     restOfEthCallParams,
     onResolved,
     facet,
@@ -187,8 +177,6 @@ export async function factorisedFactoryCall(
   if (envelope === "override" && overridesEnvelopeAddress(restOfEthCallParams[1])) {
     throw new Error(`[deployless] a caller's state override at ${ENVELOPE_ADDRESS} conflicts with the envelope's own`);
   }
-  /** The delivery a new chunk takes: override while requested and not yet found unsupported. */
-  const currentDelivery = () => (envelope === "override" && !memo.unsupported ? "override" : "initcode");
 
   const everything = elements.map((_, i) => i);
   const outcomes = new Array<ElementOutcome | undefined>(elements.length);
@@ -283,14 +271,13 @@ export async function factorisedFactoryCall(
     return packed.chunks;
   };
 
-  const opening = currentDelivery();
+  const opening = envelope;
   const chunks = pack(everything, opening);
 
   facet?.set({
     elements_requested: elements.length,
     nominal_batches: chunks.length,
     ...(cap === undefined ? {} : { gas_limit: cap }),
-    ...(envelope === "override" ? { delivery_memo: memo.unsupported } : {}),
   });
   // Sizes of the *initial* packing, to compare realized utilization against the wire budget.
   // Halved children and continuations are not resampled. Guarded rather than
@@ -356,7 +343,6 @@ export async function factorisedFactoryCall(
           splits[action.reason] += 1;
           return halve(chunk, action.timeoutSplits);
         case "fallback":
-          if (action.reason === "unsupported") memo.unsupported = true;
           return fallback(chunk, action.reason);
       }
     }
@@ -380,7 +366,7 @@ export async function factorisedFactoryCall(
       pages.unresolvedAttempts += 1;
       const pos = indices[page.died]!;
       if (count > 1) {
-        wave.dispatch(job([pos], generation, currentDelivery()));
+        wave.dispatch(job([pos], generation, envelope));
       } else {
         decline(pos, "gas");
       }
@@ -393,10 +379,7 @@ export async function factorisedFactoryCall(
   };
 
   const wave = createWave<ChunkJob>({
-    pack: (indices, generation) => {
-      const delivery = currentDelivery();
-      return pack(indices, delivery).map((chunk) => job(chunk, generation, delivery));
-    },
+    pack: (indices, generation) => pack(indices, envelope).map((chunk) => job(chunk, generation, envelope)),
     send: runChunk,
     eager: continuations === "eager",
   });

@@ -783,8 +783,7 @@ describe("handleEthCall", () => {
       const req = createRequest(addrs(3), { batch });
       const requestFn = mockPagedFn();
 
-      const context = ctx(requestFn, store);
-      await handleEthCall({ ...context, provider: { ...context.provider, memo: delivery } }, req);
+      await handleEthCall(ctx(requestFn, store), req);
 
       return {
         keys: await cachedKeys(store, keychain.blobKey(chainId, req)!),
