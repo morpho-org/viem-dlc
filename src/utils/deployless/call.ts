@@ -20,17 +20,8 @@ import {
   isOutOfGasRevert,
   overridesEnvelopeAddress,
 } from "./codec.envelope.js";
-import { arrayToWire, hexToPage, type Page, type PageGas, type ResolvedArrayFunction } from "./codec.inner.js";
-import {
-  copyGas,
-  floorGas,
-  hexByteLength,
-  intrinsicGas,
-  sentSize,
-  type WireSize,
-  wireSize,
-  zeroBytes,
-} from "./pricing.js";
+import { arrayToWire, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
+import { costModel, hexByteLength, type LensGas, sentSize, type WireSize, wireSize, zeroBytes } from "./pricing.js";
 
 export type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
@@ -116,12 +107,12 @@ export function provider(chain: ChainDefinition, gasLimit: number | undefined): 
 }
 
 /**
- * A lens's cost as the caller states it, in the units the wide event reports: `fixed` is what a
- * frame spends before its first attempt less the copy of the chunk's own bytes (`fixed_gas`),
- * `item` the per-attempt mean and deviation (`item_gas_avg`, `item_gas_stddev`). Both are
- * properties of the lens, not of any provider or chunk.
+ * One transport instance's memory that its provider does not honour `eth_call` state overrides:
+ * set only on unambiguous evidence (a call that returned instead of reverting, or an invalid-params
+ * refusal), never cleared, and never consulted by a request without `batch.envelope: "override"`.
+ * Correctness never depends on it; only the count of wasted requests does.
  */
-export type LensGas = { fixed: number; item: { avg: number; stddev?: number } };
+export type DeliveryMemo = { unsupported: boolean };
 
 /**
  * When the tails pages leave behind are sent. `fill` sends a tail once enough of them are pending
@@ -132,6 +123,8 @@ export type ContinuationMode = "fill" | "eager";
 
 /** An input element's index paired with the raw output bytes fetched for it. */
 export type ResolvedElement = { index: number; output: Hex };
+
+export type { LensGas } from "./pricing.js";
 
 export type FactorisedFactoryCallResult = {
   /** Per-element outputs aligned to `elements`, sparse exactly at {@link FactorisedFactoryCallResult.missing}. */
@@ -250,29 +243,19 @@ export async function factorisedFactoryCall(
   };
 
   const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
-  const stated = statedGas(cap, batch?.gas);
-  let gas: GasStats | undefined;
-  /** The stated figures until a page has landed, the pooled observations after. */
-  const gasParams = (): GasParams | undefined => {
-    if (gas === undefined) return stated;
-    const item = gas.served === 0n ? stated?.item : { fixed: Number(gas.fixed0), ...moments(gas) };
-    return { cap: Number(gas.cap), item };
-  };
+  const cost = costModel(cap, batch?.gas, compress);
 
   /**
    * Chunks `indices` for `delivery` under the wire cap and the gas prediction; an element that
    * fits neither alone is declined as oversize.
    */
   const pack = (indices: Chunk, delivery: EnvelopeDelivery): Chunk[] => {
-    const params = gasParams();
     if (indices.length === 0) return [];
-    if (wireCap === Infinity && params === undefined) return [indices];
+    if (wireCap === Infinity && !cost.known) return [indices];
     const measure = measurer(indices);
     const fits = (start: number, end: number) => {
       const tuple = measure(start, end);
-      const sent = sentSize(tuple, delivery);
-      if (sent.bytes > wireCap) return false;
-      return params === undefined || fitsGas(tuple, sent, end - start, params, delivery, compress);
+      return sentSize(tuple, delivery).bytes <= wireCap && cost.fits(tuple, end - start, delivery);
     };
     const packed = packBatches(indices, fits);
     for (const index of packed.oversize) {
@@ -289,7 +272,8 @@ export async function factorisedFactoryCall(
   facet?.set({
     elements_requested: elements.length,
     nominal_batches: chunks.length,
-    ...(stated === undefined ? {} : { gas_limit: stated.cap }),
+    ...(cap === undefined ? {} : { gas_limit: cap }),
+    ...(envelope === "override" ? { delivery_memo: memo.unsupported } : {}),
   });
   // Sizes of the *initial* packing, to compare realized utilization against the wire budget.
   // Halved children and continuations are not resampled. Guarded rather than
@@ -396,13 +380,7 @@ export async function factorisedFactoryCall(
 
     const page = hexToPage(solidity.outputLayout, outcome.returndata);
     const attempted = validatePage(page, count);
-    gas = pool(
-      gas,
-      page.gas,
-      attempted - (page.died === undefined ? 0 : 1),
-      intrinsicGas(sentSize(tupleSize, delivery), delivery),
-      copyGas(tupleSize.bytes, compress),
-    );
+    cost.observe(page.gas, attempted - (page.died === undefined ? 0 : 1), tupleSize, delivery);
     facet?.stat("page_adjudicated", attempted);
     if (page.died === undefined && page.results.length === 0 && page.skipped.length > 0) pages.allSkipped += 1;
 
@@ -522,8 +500,8 @@ export async function factorisedFactoryCall(
     pump();
     await done;
   } finally {
-    if (gas !== undefined) facet?.set(gasFields(gas));
     facet?.set({
+      ...cost.fields(),
       elements_fetched: fetched,
       splits_count: splits.count,
       splits_size: splits.size,
@@ -563,70 +541,6 @@ export async function factorisedFactoryCall(
 type Chunk = readonly number[];
 
 /**
- * The gas telemetry of every page a request has seen, pooled: `budget` is the smallest frame's,
- * `fixed0` the largest prologue less the copy of the chunk's own bytes ({@link copyGas}), `cap`
- * the smallest gas limit a page's frame implies.
- */
-type GasStats = PageGas & { served: bigint; cap: bigint; fixed0: bigint };
-
-/** `intrinsic` is what the node deducted for the chunk's bytes before the frame began, `copy` what the prologue spent on them. */
-function pool(stats: GasStats | undefined, page: PageGas, served: number, intrinsic: number, copy: number): GasStats {
-  const cap = BigInt(intrinsic) + page.fixed + page.budget;
-  const fixed0 = page.fixed > BigInt(copy) ? page.fixed - BigInt(copy) : 0n;
-  if (stats === undefined) return { ...page, served: BigInt(served), cap, fixed0 };
-  return {
-    budget: page.budget < stats.budget ? page.budget : stats.budget,
-    fixed: page.fixed > stats.fixed ? page.fixed : stats.fixed,
-    fixed0: fixed0 > stats.fixed0 ? fixed0 : stats.fixed0,
-    served: stats.served + BigInt(served),
-    sum: stats.sum + page.sum,
-    sumSquares: stats.sumSquares + page.sumSquares,
-    max: page.max > stats.max ? page.max : stats.max,
-    cap: cap < stats.cap ? cap : stats.cap,
-  };
-}
-
-/**
- * What {@link fitsGas} needs: a provider's cap, and, when known, a lens's prologue and per-attempt
- * cost. The cap alone bounds a chunk's bytes; the item figures bound its elements.
- */
-type GasParams = { cap: number; item?: { fixed: number; avg: number; stddev: number } };
-
-/**
- * Whether a chunk of `k` elements is predicted to fit the cap: its bytes must clear EIP-7623's floor
- * and leave room after intrinsic gas and the prologue's copy, and its attempts with headroom must
- * fit what remains after the lens's prologue. A lone element always fits the attempt line: that
- * estimate may shorten a chunk but never withhold an element, so the envelope decides what is
- * served. The byte lines are protocol bounds the node enforces before anything runs, so a lone
- * element above them is oversize.
- */
-function fitsGas(
-  tuple: WireSize,
-  sent: WireSize,
-  k: number,
-  { cap, item }: GasParams,
-  delivery: EnvelopeDelivery,
-  compressed: boolean,
-): boolean {
-  if (floorGas(sent) > cap) return false;
-  const bytes = intrinsicGas(sent, delivery) + copyGas(tuple.bytes, compressed);
-  if (bytes > cap) return false;
-  return k === 1 || item === undefined || bytes + item.fixed + chunkCost(k, item.avg, item.stddev) <= cap;
-}
-
-/** The provider's cap and `batch.gas` as the prediction uses them: nothing without a cap, the cap alone without a usable cost. */
-function statedGas(cap: number | undefined, gas: LensGas | undefined): GasParams | undefined {
-  if (cap === undefined) return undefined;
-  const capOnly = { cap };
-  if (typeof gas !== "object" || gas === null || typeof gas.item !== "object" || gas.item === null) return capOnly;
-  const { fixed } = gas;
-  const { avg, stddev = 0 } = gas.item;
-  const usable =
-    Number.isFinite(fixed) && fixed >= 0 && Number.isFinite(avg) && avg > 0 && Number.isFinite(stddev) && stddev >= 0;
-  return usable ? { cap, item: { fixed, avg, stddev } } : capOnly;
-}
-
-/**
  * Zero bytes in the four words of a clear chunk's wrapper that count its `k` elements and `body`
  * bytes: the wire's `n` and `bodyLen`, the ABI length of the wire (`64 + body`) and the offset of
  * `factoryData` behind it (`256 + body`). Everything else in the wrapper is the same for every chunk.
@@ -640,34 +554,6 @@ function nonzeroBytesOf(n: number): number {
   let count = 0;
   for (let rest = n; rest > 0; rest = Math.floor(rest / 256)) if (rest % 256 !== 0) count++;
   return count;
-}
-
-/**
- * Deviations of headroom a predicted chunk keeps below the budget. A target, not a bound: attempt
- * costs are correlated, so Cantelli's `1 / (1 + z²)` does not hold (see docs/000016-tib-paginated-lenses.md).
- * An overshoot costs one continuation, packed from more data.
- */
-const PACKING_SIGMAS = 2;
-
-/** The cost of a chunk of `k` attempts at mean `mean` and deviation `sigma` each, with headroom for the spread. */
-function chunkCost(k: number, mean: number, sigma: number): number {
-  return k * mean + PACKING_SIGMAS * sigma * Math.sqrt(k);
-}
-
-/** Mean and population deviation of one attempt's cost; the variance's numerator stays exact in bigint. */
-function moments({ served, sum, sumSquares }: GasStats) {
-  const n = Number(served);
-  return {
-    avg: Number(sum) / n,
-    stddev: Math.sqrt(Number(served * sumSquares - sum * sum)) / n,
-  };
-}
-
-function gasFields(gas: GasStats): Record<string, number> {
-  const frame = { frame_gas: Number(gas.budget), fixed_gas: Number(gas.fixed0), gas_limit_observed: Number(gas.cap) };
-  if (gas.served === 0n) return frame;
-  const { avg, stddev } = moments(gas);
-  return { ...frame, item_gas_avg: avg, item_gas_stddev: stddev, item_gas_max: Number(gas.max) };
 }
 
 /**
