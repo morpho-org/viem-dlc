@@ -251,23 +251,28 @@ export type EnvelopeRevert =
   | { kind: "counterfactualDeployFailed" };
 
 /**
- * Reads the envelope's revert out of an error a viem `requestFn` threw, or `null` when the revert
- * data is not the envelope's: a page is {@link OK_SENTINEL} followed by the outcome stream;
- * {@link OOG_SENTINEL} matches exactly, so a lens error that merely starts with those bytes is not an
- * out-of-gas; the two `Malformed*` reverts carry exactly their declared arguments.
+ * Reads the envelope's revert out of an error a viem `requestFn` threw, or `null` when no revert data
+ * on its `cause` chain is the envelope's. A page anywhere on the chain wins: it is {@link OK_SENTINEL}
+ * followed by the outcome stream. Otherwise the fatal reverts in the order listed; {@link OOG_SENTINEL}
+ * matches exactly, so a lens error that merely starts with those bytes is not an out-of-gas, and the
+ * two `Malformed*` reverts carry exactly their declared arguments.
  */
 export function decodeEnvelopeRevert(e: unknown): EnvelopeRevert | null {
-  for (const raw of revertDataCandidates(e)) {
-    const lower = raw.toLowerCase();
-    const selector = lower.slice(0, 10);
-    if (selector === OK_SENTINEL) return { kind: "page", data: `0x${raw.slice(10)}` as Hex };
-    if (lower === OOG_SENTINEL) return { kind: "outOfGas" };
-    if (selector === MALFORMED_RESULT_SELECTOR && raw.length === 2 + 8 + 128) return { kind: "malformedResult" };
-    if (selector === MALFORMED_INPUT_SELECTOR && raw.length === 2 + 8 + 64) return { kind: "malformedInput" };
-    if (selector === COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR) return { kind: "counterfactualDeployFailed" };
+  const candidates = [...revertDataCandidates(e)].map((raw) => ({ raw, lower: raw.toLowerCase() }));
+  const page = candidates.find(({ lower }) => lower.startsWith(OK_SENTINEL));
+  if (page) return { kind: "page", data: `0x${page.raw.slice(10)}` as Hex };
+  for (const [kind, matches] of FATAL_REVERTS) {
+    if (candidates.some(({ lower }) => matches(lower))) return { kind };
   }
   return null;
 }
+
+const FATAL_REVERTS: readonly [Exclude<EnvelopeRevert["kind"], "page">, (lower: string) => boolean][] = [
+  ["malformedResult", (lower) => lower.startsWith(MALFORMED_RESULT_SELECTOR) && lower.length === 2 + 8 + 128],
+  ["malformedInput", (lower) => lower.startsWith(MALFORMED_INPUT_SELECTOR) && lower.length === 2 + 8 + 64],
+  ["counterfactualDeployFailed", (lower) => lower.startsWith(COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR)],
+  ["outOfGas", (lower) => lower === OOG_SENTINEL],
+];
 
 /**
  * Walks `e`'s `cause` chain, yielding every revert-data hex it finds. Wrapped errors still surface
