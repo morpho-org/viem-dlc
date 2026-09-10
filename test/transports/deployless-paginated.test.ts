@@ -1430,6 +1430,32 @@ describe("override delivery", () => {
     expect(field("override_fallbacks_unsupported")).toBe(2);
   });
 
+  it("sends the tails an unproven fallback's pages leave behind by override", async () => {
+    let pending = true;
+    const requestFn = withOverride(
+      (serve) => {
+        if (!pending) return serve();
+        pending = false;
+        throw Object.assign(new Error("Internal Server Error"), { status: 500 });
+      },
+      mockPagedLens({ pageSize: 2 }),
+    );
+
+    const { result, field } = await withFacet(() => createTransport(requestFn).request(createRequest(four, OVERRIDE)));
+
+    // Nothing was learned about the provider, so the tail the initcode retry's page left opens by override.
+    expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n]);
+    expect(requestedIndices(requestFn)).toEqual([
+      [1, 2, 3, 4],
+      [1, 2, 3, 4],
+      [3, 4],
+    ]);
+    expect(deliveries(requestFn)).toEqual(["override", "initcode", "override"]);
+    expect(paramsOf(requestFn, 2)[0]).toEqual({ to: ENVELOPE_ADDRESS, data: paramsOf(requestFn, 2)[0].data });
+    expect(field("override_fallbacks_unproven")).toBe(1);
+    expect(field("delivery_memo")).toBe(false);
+  });
+
   it.each([
     ["intrinsic gas", "intrinsic gas too low: have 21000, want 53000"],
     ["floor data gas", "insufficient gas for floor data gas cost"],
