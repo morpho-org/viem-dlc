@@ -228,13 +228,13 @@ envelope ran*:
   → `unsupported`.
 - **Anything else:** no memo.
 
-Every non-proof outcome ends the same way: the chunk's indices are re-packed under the initcode cap
-with the initcode predicate and each piece is `dispatch`ed as initcode at the failed chunk's
-generation, exactly as a chunk's halves are (`call.ts:326`), so the pending list waits for them as
+Every non-proof outcome ends the same way: the chunk's indices are re-packed as initcode — under
+`batchSize` when stated, otherwise as one chunk — with the initcode predicate, and each piece is
+`dispatch`ed as initcode at the failed chunk's generation, exactly as a chunk's halves are (`call.ts:326`), so the pending list waits for them as
 it would for any chunk of that generation and a failure among them settles the request the usual
-way. Each piece is attempted once; its errors propagate as today. An element the initcode cap cannot
-carry alone is declined as oversize on the way, which is what a request without the option would
-have done with it. Halves, singleton escalations and pooled tails are chunks like any other and take
+way. Each piece is attempted once; its errors propagate as today, size errors included. An element
+the stated `batchSize` or the predicate's byte lines cannot carry alone is declined as oversize on
+the way, which is what a request without the option would have done with it. Halves, singleton escalations and pooled tails are chunks like any other and take
 the request's current delivery, so once the memo is set — during this request or before it — every
 later chunk is initcode. The memo is per transport instance and sticky; correctness never depends
 on it, only the count of wasted requests does, so a `failover` of providers with different answers
@@ -276,8 +276,9 @@ meaning.
   `call`); `copy` pinned; regenerated `.gas-snapshot`.
 - `test/transports`, `test/utils/deployless`: the fallback matrix and the pricing cases under a
   mocked provider.
-- `README.md` (`deployless`, `policy`), `examples/04-deployless-batching.ts`: the option, the
-  instrument that says whether it will pay, and `batchSize` guidance per delivery.
+- `README.md` (`deployless`, `policy`): the option, the instrument that says whether it will pay,
+  and `batchSize` guidance per delivery. The examples live on `examples-and-bench` and take the
+  same edit once this lands.
 - `docs/000016-tib-paginated-lenses.md`: the predicate's statement and the `fixed`-grows-with-bytes
   risk, edited to point here.
 - Not changed: the wire format, the record format, the telemetry words, `keychain.ts`, the cache's
@@ -289,8 +290,9 @@ meaning.
   arguments, yields identical records and identical `Σg`, `gmax`, `nA` and `fixed` for static,
   dynamic-in, dynamic-out and compressed inputs (the probe: `fixed = 316,001` and `Σg = 940,410` in
   both deliveries at 500 elements); a lens whose constructor sets an immutable and writes a storage
-  slot returns the same values in both deliveries; the shipped constant, etched, fails with
-  `CounterfactualDeployFailed` (so the option cannot ship without the Yul change); `copy(a)` matches
+  slot returns the same values in both deliveries; a factory that requires `msg.sender ==
+  ENVELOPE_ADDRESS` deploys in both (the pre-change constant, etched, failed with
+  `CounterfactualDeployFailed` in the probe: the option cannot ship without the Yul change); `copy(a)` matches
   the difference in `fixed` between a 5- and a 500-element page within 1% (the probe: 8,063
   predicted against 8,121 measured) on the clear and the compressed path; the per-element gas of
   both paths is within the snapshot's tolerance of today's.
@@ -368,6 +370,9 @@ meaning.
   elements ride, which is the envelope's frame.
 - **Branch-free prologue** because the loop must not move. A `switch calldatasize()` variant
   measured the same per element but compiled 18 bytes larger; the two no-op copies cost six gas.
+  The forge gas snapshot moved by ~3k per 100 elements on the change, which is the test harness's
+  storage-held envelope growing by one word, not the loop: measured in one frame, `Σg` is identical
+  and `fixed` is up 21 gas at 10 and at 110 elements.
 - **Delivery does not change what the frame does.** Measured in one frame on the fixture lens at
   500 elements against this baseline's envelope, `fixed` and `Σg` are identical in both deliveries
   and the creation frame costs 110k more outside them, of which 32,000 is the `CREATE` itself.

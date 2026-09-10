@@ -62,8 +62,10 @@ No gas figure is load-bearing: the envelope calls the lens's per-item function o
 in its own frame and reports how far it got, so a chunk adapts to whatever gas the node grants —
 see [Paginated lenses](#paginated-lenses). An optional `gasLimit` lets the opening wave
 anticipate the grant, and rides as each chunk's `gas` on chains that need it (see
-[Chains](#chains)). Most callers reach it through
-[`readLens`](#readlens) rather than building the call by hand.
+[Chains](#chains)). A chunk's elements ride inside the envelope's initcode by default, so the
+chain's initcode cap bounds it; with `batch.envelope: 'override'` the envelope is placed by state
+override instead and only the frame's gas and the provider's request size limit bound a chunk. Most
+callers reach it through [`readLens`](#readlens) rather than building the call by hand.
 
 ```ts
 import { createPublicClient, encodeFunctionData, http, parseAbiItem } from 'viem'
@@ -107,10 +109,10 @@ branch states its own.
 With observability enabled, batching reports `elements_requested` / `elements_fetched`,
 `nominal_batches` and `batch_bytes` (sizes of the initial packing against the wire budget;
 halved and continued chunks are not resampled), and `splits_*` for chunks halved after an
-error: `splits_size` (413 / initcode-size errors) and `splits_timeout`. Nothing in the envelope's
-prologue grows with the chunk, so a frame that dies without reporting is a constructor too heavy
-for the node's cap, surfaced as an error rather than halved. Pagination is normal rather than a
-failure and gets its own
+error: `splits_size` (413 / initcode-size errors) and `splits_timeout`. The envelope's prologue
+grows with the chunk only by the copy of its bytes, which the packer prices, so a frame that dies
+without reporting is a constructor too heavy for the node's cap, surfaced as an error rather than
+halved. Pagination is normal rather than a failure and gets its own
 fields: `pages_continued` (responses that stopped early; the elements they did not reach are pooled
 and re-packed together), `flushes` (the requests those pooled elements were re-packed into, split
 into `flushes_full`, `flushes_drain` and `flushes_eager` by what released them — see
@@ -126,7 +128,8 @@ the subset another provider with a higher cap might still serve.
 
 Every page also reports what its attempts cost, and the request pools it: `frame_gas` (the gas a
 frame had for attempts, on the smallest frame seen), `fixed_gas` (what a frame spent before its
-first attempt: prologue, lens deploy and reserve), `item_gas_avg` / `item_gas_stddev` /
+first attempt — prologue, lens deploy and reserve — less the copy of the chunk's own bytes, so the
+figure does not depend on how large the observed pages were), `item_gas_avg` / `item_gas_stddev` /
 `item_gas_max` per attempt, and `gas_limit_observed`, the `eth_call` gas cap the provider actually
 granted, read back from the frame, the prologue and the calldata's intrinsic gas. Every chunk after
 the opening wave is packed from these; they are also the numbers the opening wave takes as
@@ -137,6 +140,13 @@ cap the provider has since lowered. Costs depend on which items share a frame: g
 elements warms storage they share and lowers `item_gas_avg`, shuffling makes the rate uniform
 across chunks; results align to `args` in either order. A full cache hit or an empty input makes
 no upstream call and carries none of these fields.
+
+Delivery has its own fields: `chunks_override` and `chunks_initcode` (requests sent in each
+delivery), `override_fallbacks` (ranges re-fetched as initcode, split into
+`override_fallbacks_unsupported`, `override_fallbacks_unproven` and `override_fallbacks_exhausted`
+by what the failed chunk proved), and `delivery_memo` (whether the transport had already recorded
+this provider as not honouring overrides when the packer began; only with
+`batch.envelope: 'override'`).
 
 ### `cache`
 
@@ -492,6 +502,7 @@ policy(opts: {
     compress?: boolean
     gas?: { fixed: number; item: { avg: number; stddev?: number } }
     continuations?: 'fill' | 'eager'
+    envelope?: 'initcode' | 'override'
   }
   cache?: {
     blobKey: string
@@ -508,14 +519,16 @@ policy(opts: {
   `eth_call`.
 - **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk; elements
   are greedy-packed under it and fetched in parallel. `MAX_INITCODE_SIZE` (EIP-3860's 49 152
-  bytes) is the usual value. The cap is not tuned per lens, chain, or provider.
+  bytes) is the usual value for initcode delivery; by override the bound is the provider's request
+  size limit. The cap is not tuned per lens, chain, or provider.
 - **`opts.batch.compress`** — FastLZ-compress calldata on the wire, so more elements fit per
   chunk at the cost of encoding time and decompression gas. The envelope decompresses element by
   element as it attempts them, so a highly compressible chunk pages like any other and costs
   nothing before its first element.
 - **`opts.batch.gas`** — the lens's cost, in the units the wide event reports it: `fixed` from
-  `fixed_gas` (what a frame spends before its first attempt), `item.avg` and `item.stddev` from
-  `item_gas_avg` and `item_gas_stddev`. Together with the transport's `gasLimit` it sizes the
+  `fixed_gas`, what a frame spends before its first attempt less the copy of the chunk's own bytes,
+  `item.avg` and `item.stddev` from `item_gas_avg` and `item_gas_stddev`. Together with the
+  transport's `gasLimit` it sizes the
   opening wave: a chunk is as many elements as fit the cap after the calldata's intrinsic gas and
   `fixed`, with the same headroom for the spread that continuations keep. Every later chunk is
   sized from what the pages report, so this only matters until the first attempt has been costed:
@@ -526,6 +539,13 @@ policy(opts: {
   earlier chunk that could still add to it is in flight, so small tails from many pages travel
   together. `eager` sends every tail as soon as its page lands: more requests, no waiting.
   Anything else reads as `fill`.
+- **`opts.batch.envelope`** — how a chunk reaches the node. `initcode` (the default) creates the
+  envelope with the elements trailing it, bounded by the chain's initcode cap. `override` calls the
+  envelope at a fixed address placed by `eth_call`'s state-override parameter, so the frame's gas is
+  the only bound; a provider that does not honour overrides is detected on the opening wave and the
+  range re-fetched as initcode, with unambiguous non-support remembered per transport instance. It
+  pays only when bytes bind, which the wide event says: `(gas_limit_observed − fixed_gas) /
+  item_gas_avg` well above `elements_requested / nominal_batches`.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
   or when used with `deployless(...)`, `batch` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same
@@ -565,7 +585,7 @@ contract BlueHealthLens {
 }
 ```
 
-The envelope — the initcode this package sends with every deployless call — reads the element
+The envelope — the bytecode this package puts in front of every deployless call — reads the element
 array, calls the per-item function **once per element in its own frame** with all remaining gas,
 and deposits each result straight into the response. Per element, exactly one of three things
 happens. The call **returns**: the result is kept. It **reverts** (any reason, any data): the
@@ -577,8 +597,9 @@ the largest frame a node can grant, and only if it dies there too does it land i
 `skipped`. Before each attempt the envelope also checks that the frame can pay for the memory the
 attempt would touch and still report an outcome, priced from the fee schedule; below that, it
 stops (or, for element 0, reports it unresolved without attempting).
-So a frame never dies mid-page, and nothing in the prologue grows with the chunk; a constructor
-too heavy for a node's cap is reported as an error rather than halved.
+So a frame never dies mid-page, and the prologue grows with the chunk only by the copy of its
+bytes, which the packer prices; a constructor too heavy for a node's cap is reported as an error
+rather than halved.
 
 No element type needs a number from the author: static sizes come from the ABI, dynamic inputs
 carry their length on the wire, and dynamic results carry theirs in returndata. The envelope
