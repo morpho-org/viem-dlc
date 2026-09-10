@@ -148,7 +148,6 @@ function ctx(requestFn: HandlerContext["requestFn"], store = new MemoryStore()):
     chain: chainDefinition(chainId),
     binSize: 10_000,
     invalidationStrategy: () => 0,
-    delivery: { unsupported: false },
     facetId: createFacetId(cacheTransportKey),
   };
 }
@@ -778,12 +777,12 @@ describe("handleEthCall", () => {
 
   describe("override delivery", () => {
     /** One cached request, reporting the blob's entry keys and the `to` each chunk was sent with. */
-    async function run(batch: Record<string, unknown> | undefined, delivery: { unsupported: boolean }) {
+    async function run(batch: Record<string, unknown> | undefined) {
       const store = new MemoryStore();
       const req = createRequest(addrs(3), { batch });
       const requestFn = mockPagedFn();
 
-      await handleEthCall({ ...ctx(requestFn, store), delivery }, req);
+      await handleEthCall(ctx(requestFn, store), req);
 
       return {
         keys: await cachedKeys(store, keychain.blobKey(chainId, req)!),
@@ -791,20 +790,14 @@ describe("handleEthCall", () => {
       };
     }
 
-    it("keys entries from the request alone, whatever the delivery or the memo", async () => {
-      const plain = await run(undefined, { unsupported: false });
-      const override = await run({ envelope: "override" }, { unsupported: false });
-      const remembered = await run({ envelope: "override" }, { unsupported: true });
+    it("keys entries from the request alone, whatever the delivery", async () => {
+      const plain = await run(undefined);
+      const override = await run({ envelope: "override" });
 
       // The option changed how the chunk reached the node, and nothing the cache keys from.
-      expect([plain.sentTo, override.sentTo, remembered.sentTo]).toEqual([
-        [undefined],
-        [ENVELOPE_ADDRESS],
-        [undefined],
-      ]);
+      expect([plain.sentTo, override.sentTo]).toEqual([[undefined], [ENVELOPE_ADDRESS]]);
       expect(plain.keys).toEqual(expectedKeys([1, 2, 3]));
       expect(override.keys).toEqual(plain.keys);
-      expect(remembered.keys).toEqual(plain.keys);
     });
   });
 });

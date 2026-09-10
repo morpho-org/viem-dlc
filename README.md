@@ -144,9 +144,8 @@ no upstream call and carries none of these fields.
 Delivery has its own fields: `chunks_override` and `chunks_initcode` (requests sent in each
 delivery), `override_fallbacks` (ranges re-fetched as initcode, split into
 `override_fallbacks_unsupported`, `override_fallbacks_unproven` and `override_fallbacks_exhausted`
-by what the failed chunk proved), and `delivery_memo` (whether the transport had already recorded
-this provider as not honouring overrides when the packer began; only with
-`batch.envelope: 'override'`).
+by what the failed chunk proved). A provider that never honours overrides shows one unsupported
+fallback per request; turn the option off for it.
 
 ### `cache`
 
@@ -543,8 +542,8 @@ policy(opts: {
   envelope with the elements trailing it, bounded by the chain's initcode cap. `override` calls the
   envelope at a fixed address placed by `eth_call`'s state-override parameter, so the frame's gas is
   the only bound; a provider that does not honour overrides is detected on the opening wave and the
-  range re-fetched as initcode, with unambiguous non-support remembered per transport instance. It
-  pays only when bytes bind, which the wide event says: `(gas_limit_observed − fixed_gas) /
+  range re-fetched as initcode, at the cost of one wasted wave per request, which
+  `override_fallbacks_unsupported` reports. It pays only when bytes bind, which the wide event says: `(gas_limit_observed − fixed_gas) /
   item_gas_avg` well above `elements_requested / nominal_batches`.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
   or when used with `deployless(...)`, `batch` is still honored without caching.

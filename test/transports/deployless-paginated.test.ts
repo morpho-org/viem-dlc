@@ -1300,29 +1300,12 @@ describe("override delivery", () => {
     }
     expect(field("chunks_override")).toBe(2);
     expect(field("chunks_initcode")).toBe(0);
-    expect(field("delivery_memo")).toBe(false);
-  });
-
-  it("keeps the memo per transport instance, not per transport factory", async () => {
-    // One factory, two instances over different providers: the first learns non-support, the
-    // second must not inherit it.
-    const ignoring = ignoresOverrides();
-    const capable = mockPagedLens();
-    const factory = deployless(((params: { chain?: { id: number } }) => ({
-      request: params.chain?.id === 1 ? ignoring : capable,
-    })) as never);
-
-    await factory({ retryCount: 0, chain: { id: 1 } } as never).request(createRequest(four, OVERRIDE));
-    await factory({ retryCount: 0, chain: { id: 2 } } as never).request(createRequest(four, OVERRIDE));
-
-    expect(deliveries(ignoring)).toEqual(["override", "initcode"]);
-    expect(deliveries(capable)).toEqual(["override"]);
   });
 
   it.each([
     ["drops the third parameter", ignoresOverrides],
     ["refuses it outright", rejectsOverrides],
-  ])("re-fetches the opening wave as initcode and remembers a provider that %s", async (_name, provider) => {
+  ])("re-fetches the opening wave as initcode when the provider %s, every request", async (_name, provider) => {
     const requestFn = provider();
     const transport = createTransport(requestFn);
 
@@ -1330,21 +1313,22 @@ describe("override delivery", () => {
     const second = await withFacet(() => transport.request(createRequest(four, OVERRIDE)));
 
     // The range is re-packed under the initcode cap, not halved: one chunk covers it as it stands.
+    // Nothing is remembered between requests: the option, not the provider's history, picks the delivery.
     expect(decodeResults(first.result)).toEqual([1n, 2n, 3n, 4n]);
     expect(requestedIndices(requestFn)).toEqual([
       [1, 2, 3, 4],
       [1, 2, 3, 4],
       [1, 2, 3, 4],
+      [1, 2, 3, 4],
     ]);
-    expect(deliveries(requestFn)).toEqual(["override", "initcode", "initcode"]);
+    expect(deliveries(requestFn)).toEqual(["override", "initcode", "override", "initcode"]);
     expect(first.field("override_fallbacks_unsupported")).toBe(1);
-    expect(first.field("delivery_memo")).toBe(false);
-    expect(second.field("delivery_memo")).toBe(true);
-    expect(second.field("chunks_override")).toBe(0);
+    expect(second.field("override_fallbacks_unsupported")).toBe(1);
+    expect(second.field("chunks_override")).toBe(1);
     expect(second.field("chunks_initcode")).toBe(1);
   });
 
-  it("retries an unproven failure as initcode without remembering it", async () => {
+  it("retries an unproven failure as initcode", async () => {
     let pending = true;
     const requestFn = withOverride((serve) => {
       if (!pending) return serve();
@@ -1361,7 +1345,6 @@ describe("override delivery", () => {
     expect(deliveries(requestFn)).toEqual(["override", "initcode", "override"]);
     expect(first.field("override_fallbacks_unproven")).toBe(1);
     expect(first.field("override_fallbacks_unsupported")).toBe(0);
-    expect(second.field("delivery_memo")).toBe(false);
     expect(second.field("chunks_override")).toBe(1);
   });
 
@@ -1419,42 +1402,32 @@ describe("override delivery", () => {
     expect(paramsOf(requestFn)[2]).toEqual(entry);
   });
 
-  it("neither reads nor stamps the memo for a request without the option", async () => {
+  it("sends a request without the option as initcode", async () => {
     const requestFn = mockPagedLens();
 
     const { field } = await withFacet(() => createTransport(requestFn).request(createRequest(four)));
 
     expect(deliveries(requestFn)).toEqual(["initcode"]);
-    expect(field("delivery_memo")).toBeUndefined();
     expect(field("chunks_override")).toBe(0);
     expect(field("chunks_initcode")).toBe(1);
     expect(field("override_fallbacks")).toBe(0);
   });
 
-  it("keeps a memo an earlier request set out of one that did not ask for the option", async () => {
-    const requestFn = ignoresOverrides();
-    const transport = createTransport(requestFn);
-    await transport.request(createRequest(four, OVERRIDE));
-
-    const { field } = await withFacet(() => transport.request(createRequest(four)));
-
-    expect(field("delivery_memo")).toBeUndefined();
-    expect(field("chunks_override")).toBe(0);
-    expect(field("chunks_initcode")).toBe(1);
-  });
-
-  it("sends the tails a fallback's pages leave behind as initcode", async () => {
+  it("sends the tails a fallback's pages leave behind by override, and falls back again", async () => {
     const requestFn = ignoresOverrides(mockPagedLens({ pageSize: 2 }));
 
-    const { result } = await withFacet(() => createTransport(requestFn).request(createRequest(four, OVERRIDE)));
+    const { result, field } = await withFacet(() => createTransport(requestFn).request(createRequest(four, OVERRIDE)));
 
+    // Nothing is remembered within the request either: the option picks every chunk's opening delivery.
     expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n]);
     expect(requestedIndices(requestFn)).toEqual([
       [1, 2, 3, 4],
       [1, 2, 3, 4],
       [3, 4],
+      [3, 4],
     ]);
-    expect(deliveries(requestFn)).toEqual(["override", "initcode", "initcode"]);
+    expect(deliveries(requestFn)).toEqual(["override", "initcode", "override", "initcode"]);
+    expect(field("override_fallbacks_unsupported")).toBe(2);
   });
 
   it.each([

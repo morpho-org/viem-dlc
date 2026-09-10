@@ -21,7 +21,7 @@ import type { HandlerContext } from "../types.js";
 import type { CachedEthCallEntry } from "./types.js";
 
 export async function handleEthCall(
-  { store, coalesce, requestFn, chainId, chain, delivery, gasLimit, facetId }: HandlerContext,
+  { store, coalesce, requestFn, chainId, chain, gasLimit, facetId }: HandlerContext,
   req: EIP1193Parameters<CacheSchema, "eth_call">,
 ): Promise<Hex> {
   const extracted = extractEthCallPolicy(req.params[2]);
@@ -76,7 +76,6 @@ export async function handleEthCall(
       batch: extracted.policy.batch,
       gasLimit,
       chain,
-      delivery,
       restOfEthCallParams,
       facet,
     });
@@ -168,7 +167,6 @@ export async function handleEthCall(
           batch: extracted.policy.batch,
           gasLimit,
           chain,
-          delivery,
           restOfEthCallParams,
           facet,
           // Buffer per chunk, so a later chunk failing doesn't discard the siblings that landed.

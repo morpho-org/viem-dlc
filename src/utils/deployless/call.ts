@@ -52,8 +52,6 @@ type FactorisedFactoryCallParams = {
    */
   gasLimit?: number;
   chain: ChainDefinition;
-  /** The transport's {@link DeliveryMemo}; read and written only when `batch.envelope` is `override`. */
-  delivery?: DeliveryMemo;
   restOfEthCallParams: RestOfEthCallParams;
   /**
    * Invoked with each freshly fetched element as its chunk lands, before siblings finish, and
@@ -70,14 +68,6 @@ type FactorisedFactoryCallParams = {
  * properties of the lens, not of any provider or chunk.
  */
 export type LensGas = { fixed: number; item: { avg: number; stddev?: number } };
-
-/**
- * One transport instance's memory that its provider does not honour `eth_call` state overrides:
- * set only on unambiguous evidence (a call that returned instead of reverting, or an invalid-params
- * refusal), never cleared, and never consulted by a request without `batch.envelope: "override"`.
- * Correctness never depends on it; only the count of wasted requests does.
- */
-export type DeliveryMemo = { unsupported: boolean };
 
 /**
  * When the tails pages leave behind are sent. `fill` sends a tail once enough of them are pending
@@ -122,7 +112,6 @@ export async function factorisedFactoryCall(
     batch,
     gasLimit,
     chain,
-    delivery: memo = { unsupported: false },
     restOfEthCallParams,
     onResolved,
     facet,
@@ -133,8 +122,6 @@ export async function factorisedFactoryCall(
   if (envelope === "override" && overridesEnvelopeAddress(restOfEthCallParams[1])) {
     throw new Error(`[deployless] a caller's state override at ${ENVELOPE_ADDRESS} conflicts with the envelope's own`);
   }
-  /** The delivery a new chunk takes: override while requested and not yet found unsupported. */
-  const current = (): EnvelopeDelivery => (envelope === "override" && !memo.unsupported ? "override" : "initcode");
   const missing: number[] = [];
   const unresolved: number[] = [];
   const oversize: number[] = [];
@@ -249,7 +236,7 @@ export async function factorisedFactoryCall(
     return packed.chunks;
   };
 
-  const opening = current();
+  const opening = envelope;
   const chunks = pack(everything, opening);
   const outputs = new Array<Hex>(elements.length);
 
@@ -257,7 +244,6 @@ export async function factorisedFactoryCall(
     elements_requested: elements.length,
     nominal_batches: chunks.length,
     ...(stated === undefined ? {} : { gas_limit: stated.cap }),
-    ...(envelope === "override" ? { delivery_memo: memo.unsupported } : {}),
   });
   // Sizes of the *initial* packing, to compare realized utilization against the wire budget.
   // Halved children and continuations are not resampled. Guarded rather than
@@ -353,16 +339,12 @@ export async function factorisedFactoryCall(
       // Nothing above proved the envelope ran, so the range gets one initcode attempt; only a
       // refusal of the request's shape says the provider does not honour overrides.
       if (cause !== null) return fallback(indices, generation, "exhausted");
-      if (isInvalidParamsError(e)) {
-        memo.unsupported = true;
-        return fallback(indices, generation, "unsupported");
-      }
+      if (isInvalidParamsError(e)) return fallback(indices, generation, "unsupported");
       return fallback(indices, generation, "unproven");
     }
     if (outcome.kind === "returned") {
       // The call reached an account with no code: the provider dropped the override.
       if (delivery === "initcode") throw new Error("revert-mode wrapper returned without reverting");
-      memo.unsupported = true;
       return fallback(indices, generation, "unsupported");
     }
 
@@ -392,7 +374,7 @@ export async function factorisedFactoryCall(
       const pos = indices[page.died]!;
       if (count > 1) {
         pages.escalated += 1;
-        dispatch([pos], generation, current());
+        dispatch([pos], generation, envelope);
       } else {
         missing.push(pos);
         unresolved.push(pos);
@@ -452,13 +434,12 @@ export async function factorisedFactoryCall(
    */
   const flush = () => {
     const generation = pendingGeneration;
-    const delivery = current();
     const chunks = pack(
       pending.sort((a, b) => a - b),
-      delivery,
+      envelope,
     );
     const remainder = chunks.pop();
-    for (const chunk of chunks) dispatch(chunk, generation, delivery);
+    for (const chunk of chunks) dispatch(chunk, generation, envelope);
     flushes.full += chunks.length;
     pending = [];
     pendingGeneration = 0;
@@ -470,7 +451,7 @@ export async function factorisedFactoryCall(
       return;
     }
     flushes[release] += 1;
-    dispatch(remainder, generation, delivery);
+    dispatch(remainder, generation, envelope);
   };
 
   const pump = () => {

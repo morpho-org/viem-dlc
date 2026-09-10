@@ -44,7 +44,8 @@ export const MAX_INITCODE_SIZE = 49_152;
  *   with the elements trailing it, bounded by the chain's initcode cap. `override` calls the envelope
  *   at a fixed address placed by `eth_call`'s state-override parameter, so the frame's gas is the
  *   only bound; a provider that does not honour overrides is detected on the opening wave and the
- *   range re-fetched as initcode, with unambiguous non-support remembered per transport instance.
+ *   range re-fetched as initcode. `override_fallbacks_unsupported` on the wide event says when a
+ *   provider does not honour it, so the option can be turned off for that provider.
  *   Pays only when bytes bind: `(gas_limit_observed − fixed_gas) / item_gas_avg` well above
  *   `elements_requested / nominal_batches` on the wide event.
  * @param opts.batch.continuations When the elements a page did not reach are re-sent. `fill`

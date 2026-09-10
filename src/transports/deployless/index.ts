@@ -3,7 +3,7 @@ import { createTransport, type EIP1193RequestFn, type Hex, type PublicRpcSchema,
 import { type ChainDefinition, chainDefinition } from "../../chains/index.js";
 import { createFacetId, type FacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
-import { type DeliveryMemo, factorisedFactoryCall } from "../../utils/deployless/call.js";
+import { factorisedFactoryCall } from "../../utils/deployless/call.js";
 import { unwrapDeploylessFactoryCall } from "../../utils/deployless/codec.envelope.js";
 import { calldataToArray, pageToHex, resolveArrayFunction } from "../../utils/deployless/codec.inner.js";
 import { extractEthCallPolicy } from "../state-overrides.js";
@@ -42,7 +42,6 @@ export function deployless<T extends Base>(
 
   return (params) => {
     const requestFn = baseTransportFn(params).request;
-    const delivery: DeliveryMemo = { unsupported: false };
     const chain = chainDefinition(params.chain?.id);
 
     const request = (args: EIP1193Parameters<T>) => {
@@ -53,7 +52,7 @@ export function deployless<T extends Base>(
       return handleEthCall(
         requestFn,
         args as EIP1193Parameters<PublicRpcSchema, "eth_call">,
-        { gasLimit, chain, delivery },
+        { gasLimit, chain },
         facetId,
       );
     };
@@ -74,7 +73,7 @@ export function deployless<T extends Base>(
 async function handleEthCall(
   requestFn: EIP1193RequestFn<Base>,
   req: EIP1193Parameters<PublicRpcSchema, "eth_call">,
-  { gasLimit, chain, delivery }: { gasLimit: number | undefined; chain: ChainDefinition; delivery: DeliveryMemo },
+  { gasLimit, chain }: { gasLimit: number | undefined; chain: ChainDefinition },
   facetId: FacetId,
 ) {
   const extracted = extractEthCallPolicy(req.params[2]);
@@ -122,7 +121,6 @@ async function handleEthCall(
     batch: extracted.policy.batch,
     gasLimit,
     chain,
-    delivery,
     restOfEthCallParams,
     facet,
   });

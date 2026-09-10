@@ -13,8 +13,8 @@ how much gas the node's frame would serve. This TIB adds `batch.envelope: "overr
 chunk is a call to a fixed address whose code is the envelope, placed there by the state-override
 parameter of `eth_call`, with the same argument tuple as calldata. The envelope still deploys the
 lens through the factory inside the call, so nothing about the lens changes. If a provider doesn't
-honor the override, the opening wave detects it and the range is fetched again as initcode. Only
-unambiguous non-support is remembered. APPS-1406 holds the implementation plan.
+honor the override, the opening wave detects it and the range is fetched again as initcode.
+APPS-1406 holds the implementation plan.
 
 ## Intent
 
@@ -22,8 +22,8 @@ unambiguous non-support is remembered. APPS-1406 holds the implementation plan.
   chunk: the frame's gas, through the paginated-lenses predicate priced exactly for this delivery,
   and the provider's request size limit. The initcode cap doesn't apply.
 - On a provider that doesn't honor state overrides, a request with the option returns the same
-  result it would have returned without it. The cost is one wasted opening wave per transport
-  instance when the provider says so unambiguously, and one wasted wave per request otherwise.
+  result it would have returned without it. The cost is one wasted opening wave per request, and
+  the wide event reports it, so the caller can turn the option off for that provider.
 - One envelope bytecode, one constant, one drift guard. The two deliveries differ only in how the
   arguments reach the envelope. The loop, the records, the telemetry words, the admission guarantee,
   and the wire format are the paginated-lenses TIB's.
@@ -82,14 +82,14 @@ is declined as oversize, the same way an element above the byte cap is. A stated
 the opening wave's bytes on its own. When neither `gasLimit` nor `batchSize` is stated, nothing is
 assumed on the caller's behalf.
 
-**Choosing, falling back, remembering.** A request with the option opens by override unless the
-transport's memo says the provider doesn't honor it. Every response to an override chunk is
-classified first by whether it proves the envelope ran. A page or any envelope-shaped revert is
-handled as today. A size or timeout refusal halves by override while there's room. Everything else
-gets one initcode attempt for the same range, dispatched where the failed chunk stood, so the
-request settles the usual way. Only two outcomes set the memo: a call that returned instead of
-reverting, and a JSON-RPC refusal of the request's shape. The memo is per transport instance,
-negative only, and sticky. Correctness never depends on it. Only the count of wasted requests does.
+**Choosing and falling back.** A request with the option opens by override. Every response to an
+override chunk is classified first by whether it proves the envelope ran. A page or any
+envelope-shaped revert is handled as today. A size or timeout refusal halves by override while
+there's room. Everything else gets one initcode attempt for the same range, dispatched where the
+failed chunk stood, so the request settles the usual way. The fallback's reason is reported: a call
+that returned instead of reverting or a JSON-RPC refusal of the request's shape says the provider
+doesn't honor overrides, and anything else is unproven. Nothing is remembered between requests. The
+option is the lever, and the wide event tells the caller when to pull it.
 
 **Chain definitions.** Whether a node needs to be told the frame is a fact of the chain, not of the
 transport. geth grants an unspecified `eth_call` the provider's cap, and Monad grants a fixed
@@ -97,8 +97,8 @@ default. An internal `src/chains` table records such facts by name, and the pack
 `gasLimit` as `gas` only where the chain needs it. The table stays internal until its shape settles
 (APPS-1398).
 
-**Observability.** The packer's facet reports the chunks sent in each delivery, the fallbacks by
-reason, and whether the memo was set when the request began. `fixed_gas` becomes the lens's
+**Observability.** The packer's facet reports the chunks sent in each delivery and the fallbacks by
+reason. `fixed_gas` becomes the lens's
 prologue less the copy of the chunk's own bytes. The recipe is the same motion as before: read
 `fixed_gas` off the wide event and paste it into the policy. The figure no longer depends on how
 large the observed pages were.
@@ -125,12 +125,12 @@ APPS-1406 holds the file-level plan.
 - On a Prague node, a chunk the initcode cap refuses pages by override. The same call with the third
   parameter dropped returns `0x`.
 - Under a mocked provider that ignores or rejects the override, a request with the option returns
-  the result it would have returned without it, and the memo is set in exactly those two cases. A
-  transient failure or an exhausted halving gets one initcode attempt and leaves the memo unset.
+  the result it would have returned without it and reports one unsupported fallback, on every
+  request. A transient failure or an exhausted halving gets one initcode attempt and reports it as
+  such.
 - The copy term matches the frame's `fixed` between a small and a large page within 1%. A lone
   element above the floor is declined with no request made.
-- Cache entry keys for the same request are byte-identical with and without the option, and with
-  the memo set or unset.
+- Cache entry keys for the same request are byte-identical with and without the option.
 
 APPS-1406 holds the full matrix with the probe figures.
 
@@ -175,10 +175,10 @@ APPS-1406 holds the full matrix with the probe figures.
 - **Proof first,** because the question a failed override chunk poses isn't "what went wrong" but
   "did our code run". Every envelope-shaped outcome answers yes. Only the rest can mean non-support,
   and among those only two shapes mean it unambiguously.
-- **No positive memo,** because a page needs no memory. **A negative memo only on unambiguous
-  evidence,** because "the override failed and the initcode retry succeeded" proves only that the
-  chunk was serviceable, not why. Otherwise a 429 followed by a 200 would mark a capable provider
-  unsupported for the life of the transport.
+- **Nothing is remembered between requests.** Whether to try the override is the caller's choice
+  per call site, and `override_fallbacks_unsupported` on the wide event says when a provider doesn't
+  honor it. A memo would be an adaptive heuristic beside an explicit lever, and a wrong one, set by a
+  429 followed by a 200, would outlive the provider it described.
 - **`OOG_SENTINEL` stays terminal,** because the predicate has already paid for the bytes. Halving
   can't shrink a constructor, and it would bisect a broken lens into a response that looks complete.
 - **The fallback assumes no byte cap the caller didn't state,** so initcode delivery doesn't gain a
@@ -206,9 +206,11 @@ APPS-1406 holds the full matrix with the probe figures.
   floor dominates eighteenfold.
 - **An opening byte cap for override delivery** (256 KiB) was declined as a default no other
   delivery has. Letting a stated `gasLimit` admit bytes removed the common half of the case.
-- **Halving on `OOG_SENTINEL`, a positive memo, and a paired-observation negative memo** were first
-  drafts that review caught (see Notes). The clean-room exploration independently proposed the
-  narrower memo rule.
+- **Halving on `OOG_SENTINEL`** was a first draft that review caught (see Notes).
+- **A per-transport memo of non-support,** negative only and set on unambiguous evidence, was
+  designed and implemented, then removed: it saved one wave per request on an unsupporting provider
+  at the price of state across three layers, where the option and the wide event already give the
+  caller the same control (see Notes).
 - **`out of gas` as a pre-execution phrase** was dropped. It also describes a frame that died
   midway, which is a prologue death the outcome protocol already routes.
 - **The copy term's extent** was corrected twice in review, to the point where the budget is
@@ -216,9 +218,8 @@ APPS-1406 holds the full matrix with the probe figures.
   is about the gas prediction, and the floor is a protocol bound.
 - **A per-chain memory schedule** was declined for now and filed as APPS-1398, together with the
   export of the chains module and the initcode-limit question.
-- **A dedicated support probe, two envelope constants, persisting the memo across instances, and
-  remembering the discovered request size cap** were each declined. The opening wave is the probe,
-  one bytecode serves, a memo that outlives its provider is worse than none, and the caller owns
+- **A dedicated support probe, two envelope constants, and remembering the discovered request size
+  cap** were each declined. The opening wave is the probe, one bytecode serves, and the caller owns
   `batchSize`.
 - **`keccak256("viem-dlc-envelope")[12:]`** was the override address in the first draft. Review
   noted that it changes the factory's `msg.sender`, and the creation address dissolves the
