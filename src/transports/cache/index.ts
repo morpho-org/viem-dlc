@@ -4,6 +4,7 @@ import { chainDefinition } from "../../chains/index.js";
 import { createFacetId, observe } from "../../observability.js";
 import type { EIP1193Parameters, Store } from "../../types.js";
 import { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
+import type { DeliveryMemo } from "../../utils/deployless/call.js";
 import { type LogsDividerConfig, logsDivider } from "../logs-divider/index.js";
 import type { LogsEnricherConfig } from "../logs-enricher/types.js";
 import type { LogsSieveConfig } from "../logs-sieve/types.js";
@@ -127,6 +128,7 @@ export function cache(
     }
     const chainId = params.chain.id;
     const chain = chainDefinition(chainId);
+    const delivery: DeliveryMemo = { unsupported: false };
 
     const { coalesce } = createCoalescingMutex();
     const transport = logsDivider(baseTransportFn, [{ ...logsDividerConfig, alignTo: binSize }, ...otherConfigs])(
@@ -140,6 +142,7 @@ export function cache(
       gasLimit,
       chainId,
       chain,
+      delivery,
       requestFn: transport.request,
       coalesce,
       facetId,

@@ -31,6 +31,10 @@ const FACTORY_BYTECODE_RETURN_VIEM = deploylessCallViaFactoryBytecode.toLowerCas
  * decompressed before the attempt that needs it, and every memory expansion is admitted against
  * the fee schedule first.
  *
+ * One bytecode, two deliveries: run as initcode with the argument tuple trailing it, or placed at
+ * {@link ENVELOPE_ADDRESS} by an `eth_call` state override and called with the tuple as calldata
+ * (docs/000016-tib-override-delivered-envelope.md). {@link deliveryParams} builds either request.
+ *
  * Source: ./Envelope.yul. Regenerate with `pnpm build:Envelope` and paste the output here.
  *
  * Behavior:
@@ -46,6 +50,17 @@ const FACTORY_BYTECODE_RETURN_VIEM = deploylessCallViaFactoryBytecode.toLowerCas
  */
 export const FACTORY_BYTECODE_REVERT: Hex =
   "0x5a5f5262000a4260a09080380380918339365f833781519161002c60608201518201604083015185610158565b608081015160208201518201908151926020830151946040840151906060850192604087106101455760018560df1c1615610125575b601f90811992369101010116968752856020880152816040880152806060880152826080880152600160e08801938385526100b1828060401b038260401c16806101608c015260040182610988565b6101808a01526001600160e01b031981166101a08a015260dd1c16156100fb57506020945060a08601526101c08501908160c08701525201016101008201526143008101906101bb565b925050506040010361011357506101c08101906101bb565b633d62012160e21b5f5260045260245ffd5b604085901c6001600160401b031680840489119089028414151715610062575b87633d62012160e21b5f5260045260245ffd5b9091813b1561017a575b63101bb98d60e01b5f5260206004525f60245260445ffd5b5f80915a9482602083519301915af19160051c5a11153d15168215166101ac573b1515166101aa57808080610162565b565b633302f4d360e21b5f5260045ffd5b63a55835c360e01b8252905a602052602051602482019062015e0062015dff1982019111028152515f5103604482015260c481015f81526101fe60e483016109db565b5060208301519260808101519360018560de1c169160018060401b0386168315029560018160dd1c1660018260df1c161715965f945b84861061026c575b50508596508284148302610257575b50505060048301520390fd5b610264925f1901916103fa565b5f808061024b565b95979495600186146103ea5761028587838b86886104ae565b80156103c1575a908360208c0180928189515afa6001146103175750986020899a60061c015a11153d15166102ff57602081896001935201975b01955a80602051039060205260648a0181815101905260848a01818002815101905260a48a01805182116102f7575b50509850610234565b525f806102ee565b871981526020019660010195505f915081905061023c565b90508282156103ab575060403d106103a3573d99601f198b019160205f803e60205f511415601f84161761039b5761057b8b9c61035c8560051c6003029185016109db565b01015a1115610383575081816001936020808095013e5b818460ff1b1781520101976102bf565b93509150506001929550861990529401925f8061023c565b898688610a08565b878486610a08565b999050823d036103a3576020899a600192610373565b505050848697959450156103d6575f8061023c565b5f1985526001600487015285850360200186fd5b6103f5828a86610441565b610285565b6001606082015161040b8484610966565b14159260dd1c1661041f575b506101135750565b60e081015160c082015114159060a0610100820151910151141517175f610417565b915f939261016081015191600483019586918781116104a6575b5061018083015196850196610472602089016109db565b015a111561049e575060e06024925f859398526101a0810151602087015201938451928391015e019052565b955050505050565b96505f61045b565b93915f929593956101408601526101608501519260048401906101808701519760018560df1c16610716575b829083811161070e575b508301976104f460208a016109db565b015a111561070457505f9096526101a08501516020820152602481019060e08601519060018460df1c166106f3575b5060018360dd1c165f146106e057509491929490839160a08601519360c08701519760e088015193610100890151965b86868c0310156106af576141d88a018b1161067e575b80515f1a908160051c5f146106595788600260078460051c148301011161064157805160011a6007018260051c1860078360051c14028260051c1891815160078260051c146001011a611f008260081b16018d8d6101bf199103016001820111610629578d5f5b8560020181106105f757505050600292916007849260051c1401019b0101975b9799610553565b60018184010191600282880301808411610621575b5082908481035f19019083015e018e906105d0565b92505f61060c565b6101408d0151633d62012160e21b5f5260045260245ffd5b6101408b0151633d62012160e21b5f5260045260245ffd5b88600283830101116106415790600281838e600180960151905201019b0101976105f0565b9493958a9685612000939c0386825e85880301948703900395611fff19016101c08a015e6121c08801988994610569565b86602097949b929998508661012097949b965e60a085015260c08401520160e0820152019260da1c16018151019052565b90839250928160e0949695965e01910152565b60209283905260440191015f610523565b9650505050509050565b90505f6104e4565b929396809850879196955061072b9250610966565b606087015103906020821061094e5760018660dd1c165f1461093c576201a7795a1115610933576020935f9260a08901519760c08a015160805260e08a0151956101008b0151985b88886080510310156108ce576141d88c0160805111610891575b8a515f1a9a8a8c8060051c5f146108695760051c60071482016002011161062957805160011a6007018c60051c1860078d60051c14028c60051c189b8d825160078360051c146001011a611f008360081b1601906101bf199060805103016001820111610851578d5f5b81600201811061081e5750505060051c6007140160029081019b6080510101608052610773565b60018184010190600281840301808311610849575b50815f1985608051030182608051015e016107f7565b91505f610833565b6101408f0151633d62012160e21b5f5260045260245ffd5b8201600201116106295760028c826001809401516080515201019b6080510101608052610773565b9695866080999299510387825e8660805103019560805103900396612000611fff19608051016101c08d015e6121c08b016080526080519661078d565b949a9991968894995080939891965e60a089015260805160c08901520160e08701525f51935b601f19018411601f85168515171761091b5760248401906109158285610988565b976104da565b610140860151633d62012160e21b5f5260045260245ffd5b50505091509150565b95949190929360e086015151936108f4565b610140870151633d62012160e21b5f5260045260245ffd5b9060dd1c6001161561097a57610120015190565b60e060408201519101510390565b9190601f810160051c6003029062015ec882019360018160dd1c166109ac57505050565b62015ec8939450906020612328939260da1c169003601b810160051c600302906003190161012c020101010190565b90601f5f920160051c80800260091c906003020160405181116109fb5750565b9150604051820391604052565b90829060208301516001830114610a31575b5063ace36ecd60e01b5f526004523d60245260445ffd5b610a3a926103fa565b5f8181610a1a56";
+
+/**
+ * Where the envelope runs in either delivery. `CREATE` from the zero address at nonce 0 — an
+ * `eth_call` without `from` is sent from the zero address, whose nonce is 0 on every chain — so
+ * placing the code here by override leaves the factory's `msg.sender` exactly as creation delivery
+ * has it. A caller's own override at this address is a protocol error.
+ */
+export const ENVELOPE_ADDRESS: Address = "0xBd770416a3345F91E4B34576cb804a576fa48EB1";
+
+/** How a chunk reaches the node: the envelope as initcode, or as code placed by a state override. */
+export type EnvelopeDelivery = "initcode" | "override";
 
 /**
  * 4-byte magic prefix on revert data that means "this revert is a page, not a real revert". Equal
@@ -143,27 +158,69 @@ export function envelopeConfig({ itemSelector, inputLayout, outputLayout }: Reso
 }
 
 /**
- * Builds a deployless factory `eth_call` payload from the clear wire form ({@link arrayToWire});
- * `config` is {@link envelopeConfig}, and `compress` must match its bit.
+ * The envelope's argument tuple from the clear wire form ({@link arrayToWire}); `config` is
+ * {@link envelopeConfig}, and `compress` must match its bit. Trails the initcode in one delivery and
+ * is the calldata in the other — see {@link deliveryParams}.
  */
-export function wrapDeploylessFactoryCall(
+export function encodeEnvelopeArgs(
   { target, targetData }: DeploylessFactoryCall,
   { compress, config }: { compress: boolean; config: bigint },
-) {
+): Hex {
   const wire = compress ? withBody(targetData, flzCompress(bodyOf(targetData))) : targetData;
-  const args = encodeAbiParameters(DEPLOYLESS_CONSTRUCTOR_PARAMS, [
+  return encodeAbiParameters(DEPLOYLESS_CONSTRUCTOR_PARAMS, [
     target.address,
     wire,
     target.factory,
     target.factoryData,
     config,
   ]);
-  return `${FACTORY_BYTECODE_REVERT}${args.slice(2)}` as Hex;
+}
+
+/** The initcode-delivered payload: {@link FACTORY_BYTECODE_REVERT} followed by {@link encodeEnvelopeArgs}. */
+export function wrapDeploylessFactoryCall(
+  call: DeploylessFactoryCall,
+  options: { compress: boolean; config: bigint },
+): Hex {
+  return `${FACTORY_BYTECODE_REVERT}${encodeEnvelopeArgs(call, options).slice(2)}` as Hex;
+}
+
+type EthCallRest = readonly [block?: unknown, stateOverride?: unknown, blockOverrides?: unknown];
+
+/**
+ * The outbound `eth_call` params for one chunk. `rest` is the caller's block selector and state
+ * override as the transport cleaned them; by override the envelope's own code entry is added to the
+ * third parameter, never to `rest`, which the cache keys from.
+ */
+export function deliveryParams(
+  delivery: EnvelopeDelivery,
+  args: Hex,
+  rest: EthCallRest,
+  gas: Hex | undefined,
+): unknown[] {
+  const gasField = gas === undefined ? {} : { gas };
+  if (delivery === "initcode") {
+    return [{ data: `${FACTORY_BYTECODE_REVERT}${args.slice(2)}`, ...gasField }, ...rest];
+  }
+  const [block, stateOverride, ...blockOverrides] = rest;
+  return [
+    { to: ENVELOPE_ADDRESS, data: args, ...gasField },
+    block ?? "latest",
+    { ...(stateOverride as object | undefined), [ENVELOPE_ADDRESS]: { code: FACTORY_BYTECODE_REVERT } },
+    ...blockOverrides,
+  ];
+}
+
+/** True when a caller's state override names {@link ENVELOPE_ADDRESS}, in any case. */
+export function overridesEnvelopeAddress(stateOverride: unknown): boolean {
+  if (!stateOverride || typeof stateOverride !== "object") return false;
+  const wanted = ENVELOPE_ADDRESS.toLowerCase();
+  return Object.keys(stateOverride).some((key) => key.toLowerCase() === wanted);
 }
 
 /**
- * True when `req` is one of our deployless `eth_call`s — the lens intentionally reverts to exfiltrate
- * its returndata. False for any other request.
+ * True when `req` is one of our deployless `eth_call`s in either delivery — the envelope's initcode
+ * as `data`, or a call to {@link ENVELOPE_ADDRESS} with its code in the state override — where the
+ * revert is the page. False for any other request, including other calls to that address.
  *
  * Use this to defeat per-call retries at the next transport boundary
  * (e.g. `requestFn(args, isRevertExpected(args) ? { retryCount: 0 } : undefined)`).
@@ -174,10 +231,16 @@ export function isRevertExpected(req: { method: string; params?: readonly unknow
   const [transaction] = req.params ?? [];
   if (!transaction || typeof transaction !== "object") return false;
 
-  const data = (transaction as { data?: unknown }).data;
+  const { to, data } = transaction as { to?: unknown; data?: unknown };
   if (typeof data !== "string") return false;
+  if (data.toLowerCase().startsWith(FACTORY_BYTECODE_REVERT)) return true;
 
-  return data.toLowerCase().startsWith(FACTORY_BYTECODE_REVERT);
+  if (typeof to !== "string" || to.toLowerCase() !== ENVELOPE_ADDRESS.toLowerCase()) return false;
+  const stateOverride = req.params?.[2];
+  if (!stateOverride || typeof stateOverride !== "object") return false;
+  const entry = Object.entries(stateOverride).find(([key]) => key.toLowerCase() === ENVELOPE_ADDRESS.toLowerCase());
+  const code = (entry?.[1] as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" && code.toLowerCase() === FACTORY_BYTECODE_REVERT;
 }
 
 /**

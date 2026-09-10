@@ -3,7 +3,7 @@ import { createTransport, type EIP1193RequestFn, type Hex, type PublicRpcSchema,
 import { type ChainDefinition, chainDefinition } from "../../chains/index.js";
 import { createFacetId, type FacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
-import { factorisedFactoryCall } from "../../utils/deployless/call.js";
+import { type DeliveryMemo, factorisedFactoryCall } from "../../utils/deployless/call.js";
 import { unwrapDeploylessFactoryCall } from "../../utils/deployless/codec.envelope.js";
 import { calldataToArray, pageToHex, resolveArrayFunction } from "../../utils/deployless/codec.inner.js";
 import { extractEthCallPolicy } from "../state-overrides.js";
@@ -14,13 +14,13 @@ export const deploylessTransportKey = "viem-dlc-deployless" as const;
 
 export type DeploylessConfig = {
   /**
-   * The provider's `eth_call` gas cap. With `policy().batch.gas` it sizes the opening wave; every
-   * later chunk is sized from what the pages report, so a value too low costs a round trip, never
-   * a result. On a chain whose nodes give an unspecified `gas` a fixed default below the cap (see
-   * `chains`), it is also sent as every chunk's `gas`, and there a value above the cap is rejected
-   * by the node (Monad: `gas limit too high`) and fails the request — state the cap the provider
-   * documents. Elsewhere nothing is sent and `gas_limit_observed` on the wide event is the cap the
-   * provider granted.
+   * The provider's `eth_call` gas cap. It bounds the opening wave's bytes, and with
+   * `policy().batch.gas` its elements; every later chunk is sized from what the pages report, so a
+   * value too low costs a round trip, never a result. On a chain whose nodes give an unspecified
+   * `gas` a fixed default below the cap (see `chains`), it is also sent as every chunk's `gas`, and
+   * there a value above the cap is rejected by the node (Monad: `gas limit too high`) and fails the
+   * request — state the cap the provider documents. Elsewhere nothing is sent and
+   * `gas_limit_observed` on the wide event is the cap the provider granted.
    */
   gasLimit?: number;
 };
@@ -28,7 +28,8 @@ export type DeploylessConfig = {
 /**
  * Creates a thin transport wrapper that chunks marked deployless `eth_call`s under the wire byte
  * budget and aggregates the pages. The lens adapts to whatever frame each node grants;
- * {@link DeploylessConfig.gasLimit} only lets the opening wave anticipate it.
+ * {@link DeploylessConfig.gasLimit} lets the opening wave anticipate it, and is sent to nodes that
+ * would otherwise run the call in a smaller default frame.
  *
  * Requests are only intercepted when they carry the `policy(...)` sentinel in `stateOverride`.
  * All other requests are forwarded unchanged.
@@ -41,6 +42,7 @@ export function deployless<T extends Base>(
 
   return (params) => {
     const requestFn = baseTransportFn(params).request;
+    const delivery: DeliveryMemo = { unsupported: false };
     const chain = chainDefinition(params.chain?.id);
 
     const request = (args: EIP1193Parameters<T>) => {
@@ -48,7 +50,12 @@ export function deployless<T extends Base>(
         return requestFn(args);
       }
 
-      return handleEthCall(requestFn, args as EIP1193Parameters<PublicRpcSchema, "eth_call">, gasLimit, chain, facetId);
+      return handleEthCall(
+        requestFn,
+        args as EIP1193Parameters<PublicRpcSchema, "eth_call">,
+        { gasLimit, chain, delivery },
+        facetId,
+      );
     };
 
     return createTransport(
@@ -67,8 +74,7 @@ export function deployless<T extends Base>(
 async function handleEthCall(
   requestFn: EIP1193RequestFn<Base>,
   req: EIP1193Parameters<PublicRpcSchema, "eth_call">,
-  gasLimit: number | undefined,
-  chain: ChainDefinition,
+  { gasLimit, chain, delivery }: { gasLimit: number | undefined; chain: ChainDefinition; delivery: DeliveryMemo },
   facetId: FacetId,
 ) {
   const extracted = extractEthCallPolicy(req.params[2]);
@@ -116,6 +122,7 @@ async function handleEthCall(
     batch: extracted.policy.batch,
     gasLimit,
     chain,
+    delivery,
     restOfEthCallParams,
     facet,
   });

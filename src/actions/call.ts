@@ -4,8 +4,9 @@ import { toHex } from "viem";
 import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state-overrides.js";
 
 /**
- * EIP-3860 initcode cap. Deployless calldata rides inside initcode, so this is the natural
- * `batch.batchSize`.
+ * Ethereum's EIP-3860 initcode cap. Deployless calldata rides inside initcode unless
+ * `batch.envelope` is `override`, so on a chain that keeps Ethereum's figure this is the natural
+ * `batch.batchSize` for initcode delivery; a chain that raises it takes its own (Monad: 262,144).
  */
 export const MAX_INITCODE_SIZE = 49_152;
 
@@ -30,7 +31,8 @@ export const MAX_INITCODE_SIZE = 49_152;
  * @param opts.batch Optional batching config. Omit to send all elements in one upstream
  *   `eth_call`.
  * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk; elements
- *   are greedy-packed under it and fetched in parallel. {@link MAX_INITCODE_SIZE} is the usual value.
+ *   are greedy-packed under it and fetched in parallel. {@link MAX_INITCODE_SIZE} is the usual
+ *   value for initcode delivery; by override the provider's request size limit is the bound.
  * @param opts.batch.compress FastLZ-compress calldata on the wire so more elements fit per chunk,
  *   at the cost of encoding time and decompression gas.
  * @param opts.batch.gas The lens's cost, as the wide event reports it: `fixed` from `fixed_gas`,
@@ -38,6 +40,13 @@ export const MAX_INITCODE_SIZE = 49_152;
  *   `gasLimit`, sizes the opening wave; every later chunk is sized from what the pages report, the
  *   stated cost standing in only until an attempt has been costed. Over-estimating costs extra
  *   parallel requests, under-estimating costs one continuation.
+ * @param opts.batch.envelope How a chunk reaches the node. `initcode` (default) creates the envelope
+ *   with the elements trailing it, bounded by the chain's initcode cap. `override` calls the envelope
+ *   at a fixed address placed by `eth_call`'s state-override parameter, so the frame's gas is the
+ *   only bound; a provider that does not honour overrides is detected on the opening wave and the
+ *   range re-fetched as initcode, with unambiguous non-support remembered per transport instance.
+ *   Pays only when bytes bind: `(gas_limit_observed − fixed_gas) / item_gas_avg` well above
+ *   `elements_requested / nominal_batches` on the wide event.
  * @param opts.batch.continuations When the elements a page did not reach are re-sent. `fill`
  *   (default) pools them across pages and sends full pages at once and the remainder once no earlier
  *   chunk that could still add to it is in flight: fewer requests. `eager` sends every tail as its

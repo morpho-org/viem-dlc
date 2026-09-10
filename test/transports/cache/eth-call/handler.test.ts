@@ -30,7 +30,9 @@ import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
 import type { LensGas } from "../../../../src/utils/deployless/call.js";
 import {
+  ENVELOPE_ADDRESS,
   envelopeConfig,
+  FACTORY_BYTECODE_REVERT,
   OK_SENTINEL,
   unwrapDeploylessFactoryCall,
   wrapDeploylessFactoryCall,
@@ -146,6 +148,7 @@ function ctx(requestFn: HandlerContext["requestFn"], store = new MemoryStore()):
     chain: chainDefinition(chainId),
     binSize: 10_000,
     invalidationStrategy: () => 0,
+    delivery: { unsupported: false },
     facetId: createFacetId(cacheTransportKey),
   };
 }
@@ -169,6 +172,12 @@ const DYNAMIC = { mode: "dynamic" } as const;
 function decodeSentAddresses(data: Hex): readonly Address[] {
   const { targetData } = unwrapDeploylessFactoryCall(data);
   return wireToArray(WORD, targetData).map((w) => getAddress(`0x${w.slice(26)}`));
+}
+
+/** A chunk's `data` as initcode, whichever delivery sent it: by override the tuple travels bare. */
+function initcodeShaped(params: readonly unknown[]): Hex {
+  const { to, data } = params[0] as { to?: string; data: Hex };
+  return to === undefined ? data : (`${FACTORY_BYTECODE_REVERT}${data.slice(2)}` as Hex);
 }
 
 /** The raw element bytes viem's encoding of `values` yields for the array type `types`. */
@@ -200,7 +209,7 @@ type LensBehavior = {
 /** A conforming paginated lens over `address[]`, echoing each account's numeric value. */
 function mockPagedFn({ decline = [], starve = [] }: LensBehavior = {}) {
   return vi.fn().mockImplementation(async (args: { method: string; params: readonly unknown[] }) => {
-    const accounts = decodeSentAddresses((args.params[0] as { data: Hex }).data);
+    const accounts = decodeSentAddresses(initcodeShaped(args.params));
     const results: bigint[] = [];
     const skipped: number[] = [];
     for (let i = 0; i < accounts.length; i++) {
@@ -764,6 +773,38 @@ describe("handleEthCall", () => {
       expect(decodePage(result)).toEqual({ results: [5n, 3n], skipped: [1, 3] });
       expect(field("elements_declined_oversize")).toBe(2);
       expect(field("elements_missing")).toBe(2);
+    });
+  });
+
+  describe("override delivery", () => {
+    /** One cached request, reporting the blob's entry keys and the `to` each chunk was sent with. */
+    async function run(batch: Record<string, unknown> | undefined, delivery: { unsupported: boolean }) {
+      const store = new MemoryStore();
+      const req = createRequest(addrs(3), { batch });
+      const requestFn = mockPagedFn();
+
+      await handleEthCall({ ...ctx(requestFn, store), delivery }, req);
+
+      return {
+        keys: await cachedKeys(store, keychain.blobKey(chainId, req)!),
+        sentTo: requestFn.mock.calls.map((call) => (call[0] as EthCallRequest).params[0].to),
+      };
+    }
+
+    it("keys entries from the request alone, whatever the delivery or the memo", async () => {
+      const plain = await run(undefined, { unsupported: false });
+      const override = await run({ envelope: "override" }, { unsupported: false });
+      const remembered = await run({ envelope: "override" }, { unsupported: true });
+
+      // The option changed how the chunk reached the node, and nothing the cache keys from.
+      expect([plain.sentTo, override.sentTo, remembered.sentTo]).toEqual([
+        [undefined],
+        [ENVELOPE_ADDRESS],
+        [undefined],
+      ]);
+      expect(plain.keys).toEqual(expectedKeys([1, 2, 3]));
+      expect(override.keys).toEqual(plain.keys);
+      expect(remembered.keys).toEqual(plain.keys);
     });
   });
 });

@@ -3,20 +3,34 @@ import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema, toHex
 import type { ChainDefinition } from "../../chains/index.js";
 import type { Facet } from "../../observability.js";
 import type { EIP1193Parameters } from "../../types.js";
-import { isTimeoutLikeError } from "../errors.js";
+import { causeChain, isTimeoutLikeError } from "../errors.js";
 import type { Tail } from "../tuples.js";
 
 import {
   type DeploylessTarget,
+  deliveryParams,
+  ENVELOPE_ADDRESS,
+  type EnvelopeDelivery,
+  encodeEnvelopeArgs,
   envelopeConfig,
   extractRevertData,
   isCounterfactualDeployFailedRevert,
   isMalformedInputRevert,
   isMalformedResultRevert,
   isOutOfGasRevert,
-  wrapDeploylessFactoryCall,
+  overridesEnvelopeAddress,
 } from "./codec.envelope.js";
 import { arrayToWire, hexToPage, type Page, type PageGas, type ResolvedArrayFunction } from "./codec.inner.js";
+import {
+  copyGas,
+  floorGas,
+  hexByteLength,
+  intrinsicGas,
+  sentSize,
+  type WireSize,
+  wireSize,
+  zeroBytes,
+} from "./pricing.js";
 
 type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
 
@@ -29,14 +43,17 @@ type FactorisedFactoryCallParams = {
     compress?: boolean;
     gas?: LensGas;
     continuations?: ContinuationMode;
+    envelope?: EnvelopeDelivery;
   };
   /**
-   * The provider's `eth_call` gas cap. With `batch.gas`, sizes the opening wave; on a chain whose
-   * nodes give an unspecified `gas` a fixed default ({@link ChainDefinition.ethCall}), sent as every
-   * chunk's `gas`.
+   * The provider's `eth_call` gas cap. Sizes the opening wave's bytes, and with `batch.gas` its
+   * items; on a chain whose nodes give an unspecified `gas` a fixed default
+   * ({@link ChainDefinition.ethCall}), sent as every chunk's `gas`.
    */
   gasLimit?: number;
   chain: ChainDefinition;
+  /** The transport's {@link DeliveryMemo}; read and written only when `batch.envelope` is `override`. */
+  delivery?: DeliveryMemo;
   restOfEthCallParams: RestOfEthCallParams;
   /**
    * Invoked with each freshly fetched element as its chunk lands, before siblings finish, and
@@ -48,10 +65,19 @@ type FactorisedFactoryCallParams = {
 
 /**
  * A lens's cost as the caller states it, in the units the wide event reports: `fixed` is what a
- * frame spends before its first attempt (`fixed_gas`), `item` the per-attempt mean and deviation
- * (`item_gas_avg`, `item_gas_stddev`). Both are properties of the lens, not of any provider.
+ * frame spends before its first attempt less the copy of the chunk's own bytes (`fixed_gas`),
+ * `item` the per-attempt mean and deviation (`item_gas_avg`, `item_gas_stddev`). Both are
+ * properties of the lens, not of any provider or chunk.
  */
 export type LensGas = { fixed: number; item: { avg: number; stddev?: number } };
+
+/**
+ * One transport instance's memory that its provider does not honour `eth_call` state overrides:
+ * set only on unambiguous evidence (a call that returned instead of reverting, or an invalid-params
+ * refusal), never cleared, and never consulted by a request without `batch.envelope: "override"`.
+ * Correctness never depends on it; only the count of wasted requests does.
+ */
+export type DeliveryMemo = { unsupported: boolean };
 
 /**
  * When the tails pages leave behind are sent. `fill` sends a tail once enough of them are pending
@@ -75,14 +101,17 @@ export type FactorisedFactoryCallResult = {
 };
 
 /**
- * Packs `elements` into deployless-factory `eth_call` chunks under the wire budget
- * (`batch.batchSize`, at most EIP-3860's initcode cap) and the gas each chunk is predicted to
- * need; fetches them in parallel; returns per-element outputs aligned to `elements`. The prediction
- * runs on the stated `gasLimit` and `batch.gas` until the first page lands and on the pages' own
- * telemetry after, so the stated figures size the opening wave and, until an attempt has been
- * costed, the item cost, and nothing else. The tails pages
- * leave behind are pooled and re-packed together, sent as {@link ContinuationMode} says; an element
- * gas could not resolve is retried once alone.
+ * Packs `elements` into deployless `eth_call` chunks under the wire budget (`batch.batchSize`, the
+ * sent `data` bytes) and the gas each chunk is predicted to need; fetches them in parallel; returns
+ * per-element outputs aligned to `elements`. The prediction runs on the stated `gasLimit` and
+ * `batch.gas` until the first page lands and on the pages' own telemetry after, so the stated
+ * figures size the opening wave and, until an attempt has been costed, the item cost, and nothing
+ * else. The tails pages leave behind are pooled and re-packed together, sent as
+ * {@link ContinuationMode} says; an element gas could not resolve is retried once alone.
+ *
+ * With `batch.envelope: "override"` a chunk is a call to {@link ENVELOPE_ADDRESS} with the envelope's
+ * code in the state override and the argument tuple as calldata, so the initcode cap does not bound
+ * it; a chunk that fails without proving the envelope ran is re-fetched as initcode.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
@@ -93,18 +122,25 @@ export async function factorisedFactoryCall(
     batch,
     gasLimit,
     chain,
+    delivery: memo = { unsupported: false },
     restOfEthCallParams,
     onResolved,
     facet,
   }: FactorisedFactoryCallParams,
 ): Promise<FactorisedFactoryCallResult> {
   const compress = batch?.compress ?? false;
+  const envelope: EnvelopeDelivery = batch?.envelope === "override" ? "override" : "initcode";
+  if (envelope === "override" && overridesEnvelopeAddress(restOfEthCallParams[1])) {
+    throw new Error(`[deployless] a caller's state override at ${ENVELOPE_ADDRESS} conflicts with the envelope's own`);
+  }
+  /** The delivery a new chunk takes: override while requested and not yet found unsupported. */
+  const current = (): EnvelopeDelivery => (envelope === "override" && !memo.unsupported ? "override" : "initcode");
   const missing: number[] = [];
   const unresolved: number[] = [];
   const oversize: number[] = [];
   const config = envelopeConfig(solidity, compress);
-  const wrap = (indices: Chunk): Hex =>
-    wrapDeploylessFactoryCall(
+  const args = (indices: Chunk): Hex =>
+    encodeEnvelopeArgs(
       {
         target,
         targetData: arrayToWire(
@@ -115,10 +151,10 @@ export async function factorisedFactoryCall(
       { compress, config },
     );
 
-  let referenceWrapped: Hex | undefined;
-  const getReferenceWrapped = () => {
-    if (!referenceWrapped) referenceWrapped = wrap(everything);
-    return referenceWrapped;
+  let referenceArgs: Hex | undefined;
+  const getReferenceArgs = () => {
+    if (!referenceArgs) referenceArgs = args(everything);
+    return referenceArgs;
   };
 
   // Static layouts contribute `layout.size` per element; dynamic ones a length word plus their
@@ -140,18 +176,18 @@ export async function factorisedFactoryCall(
     totalZeros += zeros;
   }
   let overhead: WireSize | undefined;
-  /** Sizes the sub-lists `[start, end)` of `indices` as the wire would carry them. */
+  /** Sizes the argument tuple of the sub-lists `[start, end)` of `indices`. */
   const measurer = (indices: Chunk): ((start: number, end: number) => WireSize) => {
     if (compress) {
       return (start, end) =>
         wireSize(
           start === 0 && end === indices.length && end === elements.length
-            ? getReferenceWrapped()
-            : wrap(indices.slice(start, end)),
+            ? getReferenceArgs()
+            : args(indices.slice(start, end)),
         );
     }
     if (overhead === undefined) {
-      const whole = wireSize(getReferenceWrapped());
+      const whole = wireSize(getReferenceArgs());
       overhead = {
         bytes: whole.bytes - totalBytes,
         zeros: whole.zeros - totalZeros - countingWordZeros(elements.length, totalBytes),
@@ -186,21 +222,24 @@ export async function factorisedFactoryCall(
   /** The stated figures until a page has landed, the pooled observations after. */
   const gasParams = (): GasParams | undefined => {
     if (gas === undefined) return stated;
-    const item = gas.served === 0n ? stated : moments(gas);
-    if (item === undefined) return undefined;
-    return { cap: Number(gas.cap), fixed: Number(gas.fixed), avg: item.avg, stddev: item.stddev };
+    const item = gas.served === 0n ? stated?.item : { fixed: Number(gas.fixed0), ...moments(gas) };
+    return { cap: Number(gas.cap), item };
   };
 
-  /** Chunks `indices` under the wire cap and the gas prediction; an element that fits neither alone is declined as oversize. */
-  const pack = (indices: Chunk): Chunk[] => {
+  /**
+   * Chunks `indices` for `delivery` under the wire cap and the gas prediction; an element that
+   * fits neither alone is declined as oversize.
+   */
+  const pack = (indices: Chunk, delivery: EnvelopeDelivery): Chunk[] => {
     const params = gasParams();
     if (indices.length === 0) return [];
     if (wireCap === Infinity && params === undefined) return [indices];
     const measure = measurer(indices);
     const fits = (start: number, end: number) => {
-      const size = measure(start, end);
-      if (size.bytes > wireCap) return false;
-      return params === undefined || fitsGas(size, end - start, params);
+      const tuple = measure(start, end);
+      const sent = sentSize(tuple, delivery);
+      if (sent.bytes > wireCap) return false;
+      return params === undefined || fitsGas(tuple, sent, end - start, params, delivery, compress);
     };
     const packed = packBatches(indices, fits);
     for (const index of packed.oversize) {
@@ -210,20 +249,25 @@ export async function factorisedFactoryCall(
     return packed.chunks;
   };
 
-  const chunks = pack(everything);
+  const opening = current();
+  const chunks = pack(everything, opening);
   const outputs = new Array<Hex>(elements.length);
 
   facet?.set({
     elements_requested: elements.length,
     nominal_batches: chunks.length,
     ...(stated === undefined ? {} : { gas_limit: stated.cap }),
+    ...(envelope === "override" ? { delivery_memo: memo.unsupported } : {}),
   });
   // Sizes of the *initial* packing, to compare realized utilization against the wire budget.
   // Halved children and continuations are not resampled. Guarded rather than
   // `facet?.stat(...)` so unobserved calls skip re-measuring.
-  if (facet) for (const chunk of chunks) facet.stat("batch_bytes", measurer(chunk)(0, chunk.length).bytes);
+  if (facet)
+    for (const chunk of chunks) facet.stat("batch_bytes", sentSize(measurer(chunk)(0, chunk.length), opening).bytes);
   let fetched = 0;
   const splits = { count: 0, size: 0, timeout: 0, maxDepth: 0 };
+  const sent = { override: 0, initcode: 0 };
+  const fallbacks = { unsupported: 0, unproven: 0, exhausted: 0 };
   // A lens stopping early is a continuation, a mid-page gas death an escalation; neither is a
   // split, which means only "the provider refused the request's size or timed out".
   const pages = { continued: 0, escalated: 0, unresolvedAttempts: 0, allSkipped: 0 };
@@ -237,21 +281,33 @@ export async function factorisedFactoryCall(
     if (entries.length > 0) await onResolved?.(entries);
   };
 
+  /**
+   * An override chunk that failed without proving the envelope ran is re-packed as initcode and
+   * each piece dispatched at its generation, so the pending list waits for them as for any chunk.
+   */
+  const fallback = (indices: Chunk, generation: number, reason: keyof typeof fallbacks) => {
+    fallbacks[reason] += 1;
+    for (const piece of pack(indices, "initcode")) dispatch(piece, generation, "initcode");
+  };
+
   /** `generation` counts the continuations behind a chunk: 0 for the opening wave, one more per tail. */
   const fetchRecursive = async (
     indices: Chunk,
     generation: number,
+    delivery: EnvelopeDelivery,
     precomputed?: Hex,
     timeoutSplitsRemaining = 1,
     depth = 0,
   ): Promise<void> => {
     if (depth > splits.maxDepth) splits.maxDepth = depth;
     const count = indices.length;
-    const wrapped = precomputed ?? wrap(indices);
+    const tuple = precomputed ?? args(indices);
+    const tupleSize = wireSize(tuple);
+    sent[delivery] += 1;
 
-    let returndata: Hex;
+    let outcome: Awaited<ReturnType<typeof fetchChunk>>;
     try {
-      returndata = await fetchChunk(requestFn, wrapped, restOfEthCallParams, sentGas);
+      outcome = await fetchChunk(requestFn, deliveryParams(delivery, tuple, restOfEthCallParams, sentGas));
     } catch (e) {
       if (isMalformedResultRevert(e)) {
         throw new Error("[deployless] lens returned a per-item result that does not fit its declared layout", {
@@ -279,8 +335,8 @@ export async function factorisedFactoryCall(
       }
       const halve = (nextBudget = timeoutSplitsRemaining) => {
         const mid = Math.floor(count / 2);
-        dispatch(indices.slice(0, mid), generation, undefined, nextBudget, depth + 1);
-        dispatch(indices.slice(mid), generation, undefined, nextBudget, depth + 1);
+        dispatch(indices.slice(0, mid), generation, delivery, undefined, nextBudget, depth + 1);
+        dispatch(indices.slice(mid), generation, delivery, undefined, nextBudget, depth + 1);
       };
       const cause = classifyChunkError(e);
       if (cause === "size" && count > 1) {
@@ -293,12 +349,32 @@ export async function factorisedFactoryCall(
         splits.timeout += 1;
         return halve(timeoutSplitsRemaining - 1);
       }
-      throw e;
+      if (delivery === "initcode") throw e;
+      // Nothing above proved the envelope ran, so the range gets one initcode attempt; only a
+      // refusal of the request's shape says the provider does not honour overrides.
+      if (cause !== null) return fallback(indices, generation, "exhausted");
+      if (isInvalidParamsError(e)) {
+        memo.unsupported = true;
+        return fallback(indices, generation, "unsupported");
+      }
+      return fallback(indices, generation, "unproven");
+    }
+    if (outcome.kind === "returned") {
+      // The call reached an account with no code: the provider dropped the override.
+      if (delivery === "initcode") throw new Error("revert-mode wrapper returned without reverting");
+      memo.unsupported = true;
+      return fallback(indices, generation, "unsupported");
     }
 
-    const page = hexToPage(solidity.outputLayout, returndata);
+    const page = hexToPage(solidity.outputLayout, outcome.returndata);
     const attempted = validatePage(page, count);
-    gas = pool(gas, page.gas, attempted - (page.died === undefined ? 0 : 1), intrinsicGas(wireSize(wrapped)));
+    gas = pool(
+      gas,
+      page.gas,
+      attempted - (page.died === undefined ? 0 : 1),
+      intrinsicGas(sentSize(tupleSize, delivery), delivery),
+      copyGas(tupleSize.bytes, compress),
+    );
     facet?.stat("page_adjudicated", attempted);
     if (page.died === undefined && page.results.length === 0 && page.skipped.length > 0) pages.allSkipped += 1;
 
@@ -316,7 +392,7 @@ export async function factorisedFactoryCall(
       const pos = indices[page.died]!;
       if (count > 1) {
         pages.escalated += 1;
-        dispatch([pos], generation);
+        dispatch([pos], generation, current());
       } else {
         missing.push(pos);
         unresolved.push(pos);
@@ -346,13 +422,20 @@ export async function factorisedFactoryCall(
     settle = { resolve, reject };
   });
 
-  const dispatch = (indices: Chunk, generation: number, precomputed?: Hex, timeoutSplits?: number, depth?: number) => {
+  const dispatch = (
+    indices: Chunk,
+    generation: number,
+    delivery: EnvelopeDelivery,
+    precomputed?: Hex,
+    timeoutSplits?: number,
+    depth?: number,
+  ) => {
     if (failure !== undefined) return;
     inFlight += 1;
     const open = indices.length > 1 ? 1 : 0;
     openBy[generation] = (openBy[generation] ?? 0) + open;
     if (generation > generationMax) generationMax = generation;
-    fetchRecursive(indices, generation, precomputed, timeoutSplits, depth)
+    fetchRecursive(indices, generation, delivery, precomputed, timeoutSplits, depth)
       .then(undefined, (reason) => {
         failure ??= { reason };
       })
@@ -369,9 +452,13 @@ export async function factorisedFactoryCall(
    */
   const flush = () => {
     const generation = pendingGeneration;
-    const chunks = pack(pending.sort((a, b) => a - b));
+    const delivery = current();
+    const chunks = pack(
+      pending.sort((a, b) => a - b),
+      delivery,
+    );
     const remainder = chunks.pop();
-    for (const chunk of chunks) dispatch(chunk, generation);
+    for (const chunk of chunks) dispatch(chunk, generation, delivery);
     flushes.full += chunks.length;
     pending = [];
     pendingGeneration = 0;
@@ -383,7 +470,7 @@ export async function factorisedFactoryCall(
       return;
     }
     flushes[release] += 1;
-    dispatch(remainder, generation);
+    dispatch(remainder, generation, delivery);
   };
 
   const pump = () => {
@@ -404,7 +491,7 @@ export async function factorisedFactoryCall(
 
   try {
     const isWholeInput = chunks.length === 1 && chunks[0]!.length === elements.length;
-    for (const chunk of chunks) dispatch(chunk, 0, isWholeInput ? getReferenceWrapped() : undefined);
+    for (const chunk of chunks) dispatch(chunk, 0, opening, isWholeInput ? getReferenceArgs() : undefined);
     pump();
     await done;
   } finally {
@@ -428,6 +515,12 @@ export async function factorisedFactoryCall(
       elements_declined_oversize: oversize.length,
       elements_missing: missing.length,
       elements_unresolved: unresolved.length,
+      chunks_override: sent.override,
+      chunks_initcode: sent.initcode,
+      override_fallbacks: fallbacks.unsupported + fallbacks.unproven + fallbacks.exhausted,
+      override_fallbacks_unsupported: fallbacks.unsupported,
+      override_fallbacks_unproven: fallbacks.unproven,
+      override_fallbacks_exhausted: fallbacks.exhausted,
     });
   }
 
@@ -444,17 +537,20 @@ type Chunk = readonly number[];
 
 /**
  * The gas telemetry of every page a request has seen, pooled: `budget` is the smallest frame's,
- * `fixed` the largest prologue, `cap` the smallest gas limit a page's frame implies.
+ * `fixed0` the largest prologue less the copy of the chunk's own bytes ({@link copyGas}), `cap`
+ * the smallest gas limit a page's frame implies.
  */
-type GasStats = PageGas & { served: bigint; cap: bigint };
+type GasStats = PageGas & { served: bigint; cap: bigint; fixed0: bigint };
 
-/** `intrinsic` is what the node deducted for the chunk's calldata before the frame began. */
-function pool(stats: GasStats | undefined, page: PageGas, served: number, intrinsic: number): GasStats {
+/** `intrinsic` is what the node deducted for the chunk's bytes before the frame began, `copy` what the prologue spent on them. */
+function pool(stats: GasStats | undefined, page: PageGas, served: number, intrinsic: number, copy: number): GasStats {
   const cap = BigInt(intrinsic) + page.fixed + page.budget;
-  if (stats === undefined) return { ...page, served: BigInt(served), cap };
+  const fixed0 = page.fixed > BigInt(copy) ? page.fixed - BigInt(copy) : 0n;
+  if (stats === undefined) return { ...page, served: BigInt(served), cap, fixed0 };
   return {
     budget: page.budget < stats.budget ? page.budget : stats.budget,
     fixed: page.fixed > stats.fixed ? page.fixed : stats.fixed,
+    fixed0: fixed0 > stats.fixed0 ? fixed0 : stats.fixed0,
     served: stats.served + BigInt(served),
     sum: stats.sum + page.sum,
     sumSquares: stats.sumSquares + page.sumSquares,
@@ -463,51 +559,44 @@ function pool(stats: GasStats | undefined, page: PageGas, served: number, intrin
   };
 }
 
-/** What {@link fitsGas} needs: a provider's cap, and a lens's prologue and per-attempt cost. */
-type GasParams = { cap: number; fixed: number; avg: number; stddev: number };
+/**
+ * What {@link fitsGas} needs: a provider's cap, and, when known, a lens's prologue and per-attempt
+ * cost. The cap alone bounds a chunk's bytes; the item figures bound its elements.
+ */
+type GasParams = { cap: number; item?: { fixed: number; avg: number; stddev: number } };
 
 /**
- * Whether a chunk of `k` elements over `size` bytes is predicted to fit the cap after its own
- * intrinsic gas, the prologue and its attempts with headroom. A lone element always fits: the
- * estimate may shorten a chunk but never withhold an element, so the envelope decides what is served.
+ * Whether a chunk of `k` elements is predicted to fit the cap: its bytes must clear EIP-7623's floor
+ * and leave room after intrinsic gas and the prologue's copy, and its attempts with headroom must
+ * fit what remains after the lens's prologue. A lone element always fits the attempt line: that
+ * estimate may shorten a chunk but never withhold an element, so the envelope decides what is
+ * served. The byte lines are protocol bounds the node enforces before anything runs, so a lone
+ * element above them is oversize.
  */
-function fitsGas(size: WireSize, k: number, { cap, fixed, avg, stddev }: GasParams): boolean {
-  return k === 1 || intrinsicGas(size) + fixed + chunkCost(k, avg, stddev) <= cap;
+function fitsGas(
+  tuple: WireSize,
+  sent: WireSize,
+  k: number,
+  { cap, item }: GasParams,
+  delivery: EnvelopeDelivery,
+  compressed: boolean,
+): boolean {
+  if (floorGas(sent) > cap) return false;
+  const bytes = intrinsicGas(sent, delivery) + copyGas(tuple.bytes, compressed);
+  if (bytes > cap) return false;
+  return k === 1 || item === undefined || bytes + item.fixed + chunkCost(k, item.avg, item.stddev) <= cap;
 }
 
-/** `gasLimit` and `batch.gas` as the prediction uses them, or nothing when either is missing or unusable. */
+/** `gasLimit` and `batch.gas` as the prediction uses them: nothing without a usable cap, the cap alone without a usable cost. */
 function statedGas(gasLimit: number | undefined, gas: LensGas | undefined): GasParams | undefined {
-  if (gasLimit === undefined || typeof gas !== "object" || gas === null) return undefined;
-  const item = typeof gas.item === "object" && gas.item !== null ? gas.item : undefined;
-  if (item === undefined) return undefined;
+  if (gasLimit === undefined || !Number.isSafeInteger(gasLimit) || gasLimit <= 0) return undefined;
+  const capOnly = { cap: gasLimit };
+  if (typeof gas !== "object" || gas === null || typeof gas.item !== "object" || gas.item === null) return capOnly;
   const { fixed } = gas;
-  const { avg } = item;
-  const stddev = item.stddev ?? 0;
+  const { avg, stddev = 0 } = gas.item;
   const usable =
-    Number.isSafeInteger(gasLimit) &&
-    gasLimit > 0 &&
-    Number.isFinite(fixed) &&
-    fixed >= 0 &&
-    Number.isFinite(avg) &&
-    avg > 0 &&
-    Number.isFinite(stddev) &&
-    stddev >= 0;
-  return usable ? { cap: gasLimit, fixed, avg, stddev } : undefined;
-}
-
-type WireSize = { bytes: number; zeros: number };
-
-function wireSize(hex: Hex): WireSize {
-  return { bytes: hexByteLength(hex), zeros: zeroBytes(hex) };
-}
-
-/**
- * What a node deducts from its cap before the envelope's first `gas()` returns: the transaction and
- * creation base, calldata by byte (EIP-2028), initcode by word (EIP-3860) and that opcode's own 2.
- * Ethereum's schedule; a chain that prices differently shifts `gas_limit_observed` by the difference.
- */
-function intrinsicGas({ bytes, zeros }: WireSize): number {
-  return 21_000 + 32_000 + 4 * zeros + 16 * (bytes - zeros) + 2 * Math.ceil(bytes / 32) + 2;
+    Number.isFinite(fixed) && fixed >= 0 && Number.isFinite(avg) && avg > 0 && Number.isFinite(stddev) && stddev >= 0;
+  return usable ? { cap: gasLimit, item: { fixed, avg, stddev } } : capOnly;
 }
 
 /**
@@ -517,12 +606,6 @@ function intrinsicGas({ bytes, zeros }: WireSize): number {
  */
 function countingWordZeros(k: number, body: number): number {
   return 128 - nonzeroBytesOf(k) - nonzeroBytesOf(body) - nonzeroBytesOf(64 + body) - nonzeroBytesOf(256 + body);
-}
-
-function zeroBytes(hex: Hex): number {
-  let zeros = 0;
-  for (let i = 2; i < hex.length; i += 2) if (hex.charCodeAt(i) === 48 && hex.charCodeAt(i + 1) === 48) zeros++;
-  return zeros;
 }
 
 /** Non-zero bytes in the 32-byte big-endian encoding of `n`. */
@@ -554,7 +637,7 @@ function moments({ served, sum, sumSquares }: GasStats) {
 }
 
 function gasFields(gas: GasStats): Record<string, number> {
-  const frame = { frame_gas: Number(gas.budget), fixed_gas: Number(gas.fixed), gas_limit_observed: Number(gas.cap) };
+  const frame = { frame_gas: Number(gas.budget), fixed_gas: Number(gas.fixed0), gas_limit_observed: Number(gas.cap) };
   if (gas.served === 0n) return frame;
   const { avg, stddev } = moments(gas);
   return { ...frame, item_gas_avg: avg, item_gas_stddev: stddev, item_gas_max: Number(gas.max) };
@@ -573,27 +656,31 @@ function validatePage({ results, skipped, died }: Page, count: number): number {
 }
 
 /**
- * Sends one chunk. `gas` is the stated cap on a chain whose nodes give an unspecified `gas` a fixed
- * default ({@link ChainDefinition.ethCall}); elsewhere nothing is sent and the node's cap is what
- * the page observes.
+ * Sends one chunk, built by {@link deliveryParams}. A page is a revert carrying the sentinel; a call
+ * that returns instead reached an account with no code, which only the caller can interpret.
  */
 async function fetchChunk(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  data: Hex,
-  rest: RestOfEthCallParams,
-  gas: Hex | undefined,
-) {
+  params: unknown[],
+): Promise<{ kind: "page"; returndata: Hex } | { kind: "returned" }> {
   try {
-    await requestFn(
-      { method: "eth_call", params: [gas === undefined ? { data } : { data, gas }, ...rest] },
-      { retryCount: 0 },
-    );
+    await requestFn({ method: "eth_call", params: params as never }, { retryCount: 0 });
   } catch (e) {
     const decoded = extractRevertData(e);
     if (!decoded.ok) throw e;
-    return decoded.returnData;
+    return { kind: "page", returndata: decoded.returnData };
   }
-  throw new Error("revert-mode wrapper returned without reverting");
+  return { kind: "returned" };
+}
+
+/** A JSON-RPC refusal of the request's shape: code `-32602`, or a message naming the state override. */
+function isInvalidParamsError(error: unknown): boolean {
+  for (const cur of causeChain(error)) {
+    if ((cur as { code?: unknown }).code === -32602) return true;
+    const msg = (cur as { message?: unknown }).message;
+    if (typeof msg === "string" && /state[ _-]?overrides?|third param/i.test(msg)) return true;
+  }
+  return false;
 }
 
 /**
@@ -642,10 +729,6 @@ function packBatches(
   return { chunks, oversize };
 }
 
-function hexByteLength(hex: Hex): number {
-  return (hex.length - 2) / 2;
-}
-
 /**
  * Classifies an upstream error for the deployless batcher. Returns `null` for unrelated
  * errors (which should propagate without retry). Timeout is checked first so a TimeoutError
@@ -659,6 +742,7 @@ function hexByteLength(hex: Hex): number {
  * `"size"` covers errors that scale deterministically with batch size; bisecting always helps:
  *   - Calldata size:   HTTP 413; messages containing "too large" or "request size"
  *   - Initcode size (EIP-3860): "max initcode size exceeded" — matched by /code.*size/
+ *   - Pre-execution gas (intrinsic, EIP-7623 floor): geth's "intrinsic gas" / "floor data gas"
  */
 function classifyChunkError(error: unknown): "size" | "timeout" | null {
   if (isTimeoutLikeError(error)) return "timeout";
@@ -668,7 +752,13 @@ function classifyChunkError(error: unknown): "size" | "timeout" | null {
   const msg = (e as { message?: string }).message ?? "";
 
   if (status === 413) return "size";
-  if (/too large/i.test(msg) || /request.{0,10}size/i.test(msg) || /code.{0,10}size/i.test(msg)) {
+  if (
+    /too large/i.test(msg) ||
+    /request.{0,10}size/i.test(msg) ||
+    /code.{0,10}size/i.test(msg) ||
+    /intrinsic gas/i.test(msg) ||
+    /floor data gas/i.test(msg)
+  ) {
     return "size";
   }
 
