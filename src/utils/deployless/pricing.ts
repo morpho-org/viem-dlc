@@ -141,13 +141,13 @@ type GasParams = { cap: number; item?: { fixed: number; avg: number; stddev: num
 /** The provider's cap and `batch.gas` as the prediction uses them: nothing without a cap, the cap alone without a usable cost. */
 function statedGas(cap: number | undefined, gas: LensGas | undefined): GasParams | undefined {
   if (cap === undefined) return undefined;
-  const capOnly = { cap };
-  if (typeof gas !== "object" || gas === null || typeof gas.item !== "object" || gas.item === null) return capOnly;
+  const item = gas?.item;
+  if (!item) return { cap };
   const { fixed } = gas;
-  const { avg, stddev = 0 } = gas.item;
+  const { avg, stddev = 0 } = item;
   const usable =
     Number.isFinite(fixed) && fixed >= 0 && Number.isFinite(avg) && avg > 0 && Number.isFinite(stddev) && stddev >= 0;
-  return usable ? { cap, item: { fixed, avg, stddev } } : capOnly;
+  return usable ? { cap, item: { fixed, avg, stddev } } : { cap };
 }
 
 /**

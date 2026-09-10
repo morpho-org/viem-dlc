@@ -3,7 +3,7 @@ import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Tran
 import { chainDefinition } from "../../chains/index.js";
 import { createFacetId, type FacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
-import { factorisedFactoryCall, type Provider, provider } from "../../utils/deployless/call.js";
+import { factorisedFactoryCall, type Provider, providerOf } from "../../utils/deployless/call.js";
 import { aggregatedPage, parseMarkedEthCall } from "../state-overrides.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
@@ -40,14 +40,14 @@ export function deployless<T extends Base>(
 
   return (params) => {
     const requestFn = baseTransportFn(params).request;
-    const node = provider(chainDefinition(params.chain?.id), gasLimit);
+    const provider = providerOf(chainDefinition(params.chain?.id), gasLimit);
 
     const request = (args: EIP1193Parameters<T>) => {
       if (args.method !== "eth_call") {
         return requestFn(args);
       }
 
-      return handleEthCall(requestFn, args as EIP1193Parameters<PublicRpcSchema, "eth_call">, node, facetId);
+      return handleEthCall(requestFn, args as EIP1193Parameters<PublicRpcSchema, "eth_call">, provider, facetId);
     };
 
     return createTransport(
@@ -66,7 +66,7 @@ export function deployless<T extends Base>(
 async function handleEthCall(
   requestFn: EIP1193RequestFn<Base>,
   req: EIP1193Parameters<PublicRpcSchema, "eth_call">,
-  node: Provider,
+  provider: Provider,
   facetId: FacetId,
 ) {
   const marked = parseMarkedEthCall(req);
@@ -87,7 +87,7 @@ async function handleEthCall(
     elements,
     lens,
     batch: policy.batch,
-    provider: node,
+    provider,
     restOfEthCallParams: rest,
     facet,
   });

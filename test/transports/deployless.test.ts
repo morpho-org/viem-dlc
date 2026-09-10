@@ -22,7 +22,6 @@ import { withLogging } from "../../src/observability.js";
 import { type DeploylessConfig, deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
-import type { LensGas } from "../../src/utils/deployless/call.js";
 import {
   COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR,
   ENVELOPE_ADDRESS,
@@ -39,6 +38,7 @@ import {
   resolveArrayFunction,
   wireToArray,
 } from "../../src/utils/deployless/codec.inner.js";
+import type { LensGas } from "../../src/utils/deployless/pricing.js";
 import { wrapDeploylessFactoryCall } from "../helpers/envelope.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 import { flatGas } from "../helpers/page.js";

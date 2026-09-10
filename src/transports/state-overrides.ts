@@ -66,11 +66,11 @@ export function parseMarkedEthCall(req: EIP1193Parameters<PublicRpcSchema, "eth_
   const [txn, block, stateOverride, ...blockOverrides] = req.params;
   const extracted = extractEthCallPolicy(stateOverride);
   if (!extracted) return null;
-  if (txn.data === undefined) throw new Error("[viem-dlc] eth_call with policy requires `data`");
+  if (txn.data === undefined) throw new Error("[deployless] eth_call with policy requires `data`");
   const extras = Object.keys(txn).filter((k) => k !== "data" && txn[k as keyof typeof txn] !== undefined);
   if (extras.length > 0) {
     throw new Error(
-      `[viem-dlc] eth_call with policy: tx object may only set \`data\` (found extras: ${extras.join(", ")})`,
+      `[deployless] eth_call with policy: tx object may only set \`data\` (found extras: ${extras.join(", ")})`,
     );
   }
   // Nodes reject a trailing `undefined` param, so the tail is trimmed rather than passed through.

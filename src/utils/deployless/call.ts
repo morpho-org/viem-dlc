@@ -15,11 +15,10 @@ import {
   envelopeConfig,
   overridesEnvelopeAddress,
   type RestOfEthCallParams,
+  type RpcEthCallParams,
 } from "./codec.envelope.js";
 import { arrayToWire, type Page, type ResolvedArrayFunction, streamToPage } from "./codec.inner.js";
 import { costModel, hexByteLength, type LensGas, sentSize, type WireSize, wireSize, zeroBytes } from "./pricing.js";
-
-export type { LensGas } from "./pricing.js";
 
 /** Ascending indices into `elements`, sent as one request. */
 type Chunk = readonly number[];
@@ -80,7 +79,7 @@ export type BatchOptions = {
 
 /**
  * A transport instance's view of the node it talks to, resolved once when the transport is created
- * by {@link provider}.
+ * by {@link providerOf}.
  */
 export type Provider = {
   /**
@@ -93,15 +92,15 @@ export type Provider = {
    * default ({@link EthCallGas}); nothing elsewhere, where the node grants its cap unasked.
    */
   gas?: Hex;
-  delivery: DeliveryMemo;
+  memo: DeliveryMemo;
 };
 
-export function provider(chain: ChainDefinition, gasLimit: number | undefined): Provider {
+export function providerOf(chain: ChainDefinition, gasLimit: number | undefined): Provider {
   const cap = gasLimit !== undefined && Number.isSafeInteger(gasLimit) && gasLimit > 0 ? gasLimit : undefined;
   return {
     cap,
     gas: cap !== undefined && chain.ethCall.gasWhenUnspecified === "fixedDefault" ? toHex(cap) : undefined,
-    delivery: { unsupported: false },
+    memo: { unsupported: false },
   };
 }
 
@@ -177,7 +176,7 @@ export async function factorisedFactoryCall(
     elements,
     lens,
     batch,
-    provider: { cap, gas: sentGas, delivery: memo },
+    provider: { cap, gas: sentGas, memo },
     restOfEthCallParams,
     onResolved,
     facet,
@@ -189,22 +188,21 @@ export async function factorisedFactoryCall(
     throw new Error(`[deployless] a caller's state override at ${ENVELOPE_ADDRESS} conflicts with the envelope's own`);
   }
   /** The delivery a new chunk takes: override while requested and not yet found unsupported. */
-  const currentDelivery = (): EnvelopeDelivery =>
-    envelope === "override" && !memo.unsupported ? "override" : "initcode";
+  const currentDelivery = () => (envelope === "override" && !memo.unsupported ? "override" : "initcode");
 
+  const everything = elements.map((_, i) => i);
   const outcomes = new Array<ElementOutcome | undefined>(elements.length);
   const decline = (index: number, by: DeclineReason) => {
     outcomes[index] = { kind: "declined", by };
   };
-  const declined = (by?: DeclineReason): number[] =>
+  const declined = (by?: DeclineReason) =>
     everything.filter((i) => {
       const outcome = outcomes[i];
       return outcome?.kind === "declined" && (by === undefined || outcome.by === by);
     });
 
-  const everything = elements.map((_, i) => i);
   const config = envelopeConfig(lens, compress);
-  const encode = (indices: Chunk): Hex =>
+  const encode = (indices: Chunk) =>
     encodeEnvelopeArgs(
       {
         target,
@@ -217,7 +215,7 @@ export async function factorisedFactoryCall(
     );
   let wholeArgs: Hex | undefined;
   /** The argument tuple of `indices`; the whole input's is encoded once, every chunk being an ascending subset. */
-  const args = (indices: Chunk): Hex => {
+  const args = (indices: Chunk) => {
     if (indices.length !== elements.length) return encode(indices);
     wholeArgs ??= encode(indices);
     return wholeArgs;
@@ -272,7 +270,7 @@ export async function factorisedFactoryCall(
    * Chunks `indices` for `delivery` under the wire cap and the gas prediction; an element that
    * fits neither alone is declined before any request.
    */
-  const pack = (indices: Chunk, delivery: EnvelopeDelivery): Chunk[] => {
+  const pack = (indices: Chunk, delivery: EnvelopeDelivery) => {
     if (indices.length === 0) return [];
     if (wireCap === Infinity && !cost.known) return [indices];
     const measure = measurer(indices);
@@ -335,7 +333,7 @@ export async function factorisedFactoryCall(
     for (const piece of pack(indices, "initcode")) wave.dispatch(job(piece, generation, "initcode"));
   };
 
-  const runChunk = async (chunk: ChunkJob): Promise<void> => {
+  const runChunk = async (chunk: ChunkJob) => {
     const { indices, generation, delivery } = chunk;
     if (chunk.depth > splits.maxDepth) splits.maxDepth = chunk.depth;
     const count = indices.length;
@@ -348,7 +346,10 @@ export async function factorisedFactoryCall(
       const action = classifyOutcome(outcome, chunk);
       switch (action.kind) {
         case "throw":
-          throw new Error(action.message, action.cause === undefined ? undefined : { cause: action.cause });
+          throw new Error(
+            `[deployless] ${action.message}`,
+            action.cause === undefined ? undefined : { cause: action.cause },
+          );
         case "propagate":
           throw action.error;
         case "halve":
@@ -360,7 +361,7 @@ export async function factorisedFactoryCall(
       }
     }
 
-    const page = streamToPage(lens.outputLayout, outcome.returndata);
+    const page = streamToPage(lens.outputLayout, outcome.data);
     const attempted = adjudicated(page, count);
     cost.observe(page.gas, attempted - (page.died === undefined ? 0 : 1), tupleSize, delivery);
     facet?.stat("page_adjudicated", attempted);
@@ -578,17 +579,17 @@ function adjudicated({ results, skipped, died }: Page, count: number): number {
  * What one request came back with. A page is a revert carrying the sentinel; a call that returns
  * instead reached an account with no code; anything else failed upstream or with a revert of its own.
  */
-type ChunkOutcome = { kind: "page"; returndata: Hex } | { kind: "returned" } | { kind: "failed"; error: unknown };
+type ChunkOutcome =
+  | Extract<EnvelopeRevert, { kind: "page" }>
+  | { kind: "returned" }
+  | { kind: "failed"; error: unknown };
 
-async function send(
-  requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  params: ReturnType<typeof deliveryParams>,
-): Promise<ChunkOutcome> {
+async function send(requestFn: EIP1193RequestFn<PublicRpcSchema>, params: RpcEthCallParams): Promise<ChunkOutcome> {
   try {
     await requestFn({ method: "eth_call", params }, { retryCount: 0 });
   } catch (error) {
     const revert = decodeEnvelopeRevert(error);
-    return revert?.kind === "page" ? { kind: "page", returndata: revert.data } : { kind: "failed", error };
+    return revert?.kind === "page" ? revert : { kind: "failed", error };
   }
   return { kind: "returned" };
 }
@@ -600,12 +601,11 @@ type Action =
   | { kind: "fallback"; reason: FallbackReason };
 
 /** The envelope's reverts that prove it ran and that no smaller chunk can cure. */
-const FATAL_REVERTS: Record<Exclude<EnvelopeRevert["kind"], "page">, string> = {
-  malformedResult: "[deployless] lens returned a per-item result that does not fit its declared layout",
-  malformedInput: "[deployless] envelope rejected the input wire (codec bug)",
-  counterfactualDeployFailed:
-    "[deployless] counterfactual deploy failed: target occupied, constructor reverted, or no code",
-  outOfGas: "[deployless] counterfactual deploy (factory or constructor) ran out of gas under this node's cap",
+const FATAL_MESSAGES: Record<Exclude<EnvelopeRevert["kind"], "page">, string> = {
+  malformedResult: "lens returned a per-item result that does not fit its declared layout",
+  malformedInput: "envelope rejected the input wire (codec bug)",
+  counterfactualDeployFailed: "counterfactual deploy failed: target occupied, constructor reverted, or no code",
+  outOfGas: "counterfactual deploy (factory or constructor) ran out of gas under this node's cap",
 };
 
 /**
@@ -627,7 +627,7 @@ function classifyOutcome(
   const { error } = outcome;
   const revert = decodeEnvelopeRevert(error);
   if (revert !== null && revert.kind !== "page") {
-    return { kind: "throw", message: FATAL_REVERTS[revert.kind], cause: error };
+    return { kind: "throw", message: FATAL_MESSAGES[revert.kind], cause: error };
   }
   const cause = classifyChunkError(error);
   const divisible = indices.length > 1;

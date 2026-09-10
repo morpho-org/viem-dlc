@@ -177,7 +177,7 @@ export function encodeEnvelopeArgs({ target, targetData }: DeploylessFactoryCall
 
 const asInitcode = (args: Hex): Hex => `${FACTORY_BYTECODE_REVERT}${args.slice(2)}` as Hex;
 
-type RpcEthCallParams = EIP1193Parameters<PublicRpcSchema, "eth_call">["params"];
+export type RpcEthCallParams = EIP1193Parameters<PublicRpcSchema, "eth_call">["params"];
 
 /** An `eth_call`'s params behind the transaction: block selector, state override, block overrides. */
 export type RestOfEthCallParams = Tail<RpcEthCallParams>;
@@ -261,13 +261,13 @@ export function decodeEnvelopeRevert(e: unknown): EnvelopeRevert | null {
   const candidates = [...revertDataCandidates(e)].map((raw) => ({ raw, lower: raw.toLowerCase() }));
   const page = candidates.find(({ lower }) => lower.startsWith(OK_SENTINEL));
   if (page) return { kind: "page", data: `0x${page.raw.slice(10)}` as Hex };
-  for (const [kind, matches] of FATAL_REVERTS) {
+  for (const [kind, matches] of FATAL_REVERT_MATCHERS) {
     if (candidates.some(({ lower }) => matches(lower))) return { kind };
   }
   return null;
 }
 
-const FATAL_REVERTS: readonly [Exclude<EnvelopeRevert["kind"], "page">, (lower: string) => boolean][] = [
+const FATAL_REVERT_MATCHERS: readonly [Exclude<EnvelopeRevert["kind"], "page">, (lower: string) => boolean][] = [
   ["malformedResult", (lower) => lower.startsWith(MALFORMED_RESULT_SELECTOR) && lower.length === 2 + 8 + 128],
   ["malformedInput", (lower) => lower.startsWith(MALFORMED_INPUT_SELECTOR) && lower.length === 2 + 8 + 64],
   ["counterfactualDeployFailed", (lower) => lower.startsWith(COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR)],
