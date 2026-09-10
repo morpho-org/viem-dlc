@@ -35,7 +35,6 @@ import {
   FACTORY_BYTECODE_REVERT,
   OK_SENTINEL,
   unwrapDeploylessFactoryCall,
-  wrapDeploylessFactoryCall,
 } from "../../../../src/utils/deployless/codec.envelope.js";
 import {
   arrayToWire,
@@ -45,6 +44,7 @@ import {
   wireToArray,
 } from "../../../../src/utils/deployless/codec.inner.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
+import { wrapDeploylessFactoryCall } from "../../../helpers/envelope.js";
 import { createStubLogger, findDotted } from "../../../helpers/logger.js";
 import { flatGas } from "../../../helpers/page.js";
 

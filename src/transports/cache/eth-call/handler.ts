@@ -39,7 +39,7 @@ export async function handleEthCall(
     const { outputs, missing } = await factorisedFactoryCall(requestFn, {
       target,
       elements: inputElements,
-      solidity: lens,
+      lens,
       batch: policy.batch,
       provider,
       restOfEthCallParams,
@@ -125,7 +125,7 @@ export async function handleEthCall(
         const fetchedResult = await factorisedFactoryCall(requestFn, {
           target,
           elements: misses.map((m) => m.element),
-          solidity: lens,
+          lens,
           batch: policy.batch,
           provider,
           restOfEthCallParams,

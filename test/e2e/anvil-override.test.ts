@@ -27,11 +27,11 @@ import { withLogging } from "../../src/observability.js";
 import { deployless } from "../../src/transports/deployless/index.js";
 import type { EnvelopeDelivery } from "../../src/utils/deployless/codec.envelope.js";
 import {
+  decodeEnvelopeRevert,
   deliveryParams,
   ENVELOPE_ADDRESS,
   encodeEnvelopeArgs,
   envelopeConfig,
-  extractRevertData,
   FACTORY_BYTECODE_REVERT,
 } from "../../src/utils/deployless/codec.envelope.js";
 import { arrayifiedAbi, arrayToWire, resolveArrayFunction } from "../../src/utils/deployless/codec.inner.js";
@@ -157,7 +157,7 @@ describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
         target: { address: target, factory, factoryData },
         targetData: arrayToWire({ mode: "static", size: ELEMENT_SIZE }, elements),
       },
-      { compress: false, config },
+      config,
     );
   };
 
@@ -169,9 +169,9 @@ describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
     expect(upstreamMessage(refused)).toMatch(/initcode/i);
 
     const error = await rpc(deliveryParams("override", tuple, ["latest"], undefined)).catch((e) => e);
-    const page = extractRevertData(error);
-    if (!page.ok) throw new Error(`no page by override: ${upstreamMessage(error)}`);
-    expect(adjudicated(page.returnData)).toBe(ELEMENTS);
+    const page = decodeEnvelopeRevert(error);
+    if (page?.kind !== "page") throw new Error(`no page by override: ${upstreamMessage(error)}`);
+    expect(adjudicated(page.data)).toBe(ELEMENTS);
   });
 
   it("returns 0x when the state override is dropped, as an ignoring provider would", async () => {

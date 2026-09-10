@@ -2,8 +2,12 @@ import type { AbiFunction, Address, Hex, PublicRpcSchema, RpcStateOverride } fro
 import { fromHex, getAddress, keccak256, toHex } from "viem";
 
 import type { EIP1193Parameters } from "../types.js";
-import type { BatchOptions, RestOfEthCallParams } from "../utils/deployless/call.js";
-import { type DeploylessTarget, unwrapDeploylessFactoryCall } from "../utils/deployless/codec.envelope.js";
+import type { BatchOptions } from "../utils/deployless/call.js";
+import {
+  type DeploylessTarget,
+  type RestOfEthCallParams,
+  unwrapDeploylessFactoryCall,
+} from "../utils/deployless/codec.envelope.js";
 import {
   calldataToArray,
   pageToHex,

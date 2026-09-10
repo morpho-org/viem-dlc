@@ -32,9 +32,9 @@ import {
   OK_SENTINEL,
   OOG_SENTINEL,
   unwrapDeploylessFactoryCall,
-  wrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
 import { arrayToWire, pageToWire, resolveArrayFunction, wireToArray } from "../../src/utils/deployless/codec.inner.js";
+import { wrapDeploylessFactoryCall } from "../helpers/envelope.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 import { flatGas } from "../helpers/page.js";
 

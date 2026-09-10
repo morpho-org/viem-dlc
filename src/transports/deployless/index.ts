@@ -85,7 +85,7 @@ async function handleEthCall(
   const { outputs, missing } = await factorisedFactoryCall(requestFn, {
     target,
     elements,
-    solidity: lens,
+    lens,
     batch: policy.batch,
     provider: node,
     restOfEthCallParams: rest,

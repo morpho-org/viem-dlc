@@ -2,33 +2,32 @@ import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema, toHex
 
 import type { ChainDefinition, EthCallGas } from "../../chains/index.js";
 import type { Facet } from "../../observability.js";
-import type { EIP1193Parameters } from "../../types.js";
 import { causeChain, isTimeoutLikeError } from "../errors.js";
-import type { Tail } from "../tuples.js";
 
 import {
   type DeploylessTarget,
+  decodeEnvelopeRevert,
   deliveryParams,
   ENVELOPE_ADDRESS,
   type EnvelopeDelivery,
+  type EnvelopeRevert,
   encodeEnvelopeArgs,
   envelopeConfig,
-  extractRevertData,
-  isCounterfactualDeployFailedRevert,
-  isMalformedInputRevert,
-  isMalformedResultRevert,
-  isOutOfGasRevert,
   overridesEnvelopeAddress,
+  type RestOfEthCallParams,
 } from "./codec.envelope.js";
 import { arrayToWire, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
 import { costModel, hexByteLength, type LensGas, sentSize, type WireSize, wireSize, zeroBytes } from "./pricing.js";
 
-export type RestOfEthCallParams = Tail<EIP1193Parameters<PublicRpcSchema, "eth_call">["params"]>;
+export type { LensGas } from "./pricing.js";
+
+/** Ascending indices into `elements`, sent as one request. */
+type Chunk = readonly number[];
 
 type FactorisedFactoryCallParams = {
   target: DeploylessTarget;
   elements: readonly Hex[];
-  solidity: ResolvedArrayFunction;
+  lens: ResolvedArrayFunction;
   batch?: BatchOptions;
   provider: Provider;
   restOfEthCallParams: RestOfEthCallParams;
@@ -124,8 +123,6 @@ export type ContinuationMode = "fill" | "eager";
 /** An input element's index paired with the raw output bytes fetched for it. */
 export type ResolvedElement = { index: number; output: Hex };
 
-export type { LensGas } from "./pricing.js";
-
 export type FactorisedFactoryCallResult = {
   /** Per-element outputs aligned to `elements`, sparse exactly at {@link FactorisedFactoryCallResult.missing}. */
   outputs: readonly (Hex | undefined)[];
@@ -136,6 +133,29 @@ export type FactorisedFactoryCallResult = {
   /** The subset of `missing` declined client-side for size, with no request made. */
   oversize: readonly number[];
 };
+
+/**
+ * What became of one element: served, or declined by the lens's per-item revert, by gas (a death
+ * the element suffered alone), or before any request (its bytes alone exceed a protocol bound).
+ */
+type ElementOutcome = { kind: "resolved"; output: Hex } | { kind: "declined"; by: DeclineReason };
+type DeclineReason = "lens" | "gas" | "preflight";
+
+/** One request's worth of work; `generation` counts the continuations behind it, 0 for the opening wave. */
+type ChunkJob = {
+  indices: Chunk;
+  generation: number;
+  delivery: EnvelopeDelivery;
+  /** Halvings a timeout may still buy; a size refusal does not spend them. */
+  timeoutSplits: number;
+  /** Halvings behind this chunk, for `splits_max_depth`. */
+  depth: number;
+};
+
+/** A timeout may be the request's size or a slow node, so it buys this many halvings before it propagates. */
+const TIMEOUT_SPLITS = 1;
+
+type FallbackReason = "unsupported" | "unproven" | "exhausted";
 
 /**
  * Packs `elements` into deployless `eth_call` chunks under the wire budget (`batch.batchSize`, the
@@ -155,7 +175,7 @@ export async function factorisedFactoryCall(
   {
     target,
     elements,
-    solidity,
+    lens,
     batch,
     provider: { cap, gas: sentGas, delivery: memo },
     restOfEthCallParams,
@@ -168,41 +188,51 @@ export async function factorisedFactoryCall(
   if (envelope === "override" && overridesEnvelopeAddress(restOfEthCallParams[1])) {
     throw new Error(`[deployless] a caller's state override at ${ENVELOPE_ADDRESS} conflicts with the envelope's own`);
   }
-  const missing: number[] = [];
-  const unresolved: number[] = [];
-  const oversize: number[] = [];
-  const config = envelopeConfig(solidity, compress);
-  const args = (indices: Chunk): Hex =>
+  /** The delivery a new chunk takes: override while requested and not yet found unsupported. */
+  const currentDelivery = (): EnvelopeDelivery =>
+    envelope === "override" && !memo.unsupported ? "override" : "initcode";
+
+  const outcomes = new Array<ElementOutcome | undefined>(elements.length);
+  const decline = (index: number, by: DeclineReason) => {
+    outcomes[index] = { kind: "declined", by };
+  };
+  const declined = (by?: DeclineReason): number[] =>
+    everything.filter((i) => {
+      const outcome = outcomes[i];
+      return outcome?.kind === "declined" && (by === undefined || outcome.by === by);
+    });
+
+  const everything = elements.map((_, i) => i);
+  const config = envelopeConfig(lens, compress);
+  const encode = (indices: Chunk): Hex =>
     encodeEnvelopeArgs(
       {
         target,
         targetData: arrayToWire(
-          solidity.inputLayout,
+          lens.inputLayout,
           indices.map((i) => elements[i]!),
         ),
       },
-      { compress, config },
+      config,
     );
-
-  let referenceArgs: Hex | undefined;
-  const getReferenceArgs = () => {
-    if (!referenceArgs) referenceArgs = args(everything);
-    return referenceArgs;
+  let wholeArgs: Hex | undefined;
+  /** The argument tuple of `indices`; the whole input's is encoded once, every chunk being an ascending subset. */
+  const args = (indices: Chunk): Hex => {
+    if (indices.length !== elements.length) return encode(indices);
+    wholeArgs ??= encode(indices);
+    return wholeArgs;
   };
 
   // Static layouts contribute `layout.size` per element; dynamic ones a length word plus their
   // padded bytes. Both are multiples of 32, so the wrapper's own padding is a per-batch constant.
-  const everything: number[] = [];
+  const layout = lens.inputLayout;
   const bytesOf: number[] = [];
   const zerosOf: number[] = [];
-  const layout = solidity.inputLayout;
   let totalBytes = 0;
   let totalZeros = 0;
-  for (let pos = 0; pos < elements.length; pos++) {
-    const element = elements[pos]!;
+  for (const element of elements) {
     const bytes = layout.mode === "static" ? layout.size : 32 + hexByteLength(element);
     const zeros = zeroBytes(element) + (layout.mode === "static" ? 0 : 32 - nonzeroBytesOf(hexByteLength(element)));
-    everything.push(pos);
     bytesOf.push(bytes);
     zerosOf.push(zeros);
     totalBytes += bytes;
@@ -211,16 +241,9 @@ export async function factorisedFactoryCall(
   let overhead: WireSize | undefined;
   /** Sizes the argument tuple of the sub-lists `[start, end)` of `indices`. */
   const measurer = (indices: Chunk): ((start: number, end: number) => WireSize) => {
-    if (compress) {
-      return (start, end) =>
-        wireSize(
-          start === 0 && end === indices.length && end === elements.length
-            ? getReferenceArgs()
-            : args(indices.slice(start, end)),
-        );
-    }
+    if (compress) return (start, end) => wireSize(args(indices.slice(start, end)));
     if (overhead === undefined) {
-      const whole = wireSize(getReferenceArgs());
+      const whole = wireSize(args(everything));
       overhead = {
         bytes: whole.bytes - totalBytes,
         zeros: whole.zeros - totalZeros - countingWordZeros(elements.length, totalBytes),
@@ -247,7 +270,7 @@ export async function factorisedFactoryCall(
 
   /**
    * Chunks `indices` for `delivery` under the wire cap and the gas prediction; an element that
-   * fits neither alone is declined as oversize.
+   * fits neither alone is declined before any request.
    */
   const pack = (indices: Chunk, delivery: EnvelopeDelivery): Chunk[] => {
     if (indices.length === 0) return [];
@@ -257,17 +280,13 @@ export async function factorisedFactoryCall(
       const tuple = measure(start, end);
       return sentSize(tuple, delivery).bytes <= wireCap && cost.fits(tuple, end - start, delivery);
     };
-    const packed = packBatches(indices, fits);
-    for (const index of packed.oversize) {
-      oversize.push(index);
-      missing.push(index);
-    }
+    const packed = packBatches(indices, fits, compress);
+    for (const index of packed.oversize) decline(index, "preflight");
     return packed.chunks;
   };
 
-  const opening = envelope;
+  const opening = currentDelivery();
   const chunks = pack(everything, opening);
-  const outputs = new Array<Hex>(elements.length);
 
   facet?.set({
     elements_requested: elements.length,
@@ -280,115 +299,74 @@ export async function factorisedFactoryCall(
   // `facet?.stat(...)` so unobserved calls skip re-measuring.
   if (facet)
     for (const chunk of chunks) facet.stat("batch_bytes", sentSize(measurer(chunk)(0, chunk.length), opening).bytes);
-  let fetched = 0;
-  const splits = { count: 0, size: 0, timeout: 0, maxDepth: 0 };
+  const splits = { size: 0, timeout: 0, maxDepth: 0 };
   const sent = { override: 0, initcode: 0 };
-  const fallbacks = { unsupported: 0, unproven: 0, exhausted: 0 };
+  const fallbacks: Record<FallbackReason, number> = { unsupported: 0, unproven: 0, exhausted: 0 };
   // A lens stopping early is a continuation, a mid-page gas death an escalation; neither is a
   // split, which means only "the provider refused the request's size or timed out".
-  const pages = { continued: 0, escalated: 0, unresolvedAttempts: 0, allSkipped: 0 };
+  const pages = { continued: 0, unresolvedAttempts: 0, allSkipped: 0 };
   const continuations: ContinuationMode = batch?.continuations === "eager" ? "eager" : "fill";
   const flushes = { full: 0, drain: 0, eager: 0 };
-  let generationMax = 0;
 
   const commit = async (entries: readonly ResolvedElement[]) => {
-    for (const { index, output } of entries) outputs[index] = output;
-    fetched += entries.length;
+    for (const { index, output } of entries) outcomes[index] = { kind: "resolved", output };
     if (entries.length > 0) await onResolved?.(entries);
+  };
+
+  const halve = ({ indices, ...job }: ChunkJob, timeoutSplits: number) => {
+    const mid = Math.floor(indices.length / 2);
+    for (const half of [indices.slice(0, mid), indices.slice(mid)]) {
+      dispatch({ ...job, indices: half, timeoutSplits, depth: job.depth + 1 });
+    }
   };
 
   /**
    * An override chunk that failed without proving the envelope ran is re-packed as initcode and
    * each piece dispatched at its generation, so the pending list waits for them as for any chunk.
    */
-  const fallback = (indices: Chunk, generation: number, reason: keyof typeof fallbacks) => {
+  const fallback = ({ indices, generation }: ChunkJob, reason: FallbackReason) => {
     fallbacks[reason] += 1;
-    for (const piece of pack(indices, "initcode")) dispatch(piece, generation, "initcode");
+    for (const piece of pack(indices, "initcode")) {
+      dispatch({ indices: piece, generation, delivery: "initcode", timeoutSplits: TIMEOUT_SPLITS, depth: 0 });
+    }
   };
 
-  /** `generation` counts the continuations behind a chunk: 0 for the opening wave, one more per tail. */
-  const fetchRecursive = async (
-    indices: Chunk,
-    generation: number,
-    delivery: EnvelopeDelivery,
-    precomputed?: Hex,
-    timeoutSplitsRemaining = 1,
-    depth = 0,
-  ): Promise<void> => {
-    if (depth > splits.maxDepth) splits.maxDepth = depth;
+  const runChunk = async (job: ChunkJob): Promise<void> => {
+    const { indices, generation, delivery } = job;
+    if (job.depth > splits.maxDepth) splits.maxDepth = job.depth;
     const count = indices.length;
-    const tuple = precomputed ?? args(indices);
+    const tuple = args(indices);
     const tupleSize = wireSize(tuple);
     sent[delivery] += 1;
 
-    let outcome: Awaited<ReturnType<typeof fetchChunk>>;
-    try {
-      outcome = await fetchChunk(requestFn, deliveryParams(delivery, tuple, restOfEthCallParams, sentGas));
-    } catch (e) {
-      if (isMalformedResultRevert(e)) {
-        throw new Error("[deployless] lens returned a per-item result that does not fit its declared layout", {
-          cause: e,
-        });
+    const outcome = await send(requestFn, deliveryParams(delivery, tuple, restOfEthCallParams, sentGas));
+    if (outcome.kind !== "page") {
+      const action = classifyOutcome(outcome, job);
+      switch (action.kind) {
+        case "throw":
+          throw new Error(action.message, action.cause === undefined ? undefined : { cause: action.cause });
+        case "propagate":
+          throw action.error;
+        case "halve":
+          splits[action.reason] += 1;
+          return halve(job, action.timeoutSplits);
+        case "fallback":
+          if (action.reason === "unsupported") memo.unsupported = true;
+          return fallback(job, action.reason);
       }
-      if (isMalformedInputRevert(e)) {
-        throw new Error("[deployless] envelope rejected the input wire (codec bug)", { cause: e });
-      }
-      if (isCounterfactualDeployFailedRevert(e)) {
-        throw new Error(
-          "[deployless] counterfactual deploy failed: target occupied, constructor reverted, or no code",
-          {
-            cause: e,
-          },
-        );
-      }
-      if (isOutOfGasRevert(e)) {
-        throw new Error(
-          "[deployless] counterfactual deploy (factory or constructor) ran out of gas under this node's cap",
-          {
-            cause: e,
-          },
-        );
-      }
-      const halve = (nextBudget = timeoutSplitsRemaining) => {
-        const mid = Math.floor(count / 2);
-        dispatch(indices.slice(0, mid), generation, delivery, undefined, nextBudget, depth + 1);
-        dispatch(indices.slice(mid), generation, delivery, undefined, nextBudget, depth + 1);
-      };
-      const cause = classifyChunkError(e);
-      if (cause === "size" && count > 1) {
-        splits.count += 1;
-        splits.size += 1;
-        return halve();
-      }
-      if (cause === "timeout" && count > 1 && timeoutSplitsRemaining > 0) {
-        splits.count += 1;
-        splits.timeout += 1;
-        return halve(timeoutSplitsRemaining - 1);
-      }
-      if (delivery === "initcode") throw e;
-      // Nothing above proved the envelope ran, so the range gets one initcode attempt; only a
-      // refusal of the request's shape says the provider does not honour overrides.
-      if (cause !== null) return fallback(indices, generation, "exhausted");
-      if (isInvalidParamsError(e)) return fallback(indices, generation, "unsupported");
-      return fallback(indices, generation, "unproven");
-    }
-    if (outcome.kind === "returned") {
-      // The call reached an account with no code: the provider dropped the override.
-      if (delivery === "initcode") throw new Error("revert-mode wrapper returned without reverting");
-      return fallback(indices, generation, "unsupported");
     }
 
-    const page = hexToPage(solidity.outputLayout, outcome.returndata);
-    const attempted = validatePage(page, count);
+    const page = hexToPage(lens.outputLayout, outcome.returndata);
+    const attempted = adjudicated(page, count);
     cost.observe(page.gas, attempted - (page.died === undefined ? 0 : 1), tupleSize, delivery);
     facet?.stat("page_adjudicated", attempted);
     if (page.died === undefined && page.results.length === 0 && page.skipped.length > 0) pages.allSkipped += 1;
 
-    const declined = new Set(page.skipped);
+    const skipped = new Set(page.skipped);
     const entries: ResolvedElement[] = [];
     for (let i = 0, served = 0; i < attempted; i++) {
       if (i === page.died) continue;
-      if (declined.has(i)) missing.push(indices[i]!);
+      if (skipped.has(i)) decline(indices[i]!, "lens");
       else entries.push({ index: indices[i]!, output: page.results[served++]! });
     }
     await commit(entries);
@@ -397,11 +375,9 @@ export async function factorisedFactoryCall(
       pages.unresolvedAttempts += 1;
       const pos = indices[page.died]!;
       if (count > 1) {
-        pages.escalated += 1;
-        dispatch([pos], generation, envelope);
+        dispatch({ indices: [pos], generation, delivery: currentDelivery(), timeoutSplits: TIMEOUT_SPLITS, depth: 0 });
       } else {
-        missing.push(pos);
-        unresolved.push(pos);
+        decline(pos, "gas");
       }
     }
 
@@ -428,26 +404,18 @@ export async function factorisedFactoryCall(
     settle = { resolve, reject };
   });
 
-  const dispatch = (
-    indices: Chunk,
-    generation: number,
-    delivery: EnvelopeDelivery,
-    precomputed?: Hex,
-    timeoutSplits?: number,
-    depth?: number,
-  ) => {
+  const dispatch = (job: ChunkJob) => {
     if (failure !== undefined) return;
     inFlight += 1;
-    const open = indices.length > 1 ? 1 : 0;
-    openBy[generation] = (openBy[generation] ?? 0) + open;
-    if (generation > generationMax) generationMax = generation;
-    fetchRecursive(indices, generation, delivery, precomputed, timeoutSplits, depth)
+    const open = job.indices.length > 1 ? 1 : 0;
+    openBy[job.generation] = (openBy[job.generation] ?? 0) + open;
+    runChunk(job)
       .then(undefined, (reason) => {
         failure ??= { reason };
       })
       .then(() => {
         inFlight -= 1;
-        openBy[generation]! -= open;
+        openBy[job.generation]! -= open;
         pump();
       });
   };
@@ -458,12 +426,14 @@ export async function factorisedFactoryCall(
    */
   const flush = () => {
     const generation = pendingGeneration;
+    const delivery = currentDelivery();
     const chunks = pack(
       pending.sort((a, b) => a - b),
       envelope,
     );
     const remainder = chunks.pop();
-    for (const chunk of chunks) dispatch(chunk, generation, envelope);
+    for (const chunk of chunks)
+      dispatch({ indices: chunk, generation, delivery, timeoutSplits: TIMEOUT_SPLITS, depth: 0 });
     flushes.full += chunks.length;
     pending = [];
     pendingGeneration = 0;
@@ -475,7 +445,7 @@ export async function factorisedFactoryCall(
       return;
     }
     flushes[release] += 1;
-    dispatch(remainder, generation, envelope);
+    dispatch({ indices: remainder, generation, delivery, timeoutSplits: TIMEOUT_SPLITS, depth: 0 });
   };
 
   const pump = () => {
@@ -495,31 +465,33 @@ export async function factorisedFactoryCall(
   };
 
   try {
-    const isWholeInput = chunks.length === 1 && chunks[0]!.length === elements.length;
-    for (const chunk of chunks) dispatch(chunk, 0, opening, isWholeInput ? getReferenceArgs() : undefined);
+    for (const chunk of chunks) {
+      dispatch({ indices: chunk, generation: 0, delivery: opening, timeoutSplits: TIMEOUT_SPLITS, depth: 0 });
+    }
     pump();
     await done;
   } finally {
+    const unresolved = declined("gas").length;
     facet?.set({
       ...cost.fields(),
-      elements_fetched: fetched,
-      splits_count: splits.count,
+      elements_fetched: outcomes.filter((o) => o?.kind === "resolved").length,
+      splits_count: splits.size + splits.timeout,
       splits_size: splits.size,
       splits_timeout: splits.timeout,
       splits_max_depth: splits.maxDepth,
       attempts_unresolved: pages.unresolvedAttempts,
-      pages_escalated: pages.escalated,
+      pages_escalated: pages.unresolvedAttempts - unresolved,
       pages_all_skipped: pages.allSkipped,
       pages_continued: pages.continued,
       continuations,
-      continuation_depth_max: generationMax,
+      continuation_depth_max: Math.max(0, openBy.length - 1),
       flushes: flushes.full + flushes.drain + flushes.eager,
       flushes_full: flushes.full,
       flushes_drain: flushes.drain,
       flushes_eager: flushes.eager,
-      elements_declined_oversize: oversize.length,
-      elements_missing: missing.length,
-      elements_unresolved: unresolved.length,
+      elements_declined_oversize: declined("preflight").length,
+      elements_missing: declined().length,
+      elements_unresolved: unresolved,
       chunks_override: sent.override,
       chunks_initcode: sent.initcode,
       override_fallbacks: fallbacks.unsupported + fallbacks.unproven + fallbacks.exhausted,
@@ -530,15 +502,12 @@ export async function factorisedFactoryCall(
   }
 
   return {
-    outputs,
-    missing: missing.sort((a, b) => a - b),
-    unresolved: unresolved.sort((a, b) => a - b),
-    oversize: oversize.sort((a, b) => a - b),
+    outputs: outcomes.map((o) => (o?.kind === "resolved" ? o.output : undefined)),
+    missing: declined(),
+    unresolved: declined("gas"),
+    oversize: declined("preflight"),
   };
 }
-
-/** Ascending indices into `elements`, sent as one request. */
-type Chunk = readonly number[];
 
 /**
  * Zero bytes in the four words of a clear chunk's wrapper that count its `k` elements and `body`
@@ -557,33 +526,82 @@ function nonzeroBytesOf(n: number): number {
 }
 
 /**
- * Returns the number of elements the page adjudicated, in `1..count`. The floor is what keeps every
- * chunk making progress; the decoder has already bound each record to its ordinal.
+ * The number of elements the page adjudicated, in `1..count`: the decoder has already bound each
+ * record to its ordinal and refused an empty page, so only a page longer than its chunk is left to catch.
  */
-function validatePage({ results, skipped, died }: Page, count: number): number {
+function adjudicated({ results, skipped, died }: Page, count: number): number {
   const attempted = results.length + skipped.length + (died === undefined ? 0 : 1);
-  if (attempted < 1 || attempted > count) {
+  if (attempted > count) {
     throw new Error(`paginated lens attempted ${attempted} of ${count} elements, expected 1..${count}`);
   }
   return attempted;
 }
 
 /**
- * Sends one chunk, built by {@link deliveryParams}. A page is a revert carrying the sentinel; a call
- * that returns instead reached an account with no code, which only the caller can interpret.
+ * What one request came back with. A page is a revert carrying the sentinel; a call that returns
+ * instead reached an account with no code; anything else failed upstream or with a revert of its own.
  */
-async function fetchChunk(
+type ChunkOutcome = { kind: "page"; returndata: Hex } | { kind: "returned" } | { kind: "failed"; error: unknown };
+
+async function send(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  params: unknown[],
-): Promise<{ kind: "page"; returndata: Hex } | { kind: "returned" }> {
+  params: ReturnType<typeof deliveryParams>,
+): Promise<ChunkOutcome> {
   try {
-    await requestFn({ method: "eth_call", params: params as never }, { retryCount: 0 });
-  } catch (e) {
-    const decoded = extractRevertData(e);
-    if (!decoded.ok) throw e;
-    return { kind: "page", returndata: decoded.returnData };
+    await requestFn({ method: "eth_call", params }, { retryCount: 0 });
+  } catch (error) {
+    const revert = decodeEnvelopeRevert(error);
+    return revert?.kind === "page" ? { kind: "page", returndata: revert.data } : { kind: "failed", error };
   }
   return { kind: "returned" };
+}
+
+type Action =
+  | { kind: "throw"; message: string; cause?: unknown }
+  | { kind: "propagate"; error: unknown }
+  | { kind: "halve"; reason: "size" | "timeout"; timeoutSplits: number }
+  | { kind: "fallback"; reason: FallbackReason };
+
+/** The envelope's reverts that prove it ran and that no smaller chunk can cure. */
+const FATAL_REVERTS: Record<Exclude<EnvelopeRevert["kind"], "page">, string> = {
+  malformedResult: "[deployless] lens returned a per-item result that does not fit its declared layout",
+  malformedInput: "[deployless] envelope rejected the input wire (codec bug)",
+  counterfactualDeployFailed:
+    "[deployless] counterfactual deploy failed: target occupied, constructor reverted, or no code",
+  outOfGas: "[deployless] counterfactual deploy (factory or constructor) ran out of gas under this node's cap",
+};
+
+/**
+ * What a chunk that did not page gets: proof the envelope ran is fatal; a size or timeout refusal
+ * halves while there is room; an initcode chunk's other failures propagate. An override chunk
+ * failing without proof that the envelope ran gets one initcode attempt, and only a refusal of the
+ * request's shape — or a call that returned, reaching an account with no code — says the provider
+ * does not honour overrides.
+ */
+function classifyOutcome(
+  outcome: Exclude<ChunkOutcome, { kind: "page" }>,
+  { delivery, indices, timeoutSplits }: ChunkJob,
+): Action {
+  if (outcome.kind === "returned") {
+    return delivery === "initcode"
+      ? { kind: "throw", message: "revert-mode wrapper returned without reverting" }
+      : { kind: "fallback", reason: "unsupported" };
+  }
+  const { error } = outcome;
+  const revert = decodeEnvelopeRevert(error);
+  if (revert !== null && revert.kind !== "page") {
+    return { kind: "throw", message: FATAL_REVERTS[revert.kind], cause: error };
+  }
+  const cause = classifyChunkError(error);
+  const divisible = indices.length > 1;
+  if (cause === "size" && divisible) return { kind: "halve", reason: "size", timeoutSplits };
+  if (cause === "timeout" && divisible && timeoutSplits > 0) {
+    return { kind: "halve", reason: "timeout", timeoutSplits: timeoutSplits - 1 };
+  }
+  if (delivery === "initcode") return { kind: "propagate", error };
+  if (cause !== null) return { kind: "fallback", reason: "exhausted" };
+  if (isInvalidParamsError(error)) return { kind: "fallback", reason: "unsupported" };
+  return { kind: "fallback", reason: "unproven" };
 }
 
 /** A JSON-RPC refusal of the request's shape: code `-32602`, or a message naming the state override. */
@@ -598,13 +616,14 @@ function isInvalidParamsError(error: unknown): boolean {
 
 /**
  * Greedy packer over positions in `indices`: each chunk takes the longest prefix of the remainder
- * that `fits`, found by binary search with a defensive linear shrink for measures that are not
- * perfectly monotone. An element that does not fit alone is reported in `oversize` and left out
- * rather than sent.
+ * that `fits`, found by binary search. An element that does not fit alone is reported in `oversize`
+ * and left out rather than sent. A clear tuple's size is monotone in its elements; a compressed
+ * one's is not (FastLZ), so `shrink` walks the found end back until it fits.
  */
 function packBatches(
   indices: Chunk,
   fits: (start: number, end: number) => boolean,
+  shrink: boolean,
 ): { chunks: Chunk[]; oversize: number[] } {
   const chunks: Chunk[] = [];
   const oversize: number[] = [];
@@ -632,8 +651,10 @@ function packBatches(
         hi = mid - 1;
       }
     }
-    while (end > start + 1 && !fits(start, end)) {
-      end--;
+    if (shrink) {
+      while (end > start + 1 && !fits(start, end)) {
+        end--;
+      }
     }
 
     chunks.push(indices.slice(start, end));
@@ -643,19 +664,12 @@ function packBatches(
 }
 
 /**
- * Classifies an upstream error for the deployless batcher. Returns `null` for unrelated
- * errors (which should propagate without retry). Timeout is checked first so a TimeoutError
- * with an incidentally size-shaped message still routes through the cautious-bisect path.
- *
- * `"timeout"` covers errors that *may* be batch-induced but can also indicate a slow/flaky
- * upstream. Callers should bisect cautiously (e.g. limited splits per chunk) so a downed node
- * doesn't get hammered with `2^depth` retries:
- *   - viem TimeoutError, HTTP 408 / 504 / 524, generic "timed out" / "timeout" messages
- *
- * `"size"` covers errors that scale deterministically with batch size; bisecting always helps:
- *   - Calldata size:   HTTP 413; messages containing "too large" or "request size"
- *   - Initcode size (EIP-3860): "max initcode size exceeded" — matched by /code.*size/
- *   - Pre-execution gas (intrinsic, EIP-7623 floor): geth's "intrinsic gas" / "floor data gas"
+ * Classifies an upstream error for the deployless batcher: `null` for unrelated errors, which
+ * propagate without retry. Timeout is checked first so a TimeoutError with an incidentally
+ * size-shaped message still routes through the cautious-bisect path: a timeout may be the request's
+ * size or a slow node, so callers bisect a bounded number of times rather than `2^depth`. A size
+ * refusal scales with the request (HTTP 413, calldata, EIP-3860 initcode, intrinsic and EIP-7623
+ * floor gas), so bisecting always helps.
  */
 function classifyChunkError(error: unknown): "size" | "timeout" | null {
   if (isTimeoutLikeError(error)) return "timeout";

@@ -1,7 +1,9 @@
-import type { Address, Hex } from "viem";
+import type { Address, Hex, PublicRpcSchema } from "viem";
 import { decodeAbiParameters, deploylessCallViaFactoryBytecode, encodeAbiParameters, parseAbiParameters } from "viem";
 
+import type { EIP1193Parameters } from "../../types.js";
 import { causeChain } from "../errors.js";
+import type { Tail } from "../tuples.js";
 
 import type { ResolvedArrayFunction } from "./codec.inner.js";
 import { flzCompress, flzDecompress } from "./flz.js";
@@ -77,7 +79,7 @@ export const OK_SENTINEL: Hex = "0xa55835c3";
  * failure, indistinguishable from a bare `revert()`. The deploy runs in a child frame the envelope
  * survives, so a factory call that failed empty with the envelope drained to its EIP-150 remainder
  * (two frames deep: ~2/64) is substituted with this marker — the one prologue death that can be
- * reported, and the one thing a smaller chunk cannot cure. Detect it with {@link isOutOfGasRevert}.
+ * reported, and the one thing a smaller chunk cannot cure.
  */
 export const OOG_SENTINEL: Hex = "0xcc0bd34c";
 
@@ -122,7 +124,7 @@ const bodyOf = (wire: Hex) => `0x${wire.slice(WIRE_HEADER_HEX)}` as Hex;
 const withBody = (wire: Hex, body: Hex) => `${wire.slice(0, WIRE_HEADER_HEX)}${body.slice(2)}` as Hex;
 
 /**
- * Reverses {@link wrapDeploylessFactoryCall} structurally: `targetData` comes back as the clear wire
+ * Reverses {@link encodeEnvelopeArgs} behind the initcode: `targetData` comes back as the clear wire
  * form, decompressed when the config word's compression bit is set. Also accepts the RETURN-mode
  * form that viem's stock `client.call({ factory, factoryData })` produces — see
  * {@link FACTORY_BYTECODE_RETURN_VIEM} — whose `targetData` is the ABI-encoded array-shaped call.
@@ -158,15 +160,12 @@ export function envelopeConfig({ itemSelector, inputLayout, outputLayout }: Reso
 }
 
 /**
- * The envelope's argument tuple from the clear wire form ({@link arrayToWire}); `config` is
- * {@link envelopeConfig}, and `compress` must match its bit. Trails the initcode in one delivery and
- * is the calldata in the other — see {@link deliveryParams}.
+ * The envelope's argument tuple from the clear wire form ({@link arrayToWire}), the body compressed
+ * when `config` ({@link envelopeConfig}) says so. Trails the initcode in one delivery and is the
+ * calldata in the other — see {@link deliveryParams}.
  */
-export function encodeEnvelopeArgs(
-  { target, targetData }: DeploylessFactoryCall,
-  { compress, config }: { compress: boolean; config: bigint },
-): Hex {
-  const wire = compress ? withBody(targetData, flzCompress(bodyOf(targetData))) : targetData;
+export function encodeEnvelopeArgs({ target, targetData }: DeploylessFactoryCall, config: bigint): Hex {
+  const wire = config & COMPRESSED_BIT ? withBody(targetData, flzCompress(bodyOf(targetData))) : targetData;
   return encodeAbiParameters(DEPLOYLESS_CONSTRUCTOR_PARAMS, [
     target.address,
     wire,
@@ -176,15 +175,12 @@ export function encodeEnvelopeArgs(
   ]);
 }
 
-/** The initcode-delivered payload: {@link FACTORY_BYTECODE_REVERT} followed by {@link encodeEnvelopeArgs}. */
-export function wrapDeploylessFactoryCall(
-  call: DeploylessFactoryCall,
-  options: { compress: boolean; config: bigint },
-): Hex {
-  return `${FACTORY_BYTECODE_REVERT}${encodeEnvelopeArgs(call, options).slice(2)}` as Hex;
-}
+const asInitcode = (args: Hex): Hex => `${FACTORY_BYTECODE_REVERT}${args.slice(2)}` as Hex;
 
-type EthCallRest = readonly [block?: unknown, stateOverride?: unknown, blockOverrides?: unknown];
+type RpcEthCallParams = EIP1193Parameters<PublicRpcSchema, "eth_call">["params"];
+
+/** An `eth_call`'s params behind the transaction: block selector, state override, block overrides. */
+export type RestOfEthCallParams = Tail<RpcEthCallParams>;
 
 /**
  * The outbound `eth_call` params for one chunk. `rest` is the caller's block selector and state
@@ -194,27 +190,33 @@ type EthCallRest = readonly [block?: unknown, stateOverride?: unknown, blockOver
 export function deliveryParams(
   delivery: EnvelopeDelivery,
   args: Hex,
-  rest: EthCallRest,
+  rest: RestOfEthCallParams,
   gas: Hex | undefined,
-): unknown[] {
+): RpcEthCallParams {
   const gasField = gas === undefined ? {} : { gas };
   if (delivery === "initcode") {
-    return [{ data: `${FACTORY_BYTECODE_REVERT}${args.slice(2)}`, ...gasField }, ...rest];
+    return [{ data: asInitcode(args), ...gasField }, ...rest] as RpcEthCallParams;
   }
   const [block, stateOverride, ...blockOverrides] = rest;
   return [
     { to: ENVELOPE_ADDRESS, data: args, ...gasField },
     block ?? "latest",
-    { ...(stateOverride as object | undefined), [ENVELOPE_ADDRESS]: { code: FACTORY_BYTECODE_REVERT } },
+    { ...stateOverride, [ENVELOPE_ADDRESS]: { code: FACTORY_BYTECODE_REVERT } },
     ...blockOverrides,
-  ];
+  ] as RpcEthCallParams;
+}
+
+const ENVELOPE_ADDRESS_LOWER = ENVELOPE_ADDRESS.toLowerCase();
+
+/** The entry a state override holds at {@link ENVELOPE_ADDRESS}, whatever the key's case. */
+function envelopeOverrideEntry(stateOverride: unknown): unknown {
+  if (!stateOverride || typeof stateOverride !== "object") return undefined;
+  return Object.entries(stateOverride).find(([key]) => key.toLowerCase() === ENVELOPE_ADDRESS_LOWER)?.[1];
 }
 
 /** True when a caller's state override names {@link ENVELOPE_ADDRESS}, in any case. */
 export function overridesEnvelopeAddress(stateOverride: unknown): boolean {
-  if (!stateOverride || typeof stateOverride !== "object") return false;
-  const wanted = ENVELOPE_ADDRESS.toLowerCase();
-  return Object.keys(stateOverride).some((key) => key.toLowerCase() === wanted);
+  return envelopeOverrideEntry(stateOverride) !== undefined;
 }
 
 /**
@@ -235,70 +237,36 @@ export function isRevertExpected(req: { method: string; params?: readonly unknow
   if (typeof data !== "string") return false;
   if (data.toLowerCase().startsWith(FACTORY_BYTECODE_REVERT)) return true;
 
-  if (typeof to !== "string" || to.toLowerCase() !== ENVELOPE_ADDRESS.toLowerCase()) return false;
-  const stateOverride = req.params?.[2];
-  if (!stateOverride || typeof stateOverride !== "object") return false;
-  const entry = Object.entries(stateOverride).find(([key]) => key.toLowerCase() === ENVELOPE_ADDRESS.toLowerCase());
-  const code = (entry?.[1] as { code?: unknown } | undefined)?.code;
+  if (typeof to !== "string" || to.toLowerCase() !== ENVELOPE_ADDRESS_LOWER) return false;
+  const code = (envelopeOverrideEntry(req.params?.[2]) as { code?: unknown } | undefined)?.code;
   return typeof code === "string" && code.toLowerCase() === FACTORY_BYTECODE_REVERT;
 }
 
-/**
- * Pulls the revert-data hex out of an error thrown by a viem `requestFn` and checks for
- * {@link OK_SENTINEL}.
- *
- * - `{ ok: true, returnData }` — sentinel present; `returnData` is the lens's payload.
- * - `{ ok: false }` — no revert data, or data does not begin with {@link OK_SENTINEL}.
- *   The caller should rethrow the original error.
- */
-export function extractRevertData(e: unknown): { ok: true; returnData: Hex } | { ok: false } {
-  for (const raw of revertDataCandidates(e)) {
-    if (raw.slice(0, 10).toLowerCase() === OK_SENTINEL) {
-      return { ok: true, returnData: `0x${raw.slice(10)}` as Hex };
-    }
-  }
-  return { ok: false };
-}
+/** One of the envelope's own reverts, as {@link decodeEnvelopeRevert} reads it off a thrown error. */
+export type EnvelopeRevert =
+  | { kind: "page"; data: Hex }
+  | { kind: "outOfGas" }
+  | { kind: "malformedResult" }
+  | { kind: "malformedInput" }
+  | { kind: "counterfactualDeployFailed" };
 
 /**
- * True when `e` carries {@link OOG_SENTINEL} as its revert data — the envelope reporting that the
- * counterfactual deploy ran out of gas. Uses the same `cause`-chain walk as {@link extractRevertData}.
- *
- * The match is exact: the wrapper reverts with the bare 4-byte selector, so a lens error that
- * merely happens to start with those bytes is not mistaken for an out-of-gas.
+ * Reads the envelope's revert out of an error a viem `requestFn` threw, or `null` when the revert
+ * data is not the envelope's: a page is {@link OK_SENTINEL} followed by the outcome stream;
+ * {@link OOG_SENTINEL} matches exactly, so a lens error that merely starts with those bytes is not an
+ * out-of-gas; the two `Malformed*` reverts carry exactly their declared arguments.
  */
-export function isOutOfGasRevert(e: unknown): boolean {
-  return revertsExactly(e, OOG_SENTINEL);
-}
-
-/** True when `e` is the envelope's {@link MALFORMED_RESULT_SELECTOR} revert (selector plus two `uint256`s). */
-export function isMalformedResultRevert(e: unknown): boolean {
-  return revertsWithSelector(e, MALFORMED_RESULT_SELECTOR, 2 + 8 + 128);
-}
-
-/** True when `e` is the envelope's {@link MALFORMED_INPUT_SELECTOR} revert (selector plus one `uint256`). */
-export function isMalformedInputRevert(e: unknown): boolean {
-  return revertsWithSelector(e, MALFORMED_INPUT_SELECTOR, 2 + 8 + 64);
-}
-
-/** True when `e` is the envelope's {@link COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR} revert. */
-export function isCounterfactualDeployFailedRevert(e: unknown): boolean {
-  return revertsWithSelector(e, COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR);
-}
-
-function revertsWithSelector(e: unknown, selector: Hex, exactLength?: number): boolean {
+export function decodeEnvelopeRevert(e: unknown): EnvelopeRevert | null {
   for (const raw of revertDataCandidates(e)) {
-    if (exactLength !== undefined && raw.length !== exactLength) continue;
-    if (raw.slice(0, 10).toLowerCase() === selector) return true;
+    const lower = raw.toLowerCase();
+    const selector = lower.slice(0, 10);
+    if (selector === OK_SENTINEL) return { kind: "page", data: `0x${raw.slice(10)}` as Hex };
+    if (lower === OOG_SENTINEL) return { kind: "outOfGas" };
+    if (selector === MALFORMED_RESULT_SELECTOR && raw.length === 2 + 8 + 128) return { kind: "malformedResult" };
+    if (selector === MALFORMED_INPUT_SELECTOR && raw.length === 2 + 8 + 64) return { kind: "malformedInput" };
+    if (selector === COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR) return { kind: "counterfactualDeployFailed" };
   }
-  return false;
-}
-
-function revertsExactly(e: unknown, sentinel: Hex): boolean {
-  for (const raw of revertDataCandidates(e)) {
-    if (raw.toLowerCase() === sentinel) return true;
-  }
-  return false;
+  return null;
 }
 
 /**
