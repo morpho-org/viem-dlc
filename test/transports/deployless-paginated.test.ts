@@ -31,7 +31,7 @@ import {
   OOG_SENTINEL,
   unwrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
-import { type PageGas, pageToWire, wireToArray } from "../../src/utils/deployless/codec.inner.js";
+import { type PageGas, pageToStream, wireToArray } from "../../src/utils/deployless/codec.inner.js";
 import { copyGas, floorGas, wireSize } from "../../src/utils/deployless/pricing.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 import { flatGas, gasOf } from "../helpers/page.js";
@@ -136,7 +136,7 @@ function revertWithPage(results: readonly bigint[], skipped: readonly number[], 
     gas,
     ...(died === undefined ? {} : { died }),
   };
-  return revertWith(`${OK_SENTINEL}${pageToWire(page).slice(2)}` as Hex);
+  return revertWith(`${OK_SENTINEL}${pageToStream(page).slice(2)}` as Hex);
 }
 
 type LensBehavior = {

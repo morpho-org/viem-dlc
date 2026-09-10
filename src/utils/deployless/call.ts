@@ -16,7 +16,7 @@ import {
   overridesEnvelopeAddress,
   type RestOfEthCallParams,
 } from "./codec.envelope.js";
-import { arrayToWire, hexToPage, type Page, type ResolvedArrayFunction } from "./codec.inner.js";
+import { arrayToWire, type Page, type ResolvedArrayFunction, streamToPage } from "./codec.inner.js";
 import { costModel, hexByteLength, type LensGas, sentSize, type WireSize, wireSize, zeroBytes } from "./pricing.js";
 
 export type { LensGas } from "./pricing.js";
@@ -356,7 +356,7 @@ export async function factorisedFactoryCall(
       }
     }
 
-    const page = hexToPage(lens.outputLayout, outcome.returndata);
+    const page = streamToPage(lens.outputLayout, outcome.returndata);
     const attempted = adjudicated(page, count);
     cost.observe(page.gas, attempted - (page.died === undefined ? 0 : 1), tupleSize, delivery);
     facet?.stat("page_adjudicated", attempted);

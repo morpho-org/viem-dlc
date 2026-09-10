@@ -10,7 +10,7 @@ import {
 } from "../utils/deployless/codec.envelope.js";
 import {
   calldataToArray,
-  pageToHex,
+  pageToAbi,
   type ResolvedArrayFunction,
   resolveArrayFunction,
 } from "../utils/deployless/codec.inner.js";
@@ -97,5 +97,5 @@ export function aggregatedPage(
   outputs: readonly (Hex | undefined)[],
   skipped: readonly number[],
 ): Hex {
-  return pageToHex(lens.outputLayout, { results: outputs.filter((o) => o !== undefined), skipped });
+  return pageToAbi(lens.outputLayout, { results: outputs.filter((o) => o !== undefined), skipped });
 }

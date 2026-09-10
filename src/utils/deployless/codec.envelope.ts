@@ -29,7 +29,7 @@ const FACTORY_BYTECODE_RETURN_VIEM = deploylessCallViaFactoryBytecode.toLowerCas
  * the wire form {@link arrayToWire} builds, its body FastLZ-compressed when the config word says so.
  * The envelope calls the lens's per-item function once per element in its own frame and appends one
  * record per adjudicated element to an outcome stream that it exfiltrates via REVERT, prefixed with
- * {@link OK_SENTINEL} — see {@link hexToPage} for the record format. Nothing is written or
+ * {@link OK_SENTINEL} — see {@link streamToPage} for the record format. Nothing is written or
  * decompressed before the attempt that needs it, and every memory expansion is admitted against
  * the fee schedule first.
  *

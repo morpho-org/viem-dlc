@@ -17,7 +17,7 @@ import { type CachedMethod, type CacheSchema, cacheTransportKey } from "./schema
 import type { CacheConfig, HandlerContext, InvalidationStrategy } from "./types.js";
 
 export type * from "./schema.js";
-export type * from "./types.js";
+export type { CacheConfig, InvalidationContext, InvalidationStrategy } from "./types.js";
 export { cacheTransportKey };
 
 /**

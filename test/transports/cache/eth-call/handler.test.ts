@@ -37,9 +37,9 @@ import {
   unwrapDeploylessFactoryCall,
 } from "../../../../src/utils/deployless/codec.envelope.js";
 import {
+  abiToArray,
   arrayToWire,
-  hexToArray,
-  pageToWire,
+  pageToStream,
   resolveArrayFunction,
   wireToArray,
 } from "../../../../src/utils/deployless/codec.inner.js";
@@ -182,7 +182,7 @@ function initcodeShaped(params: readonly unknown[]): Hex {
 /** The raw element bytes viem's encoding of `values` yields for the array type `types`. */
 function elementsOf(types: string, values: readonly unknown[]): readonly Hex[] {
   const layout = types === "uint256[]" ? WORD : DYNAMIC;
-  return hexToArray(layout, encodeAbiParameters([{ type: types }], [values] as never));
+  return abiToArray(layout, encodeAbiParameters([{ type: types }], [values] as never));
 }
 
 /** Builds a viem-shaped error whose `.data` field carries OK_SENTINEL || payload. */
@@ -195,7 +195,7 @@ function revertWithSentinel(payload: Hex): Error & { data: Hex } {
 function pageRevert(types: string, results: readonly unknown[], skipped: readonly number[], died?: number) {
   const gas = flatGas(results.length + skipped.length);
   const page = { results: elementsOf(types, results), skipped, gas, ...(died === undefined ? {} : { died }) };
-  return revertWithSentinel(pageToWire(page));
+  return revertWithSentinel(pageToStream(page));
 }
 
 type LensBehavior = {
