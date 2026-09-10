@@ -306,17 +306,23 @@ export async function factorisedFactoryCall(
   // split, which means only "the provider refused the request's size or timed out".
   const pages = { continued: 0, unresolvedAttempts: 0, allSkipped: 0 };
   const continuations: ContinuationMode = batch?.continuations === "eager" ? "eager" : "fill";
-  const flushes = { full: 0, drain: 0, eager: 0 };
+  const job = (indices: Chunk, generation: number, delivery: EnvelopeDelivery): ChunkJob => ({
+    indices,
+    generation,
+    delivery,
+    timeoutSplits: TIMEOUT_SPLITS,
+    depth: 0,
+  });
 
   const commit = async (entries: readonly ResolvedElement[]) => {
     for (const { index, output } of entries) outcomes[index] = { kind: "resolved", output };
     if (entries.length > 0) await onResolved?.(entries);
   };
 
-  const halve = ({ indices, ...job }: ChunkJob, timeoutSplits: number) => {
+  const halve = ({ indices, ...rest }: ChunkJob, timeoutSplits: number) => {
     const mid = Math.floor(indices.length / 2);
     for (const half of [indices.slice(0, mid), indices.slice(mid)]) {
-      dispatch({ ...job, indices: half, timeoutSplits, depth: job.depth + 1 });
+      wave.dispatch({ ...rest, indices: half, timeoutSplits, depth: rest.depth + 1 });
     }
   };
 
@@ -326,14 +332,12 @@ export async function factorisedFactoryCall(
    */
   const fallback = ({ indices, generation }: ChunkJob, reason: FallbackReason) => {
     fallbacks[reason] += 1;
-    for (const piece of pack(indices, "initcode")) {
-      dispatch({ indices: piece, generation, delivery: "initcode", timeoutSplits: TIMEOUT_SPLITS, depth: 0 });
-    }
+    for (const piece of pack(indices, "initcode")) wave.dispatch(job(piece, generation, "initcode"));
   };
 
-  const runChunk = async (job: ChunkJob): Promise<void> => {
-    const { indices, generation, delivery } = job;
-    if (job.depth > splits.maxDepth) splits.maxDepth = job.depth;
+  const runChunk = async (chunk: ChunkJob): Promise<void> => {
+    const { indices, generation, delivery } = chunk;
+    if (chunk.depth > splits.maxDepth) splits.maxDepth = chunk.depth;
     const count = indices.length;
     const tuple = args(indices);
     const tupleSize = wireSize(tuple);
@@ -341,7 +345,7 @@ export async function factorisedFactoryCall(
 
     const outcome = await send(requestFn, deliveryParams(delivery, tuple, restOfEthCallParams, sentGas));
     if (outcome.kind !== "page") {
-      const action = classifyOutcome(outcome, job);
+      const action = classifyOutcome(outcome, chunk);
       switch (action.kind) {
         case "throw":
           throw new Error(action.message, action.cause === undefined ? undefined : { cause: action.cause });
@@ -349,10 +353,10 @@ export async function factorisedFactoryCall(
           throw action.error;
         case "halve":
           splits[action.reason] += 1;
-          return halve(job, action.timeoutSplits);
+          return halve(chunk, action.timeoutSplits);
         case "fallback":
           if (action.reason === "unsupported") memo.unsupported = true;
-          return fallback(job, action.reason);
+          return fallback(chunk, action.reason);
       }
     }
 
@@ -375,7 +379,7 @@ export async function factorisedFactoryCall(
       pages.unresolvedAttempts += 1;
       const pos = indices[page.died]!;
       if (count > 1) {
-        dispatch({ indices: [pos], generation, delivery: currentDelivery(), timeoutSplits: TIMEOUT_SPLITS, depth: 0 });
+        wave.dispatch(job([pos], generation, currentDelivery()));
       } else {
         decline(pos, "gas");
       }
@@ -383,33 +387,97 @@ export async function factorisedFactoryCall(
 
     if (attempted < count) {
       pages.continued += 1;
-      for (let i = attempted; i < count; i++) pending.push(indices[i]!);
-      if (generation + 1 > pendingGeneration) pendingGeneration = generation + 1;
+      wave.defer(indices.slice(attempted), generation + 1);
     }
   };
 
-  // Tails wait in `pending` and every chunk settling runs the pump, which re-packs them from the
-  // pool as it stands and sends what the mode allows. Halves and singleton escalations are chunks
-  // like any other. Nothing is dispatched after a failure; what is in flight settles first, its
-  // results committed, and then the failure surfaces.
+  const wave = createWave<ChunkJob>({
+    pack: (indices, generation) => {
+      const delivery = currentDelivery();
+      return pack(indices, delivery).map((chunk) => job(chunk, generation, delivery));
+    },
+    send: runChunk,
+    eager: continuations === "eager",
+  });
+
+  try {
+    for (const chunk of chunks) wave.dispatch(job(chunk, 0, opening));
+    await wave.run();
+  } finally {
+    const unresolved = declined("gas").length;
+    facet?.set({
+      ...cost.fields(),
+      elements_fetched: outcomes.filter((o) => o?.kind === "resolved").length,
+      splits_count: splits.size + splits.timeout,
+      splits_size: splits.size,
+      splits_timeout: splits.timeout,
+      splits_max_depth: splits.maxDepth,
+      attempts_unresolved: pages.unresolvedAttempts,
+      pages_escalated: pages.unresolvedAttempts - unresolved,
+      pages_all_skipped: pages.allSkipped,
+      pages_continued: pages.continued,
+      continuations,
+      continuation_depth_max: wave.generations,
+      flushes: wave.flushes.full + wave.flushes.drain + wave.flushes.eager,
+      flushes_full: wave.flushes.full,
+      flushes_drain: wave.flushes.drain,
+      flushes_eager: wave.flushes.eager,
+      elements_declined_oversize: declined("preflight").length,
+      elements_missing: declined().length,
+      elements_unresolved: unresolved,
+      chunks_override: sent.override,
+      chunks_initcode: sent.initcode,
+      override_fallbacks: fallbacks.unsupported + fallbacks.unproven + fallbacks.exhausted,
+      override_fallbacks_unsupported: fallbacks.unsupported,
+      override_fallbacks_unproven: fallbacks.unproven,
+      override_fallbacks_exhausted: fallbacks.exhausted,
+    });
+  }
+
+  return {
+    outputs: outcomes.map((o) => (o?.kind === "resolved" ? o.output : undefined)),
+    missing: declined(),
+    unresolved: declined("gas"),
+    oversize: declined("preflight"),
+  };
+}
+
+/**
+ * Sends jobs and pools the tails they leave behind. Knows nothing of deliveries, gas or pages:
+ * `pack` turns pending elements into jobs, `send` performs one. Every job but the last a `pack`
+ * returns is full — the next element did not fit it — so only the last waits, for jobs of an
+ * earlier generation, the ones whose tails could still join it; `eager` sends it at once instead.
+ * Nothing is dispatched after a failure: what is in flight settles, its results committed, and then
+ * `run` rejects with the first failure.
+ */
+function createWave<Job extends { indices: Chunk; generation: number }>({
+  pack,
+  send,
+  eager,
+}: {
+  pack: (pending: readonly number[], generation: number) => Job[];
+  send: (job: Job) => Promise<void>;
+  eager: boolean;
+}) {
   let pending: number[] = [];
   let pendingGeneration = 0;
   let inFlight = 0;
-  // Chunks in flight that could still leave a tail, by generation; a singleton adjudicates its whole input.
+  // Jobs in flight that could still leave a tail, by generation; a singleton adjudicates its whole input.
   const openBy: number[] = [];
   const openBefore = (generation: number) => openBy.slice(0, generation).reduce((n, c) => n + c, 0);
+  const flushes = { full: 0, drain: 0, eager: 0 };
   let failure: { reason: unknown } | undefined;
   let settle!: { resolve: () => void; reject: (reason: unknown) => void };
   const done = new Promise<void>((resolve, reject) => {
     settle = { resolve, reject };
   });
 
-  const dispatch = (job: ChunkJob) => {
+  const dispatch = (job: Job) => {
     if (failure !== undefined) return;
     inFlight += 1;
     const open = job.indices.length > 1 ? 1 : 0;
     openBy[job.generation] = (openBy[job.generation] ?? 0) + open;
-    runChunk(job)
+    send(job)
       .then(undefined, (reason) => {
         failure ??= { reason };
       })
@@ -420,32 +488,26 @@ export async function factorisedFactoryCall(
       });
   };
 
-  /**
-   * Every chunk but the last the packer builds from `pending` is full: the next element did not fit
-   * it. The last waits only for chunks of an earlier generation, the ones whose tails could still join it.
-   */
   const flush = () => {
     const generation = pendingGeneration;
-    const delivery = currentDelivery();
-    const chunks = pack(
+    const jobs = pack(
       pending.sort((a, b) => a - b),
-      envelope,
+      generation,
     );
-    const remainder = chunks.pop();
-    for (const chunk of chunks)
-      dispatch({ indices: chunk, generation, delivery, timeoutSplits: TIMEOUT_SPLITS, depth: 0 });
-    flushes.full += chunks.length;
+    const remainder = jobs.pop();
+    for (const job of jobs) dispatch(job);
+    flushes.full += jobs.length;
     pending = [];
     pendingGeneration = 0;
     if (remainder === undefined) return;
-    const release = openBefore(generation) === 0 ? "drain" : continuations === "eager" ? "eager" : undefined;
+    const release = openBefore(generation) === 0 ? "drain" : eager ? "eager" : undefined;
     if (release === undefined) {
-      pending = [...remainder];
+      pending = [...remainder.indices];
       pendingGeneration = generation;
       return;
     }
     flushes[release] += 1;
-    dispatch({ indices: remainder, generation, delivery, timeoutSplits: TIMEOUT_SPLITS, depth: 0 });
+    dispatch(remainder);
   };
 
   const pump = () => {
@@ -464,48 +526,23 @@ export async function factorisedFactoryCall(
     if (inFlight === 0) settle.resolve();
   };
 
-  try {
-    for (const chunk of chunks) {
-      dispatch({ indices: chunk, generation: 0, delivery: opening, timeoutSplits: TIMEOUT_SPLITS, depth: 0 });
-    }
-    pump();
-    await done;
-  } finally {
-    const unresolved = declined("gas").length;
-    facet?.set({
-      ...cost.fields(),
-      elements_fetched: outcomes.filter((o) => o?.kind === "resolved").length,
-      splits_count: splits.size + splits.timeout,
-      splits_size: splits.size,
-      splits_timeout: splits.timeout,
-      splits_max_depth: splits.maxDepth,
-      attempts_unresolved: pages.unresolvedAttempts,
-      pages_escalated: pages.unresolvedAttempts - unresolved,
-      pages_all_skipped: pages.allSkipped,
-      pages_continued: pages.continued,
-      continuations,
-      continuation_depth_max: Math.max(0, openBy.length - 1),
-      flushes: flushes.full + flushes.drain + flushes.eager,
-      flushes_full: flushes.full,
-      flushes_drain: flushes.drain,
-      flushes_eager: flushes.eager,
-      elements_declined_oversize: declined("preflight").length,
-      elements_missing: declined().length,
-      elements_unresolved: unresolved,
-      chunks_override: sent.override,
-      chunks_initcode: sent.initcode,
-      override_fallbacks: fallbacks.unsupported + fallbacks.unproven + fallbacks.exhausted,
-      override_fallbacks_unsupported: fallbacks.unsupported,
-      override_fallbacks_unproven: fallbacks.unproven,
-      override_fallbacks_exhausted: fallbacks.exhausted,
-    });
-  }
-
   return {
-    outputs: outcomes.map((o) => (o?.kind === "resolved" ? o.output : undefined)),
-    missing: declined(),
-    unresolved: declined("gas"),
-    oversize: declined("preflight"),
+    dispatch,
+    /** Pools `indices` for a later flush at `generation`, the one behind the job that left them. */
+    defer(indices: readonly number[], generation: number) {
+      pending.push(...indices);
+      if (generation > pendingGeneration) pendingGeneration = generation;
+    },
+    /** Settles once nothing is pending or in flight. */
+    run(): Promise<void> {
+      pump();
+      return done;
+    },
+    flushes,
+    /** The deepest generation dispatched: how many continuations lay behind the last tail. */
+    get generations() {
+      return Math.max(0, openBy.length - 1);
+    },
   };
 }
 
