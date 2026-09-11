@@ -147,7 +147,11 @@ APPS-1406 holds the full matrix with the probe figures.
   above Ethereum would flip the direction. None is known.
 - **The floor constant depends on the fork.** A fork that raises it (EIP-7976 is scheduled to) makes
   the predicate optimistic until the constant is bumped. In the meantime, a refused chunk halves on
-  the node's message.
+  the node's message. The other direction is that the floor is applied where it isn't in force: at a
+  pre-Prague block, or on a chain that never adopted EIP-7623. For a chunk of two or more that only
+  shortens the chunk. For a lone element it withholds a request the node could have served, and it
+  takes a lone element carrying more than the cap divided by 40 in bytes to reach that: over 250 KB
+  under a 10M cap. The packer doesn't know the request's block, so the check stays fork-agnostic.
 - **Pre-execution and parameter-shaped errors are matched by message.** An unfamiliar phrasing
   lands in the unproven branch. The cost is one wasted initcode retry per chunk, never a wrong
   answer.
