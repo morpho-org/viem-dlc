@@ -28,23 +28,24 @@ import type { HandlerContext } from "../../../../src/transports/cache/types.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
-import type { LensGas } from "../../../../src/utils/deployless/call.js";
+import { providerOf } from "../../../../src/utils/deployless/call.js";
 import {
   ENVELOPE_ADDRESS,
   envelopeConfig,
   FACTORY_BYTECODE_REVERT,
   OK_SENTINEL,
   unwrapDeploylessFactoryCall,
-  wrapDeploylessFactoryCall,
 } from "../../../../src/utils/deployless/codec.envelope.js";
 import {
+  abiToArray,
   arrayToWire,
-  hexToArray,
-  pageToWire,
+  pageToStream,
   resolveArrayFunction,
   wireToArray,
 } from "../../../../src/utils/deployless/codec.inner.js";
+import type { LensGas } from "../../../../src/utils/deployless/pricing.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
+import { wrapDeploylessFactoryCall } from "../../../helpers/envelope.js";
 import { createStubLogger, findDotted } from "../../../helpers/logger.js";
 import { flatGas } from "../../../helpers/page.js";
 
@@ -145,7 +146,7 @@ function ctx(requestFn: HandlerContext["requestFn"], store = new MemoryStore()):
     coalesce: createCoalescingMutex().coalesce,
     requestFn,
     chainId,
-    chain: chainDefinition(chainId),
+    provider: providerOf(chainDefinition(chainId), undefined),
     binSize: 10_000,
     invalidationStrategy: () => 0,
     facetId: createFacetId(cacheTransportKey),
@@ -182,7 +183,7 @@ function initcodeShaped(params: readonly unknown[]): Hex {
 /** The raw element bytes viem's encoding of `values` yields for the array type `types`. */
 function elementsOf(types: string, values: readonly unknown[]): readonly Hex[] {
   const layout = types === "uint256[]" ? WORD : DYNAMIC;
-  return hexToArray(layout, encodeAbiParameters([{ type: types }], [values] as never));
+  return abiToArray(layout, encodeAbiParameters([{ type: types }], [values] as never));
 }
 
 /** Builds a viem-shaped error whose `.data` field carries OK_SENTINEL || payload. */
@@ -195,7 +196,7 @@ function revertWithSentinel(payload: Hex): Error & { data: Hex } {
 function pageRevert(types: string, results: readonly unknown[], skipped: readonly number[], died?: number) {
   const gas = flatGas(results.length + skipped.length);
   const page = { results: elementsOf(types, results), skipped, gas, ...(died === undefined ? {} : { died }) };
-  return revertWithSentinel(pageToWire(page));
+  return revertWithSentinel(pageToStream(page));
 }
 
 type LensBehavior = {
@@ -465,7 +466,7 @@ describe("handleEthCall", () => {
       const gas = { fixed: 0, item: { avg: 1_000_000 } };
 
       const result = await handleEthCall(
-        { ...ctx(requestFn), gasLimit: 2_500_000 },
+        { ...ctx(requestFn), provider: providerOf(chainDefinition(chainId), 2_500_000) },
         createRequest(accounts, { batch: { gas } }),
       );
 

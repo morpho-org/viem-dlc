@@ -26,3 +26,10 @@ contract StaticLens {
         return x.a * 2;
     }
 }
+
+/// A paginated lens with a dynamic input and a dynamic output: every item is its own input, twice.
+contract EchoLens {
+    function item(bytes calldata x) external pure returns (bytes memory) {
+        return abi.encodePacked(x, x);
+    }
+}

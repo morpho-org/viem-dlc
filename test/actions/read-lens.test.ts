@@ -22,7 +22,7 @@ import {
 } from "../../src/utils/deployless/codec.envelope.js";
 import {
   arrayifiedAbi,
-  pageToWire,
+  pageToStream,
   resolveArrayFunction,
   wireToArray,
 } from "../../src/utils/deployless/codec.inner.js";
@@ -89,7 +89,7 @@ function mockEnvelope(decline: number) {
 
     const err = new Error("execution reverted") as Error & { data: Hex };
     err.data =
-      `${OK_SENTINEL}${pageToWire({ results, skipped: [decline], gas: flatGas(users.length) }).slice(2)}` as Hex;
+      `${OK_SENTINEL}${pageToStream({ results, skipped: [decline], gas: flatGas(users.length) }).slice(2)}` as Hex;
     throw err;
   });
 }

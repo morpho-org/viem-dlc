@@ -449,7 +449,7 @@ to `{ results, skipped }` typed from the per-item fragment; only one-parameter, 
 `view`/`pure` names are accepted as `functionName`. Plain `readContract` with `arrayifiedAbi` and
 the same fragment in `policy` remains the escape hatch.
 
-**The decoder is the protocol boundary.** `hexToPage` binds every record to its ordinal: `nA ≥ 1`
+**The decoder is the protocol boundary.** `streamToPage` binds every record to its ordinal: `nA ≥ 1`
 and `≤ remaining bytes / 32`, checked before any allocation; exactly `nA` records consuming the
 payload exactly; a decline must equal `j`; a death must satisfy `~value == j` and `j == nA − 1`; a
 success must have `L == outSize` for a static layout, or `L ≥ 32`, `L % 32 == 0` for a dynamic
@@ -609,7 +609,7 @@ Behind `failover`, each branch states its own.
   error selectors and their exact-length detectors, `envelopeConfig`, wrap/unwrap with the
   `n ‖ bodyLen ‖ body` framing and the compression bit, the `cause`-chain revert-data walk.
 - `src/utils/deployless/codec.inner.ts`: `arrayifiedAbi`, `itemFragmentOf`, `resolveArrayFunction`,
-  `arrayToWire` / `wireToArray`, `hexToPage` / `pageToWire`, `pageToHex`.
+  `arrayToWire` / `wireToArray`, `streamToPage` / `pageToStream`, `pageToAbi`.
 - `src/utils/deployless/call.ts`: `factorisedFactoryCall` — packing, the prediction and its two
   parameter sources, the pool, the pending list and its two modes, escalation, halving, the fields;
   `LensGas`, `ContinuationMode`.
@@ -667,7 +667,7 @@ Yul through the package's own script and fails if the pasted constant has drifte
 nested arrays and dynamic types; the record decoder accepts every kind and rejects a short header,
 `nA` the payload cannot hold, unbound ordinals, a non-final or repeated death, the unused namespace,
 wrong-size and misaligned results, trailing bytes, and each inconsistent telemetry tuple;
-`pageToWire ∘ hexToPage` round-trips. The transports and handler: one case per outcome row; a
+`pageToStream ∘ streamToPage` round-trips. The transports and handler: one case per outcome row; a
 mid-chunk death retried exactly once alone; a singleton death terminal and surfaced as a plain
 skip; a previous-format page propagated as an ordinary revert; the four thrown selectors never
 halved; the opening wave sized from the cap and the cost, with the fixed cost, the spread and the

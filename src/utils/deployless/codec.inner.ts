@@ -123,10 +123,6 @@ export function resolveArrayFunction(fragment: AbiFunction): ResolvedArrayFuncti
   };
 }
 
-/*//////////////////////////////////////////////////////////////
-                          HEX <-> ARRAY
-//////////////////////////////////////////////////////////////*/
-
 /**
  * Slices a single-parameter tuple encoding `(T[])` into its per-element raw byte
  * slices. `encoded` matches what `encodeAbiParameters([arrayParam], [array])` returns
@@ -135,14 +131,14 @@ export function resolveArrayFunction(fragment: AbiFunction): ResolvedArrayFuncti
  * calls this with both function calldata bodies (after the 4-byte selector) and raw
  * `eth_call` response hex, both of which are in this layout.
  */
-export function hexToArray(layout: ElementLayout, encoded: Hex): readonly Hex[] {
+export function abiToArray(layout: ElementLayout, encoded: Hex): readonly Hex[] {
   if (encoded.length < 2 + 64) {
     throw new Error("array encoding shorter than a parameter-tuple offset");
   }
-  return sliceArray(layout, encoded, readUint256(encoded, 0), hexByteLength(encoded));
+  return sliceArray(layout, encoded, readSize(encoded, 0), hexByteLength(encoded));
 }
 
-/** The envelope's gas telemetry for one page, ahead of its records — see {@link hexToPage}. */
+/** The envelope's gas telemetry for one page, ahead of its records — see {@link streamToPage}. */
 export type PageGas = {
   /** What the loop could spend on attempts: the frame's gas at the loop's start, less the reserve every admission keeps. */
   budget: bigint;
@@ -154,7 +150,7 @@ export type PageGas = {
   max: bigint;
 };
 
-/** A page: what one envelope call adjudicated, in the order it was attempted — see {@link hexToPage}. */
+/** A page: what one envelope call adjudicated, in the order it was attempted — see {@link streamToPage}. */
 export type Page = {
   /** Raw element bytes for the attempted-and-served items, in input order. */
   results: readonly Hex[];
@@ -180,10 +176,10 @@ const SUCCESS_BIT = 1n << 255n;
  * gas words must be consistent with each other, so anything this accepts is a well-formed page; it
  * is the protocol boundary for responses.
  */
-export function hexToPage(layout: ElementLayout, encoded: Hex): Page {
+export function streamToPage(layout: ElementLayout, encoded: Hex): Page {
   const totalBytes = hexByteLength(encoded);
   if (totalBytes < PAGE_HEADER_BYTES) throw new Error("page shorter than its header");
-  const attempted = readUint256(encoded, 0);
+  const attempted = readSize(encoded, 0);
   if (attempted < 1) throw new Error("page adjudicated no elements");
   if (attempted > (totalBytes - PAGE_HEADER_BYTES) / 32) {
     throw new Error(`page claims ${attempted} records in ${totalBytes} bytes`);
@@ -246,8 +242,8 @@ function checkPageGas({ sum, sumSquares, max }: PageGas, served: bigint): void {
   if (!consistent) throw new Error("page gas telemetry is inconsistent");
 }
 
-/** Inverse of {@link hexToPage}; builds envelope responses in tests and mocks. */
-export function pageToWire({ results, skipped, died, gas }: Page): Hex {
+/** Inverse of {@link streamToPage}; builds envelope responses in tests and mocks. */
+export function pageToStream({ results, skipped, died, gas }: Page): Hex {
   const attempted = results.length + skipped.length + (died === undefined ? 0 : 1);
   const declined = new Set(skipped);
   if (declined.size !== skipped.length || skipped.some((i) => i >= attempted || i === died)) {
@@ -255,7 +251,7 @@ export function pageToWire({ results, skipped, died, gas }: Page): Hex {
   }
   if (died !== undefined && died !== attempted - 1) throw new Error("page death is not its last record");
   let out =
-    writeUint256(attempted) +
+    writeSize(attempted) +
     writeWord(gas.budget) +
     writeWord(gas.fixed) +
     writeWord(gas.sum) +
@@ -263,7 +259,7 @@ export function pageToWire({ results, skipped, died, gas }: Page): Hex {
     writeWord(gas.max);
   for (let j = 0, served = 0; j < attempted; j++) {
     if (j === died) out += writeWord(BigInt(j) ^ UINT256_MAX);
-    else if (declined.has(j)) out += writeUint256(j);
+    else if (declined.has(j)) out += writeSize(j);
     else {
       const result = results[served++]!;
       out += writeWord(SUCCESS_BIT | BigInt(hexByteLength(result))) + result.slice(2);
@@ -277,22 +273,18 @@ export function pageToWire({ results, skipped, died, gas }: Page): Hex {
  * Emits `[offset=0x20][length][inner tuple]`. Element bytes for a dynamic layout must
  * be the tail bytes that originally sat at each offset.
  */
-export function arrayToHex(layout: ElementLayout, elements: readonly Hex[]): Hex {
-  return `0x${writeUint256(32)}${encodeArrayBody(layout, elements)}` as Hex;
+export function arrayToAbi(layout: ElementLayout, elements: readonly Hex[]): Hex {
+  return `0x${writeSize(32)}${encodeArrayBody(layout, elements)}` as Hex;
 }
 
 /** Encodes the caller-facing `(U[] results, uint256[] skipped)` ABI tuple; a death never reaches it. */
-export function pageToHex(layout: ElementLayout, { results, skipped }: Pick<Page, "results" | "skipped">): Hex {
+export function pageToAbi(layout: ElementLayout, { results, skipped }: Pick<Page, "results" | "skipped">): Hex {
   const resultsBody = encodeArrayBody(layout, results);
-  const skippedWords = skipped.map((i) => `0x${writeUint256(i)}` as Hex);
+  const skippedWords = skipped.map((i) => `0x${writeSize(i)}` as Hex);
   const skippedBody = encodeArrayBody({ mode: "static", size: 32 }, skippedWords);
   const skippedAt = 64 + resultsBody.length / 2;
-  return `0x${writeUint256(64)}${writeUint256(skippedAt)}${resultsBody}${skippedBody}` as Hex;
+  return `0x${writeSize(64)}${writeSize(skippedAt)}${resultsBody}${skippedBody}` as Hex;
 }
-
-/*//////////////////////////////////////////////////////////////
-                         ARRAY BODY CODEC
-//////////////////////////////////////////////////////////////*/
 
 /**
  * Slices the array whose length word sits at `arrayAt`, treating `regionEnd` as the end of its
@@ -303,7 +295,7 @@ function sliceArray(layout: ElementLayout, encoded: Hex, arrayAt: number, region
   if (arrayAt + 32 > regionEnd) {
     throw new Error("array encoding shorter than declared length position");
   }
-  const length = readUint256(encoded, arrayAt);
+  const length = readSize(encoded, arrayAt);
   const innerStartBytes = arrayAt + 32;
   const innerStartHex = 2 + innerStartBytes * 2;
   const innerBytes = regionEnd - innerStartBytes;
@@ -355,7 +347,7 @@ function sliceArray(layout: ElementLayout, encoded: Hex, arrayAt: number, region
 
 /** Emits `[length][inner tuple]` — the body {@link sliceArray} reads, without a leading offset. */
 function encodeArrayBody(layout: ElementLayout, elements: readonly Hex[]): string {
-  const lengthWord = writeUint256(elements.length);
+  const lengthWord = writeSize(elements.length);
   const body = elements.map((e) => e.slice(2)).join("");
 
   if (layout.mode === "static") {
@@ -367,7 +359,7 @@ function encodeArrayBody(layout: ElementLayout, elements: readonly Hex[]): strin
   let cursor = elements.length * 32;
   const head = elements
     .map((el) => {
-      const word = writeUint256(cursor);
+      const word = writeSize(cursor);
       cursor += hexByteLength(el);
       return word;
     })
@@ -378,10 +370,6 @@ function encodeArrayBody(layout: ElementLayout, elements: readonly Hex[]): strin
 function hexByteLength(hex: Hex): number {
   return (hex.length - 2) / 2;
 }
-
-/*//////////////////////////////////////////////////////////////
-                     CALLDATA / WIRE <-> ARRAY
-//////////////////////////////////////////////////////////////*/
 
 /**
  * Verifies the selector prefix of `targetData` against `resolved` and slices the input
@@ -395,27 +383,27 @@ export function calldataToArray(resolved: ResolvedArrayFunction, calldata: Hex):
   if (givenSelector !== resolved.selector.toLowerCase()) {
     throw new Error(`eth_call selector ${givenSelector} does not match policy abi selector ${resolved.selector}`);
   }
-  return hexToArray(resolved.inputLayout, `0x${calldata.slice(10)}` as Hex);
+  return abiToArray(resolved.inputLayout, `0x${calldata.slice(10)}` as Hex);
 }
 
 /**
  * The envelope's input wire, `n ‖ bodyLen ‖ body`: the body is `n` strides for a static layout
  * (byte-identical to the ABI array body) or `n` records `L ‖ E` for a dynamic one, `E` the padded
- * ABI tail {@link hexToArray} yields. Compression, when used, applies to the body alone.
+ * ABI tail {@link abiToArray} yields. Compression, when used, applies to the body alone.
  */
 export function arrayToWire(layout: ElementLayout, elements: readonly Hex[]): Hex {
   const body = elements
-    .map((e) => (layout.mode === "static" ? e.slice(2) : writeUint256(hexByteLength(e)) + e.slice(2)))
+    .map((e) => (layout.mode === "static" ? e.slice(2) : writeSize(hexByteLength(e)) + e.slice(2)))
     .join("");
-  return `0x${writeUint256(elements.length)}${writeUint256(body.length / 2)}${body}` as Hex;
+  return `0x${writeSize(elements.length)}${writeSize(body.length / 2)}${body}` as Hex;
 }
 
 /** Inverse of {@link arrayToWire}, with the envelope's own checks; for tests and mocks. */
 export function wireToArray(layout: ElementLayout, wire: Hex): readonly Hex[] {
   const totalBytes = hexByteLength(wire);
   if (totalBytes < 64) throw new Error("wire shorter than its header");
-  const n = readUint256(wire, 0);
-  if (64 + readUint256(wire, 32) !== totalBytes) throw new Error("wire body length does not match the payload");
+  const n = readSize(wire, 0);
+  if (64 + readSize(wire, 32) !== totalBytes) throw new Error("wire body length does not match the payload");
   const out: Hex[] = new Array(n);
   let at = 64;
   for (let i = 0; i < n; i++) {
@@ -423,7 +411,7 @@ export function wireToArray(layout: ElementLayout, wire: Hex): readonly Hex[] {
     if (layout.mode === "static") length = layout.size;
     else {
       if (at + 32 > totalBytes) throw new Error(`wire element ${i} has no length word`);
-      length = readUint256(wire, at);
+      length = readSize(wire, at);
       at += 32;
       if (length < 32 || length % 32 !== 0) throw new Error(`wire element ${i} declares ${length} bytes`);
     }
@@ -435,12 +423,8 @@ export function wireToArray(layout: ElementLayout, wire: Hex): readonly Hex[] {
   return out;
 }
 
-/*//////////////////////////////////////////////////////////////
-                            PRIVATE
-//////////////////////////////////////////////////////////////*/
-
 /** Reads a 32-byte big-endian unsigned integer from `hex` at byte offset `byteOffset`. */
-function readUint256(hex: string, byteOffset: number): number {
+function readSize(hex: string, byteOffset: number): number {
   const start = 2 + byteOffset * 2;
   // Upper 31 bytes must be zero for length/offset fields — Number is sufficient for realistic sizes.
   const value = hex.slice(start, start + 64);
@@ -451,7 +435,7 @@ function readUint256(hex: string, byteOffset: number): number {
   return n;
 }
 
-function writeUint256(n: number): string {
+function writeSize(n: number): string {
   return n.toString(16).padStart(64, "0");
 }
 

@@ -31,7 +31,7 @@ import {
   OOG_SENTINEL,
   unwrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
-import { type PageGas, pageToWire, wireToArray } from "../../src/utils/deployless/codec.inner.js";
+import { type PageGas, pageToStream, wireToArray } from "../../src/utils/deployless/codec.inner.js";
 import { copyGas, floorGas, wireSize } from "../../src/utils/deployless/pricing.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 import { flatGas, gasOf } from "../helpers/page.js";
@@ -136,7 +136,7 @@ function revertWithPage(results: readonly bigint[], skipped: readonly number[], 
     gas,
     ...(died === undefined ? {} : { died }),
   };
-  return revertWith(`${OK_SENTINEL}${pageToWire(page).slice(2)}` as Hex);
+  return revertWith(`${OK_SENTINEL}${pageToStream(page).slice(2)}` as Hex);
 }
 
 type LensBehavior = {
@@ -1428,6 +1428,31 @@ describe("override delivery", () => {
     ]);
     expect(deliveries(requestFn)).toEqual(["override", "initcode", "override", "initcode"]);
     expect(field("override_fallbacks_unsupported")).toBe(2);
+  });
+
+  it("sends the tails an unproven fallback's pages leave behind by override", async () => {
+    let pending = true;
+    const requestFn = withOverride(
+      (serve) => {
+        if (!pending) return serve();
+        pending = false;
+        throw Object.assign(new Error("Internal Server Error"), { status: 500 });
+      },
+      mockPagedLens({ pageSize: 2 }),
+    );
+
+    const { result, field } = await withFacet(() => createTransport(requestFn).request(createRequest(four, OVERRIDE)));
+
+    // The tail the initcode retry's page left opens by override, as every chunk of the request does.
+    expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n]);
+    expect(requestedIndices(requestFn)).toEqual([
+      [1, 2, 3, 4],
+      [1, 2, 3, 4],
+      [3, 4],
+    ]);
+    expect(deliveries(requestFn)).toEqual(["override", "initcode", "override"]);
+    expect(paramsOf(requestFn, 2)[0]).toEqual({ to: ENVELOPE_ADDRESS, data: paramsOf(requestFn, 2)[0].data });
+    expect(field("override_fallbacks_unproven")).toBe(1);
   });
 
   it.each([

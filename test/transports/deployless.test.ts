@@ -22,7 +22,6 @@ import { withLogging } from "../../src/observability.js";
 import { type DeploylessConfig, deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../src/types.js";
-import type { LensGas } from "../../src/utils/deployless/call.js";
 import {
   COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR,
   ENVELOPE_ADDRESS,
@@ -32,9 +31,15 @@ import {
   OK_SENTINEL,
   OOG_SENTINEL,
   unwrapDeploylessFactoryCall,
-  wrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
-import { arrayToWire, pageToWire, resolveArrayFunction, wireToArray } from "../../src/utils/deployless/codec.inner.js";
+import {
+  arrayToWire,
+  pageToStream,
+  resolveArrayFunction,
+  wireToArray,
+} from "../../src/utils/deployless/codec.inner.js";
+import type { LensGas } from "../../src/utils/deployless/pricing.js";
+import { wrapDeploylessFactoryCall } from "../helpers/envelope.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 import { flatGas } from "../helpers/page.js";
 
@@ -155,7 +160,7 @@ function revertRaw(data: Hex): Error & { data: Hex } {
 
 function pageRevert(results: readonly bigint[], skipped: readonly number[] = []) {
   return revertWithSentinel(
-    pageToWire({
+    pageToStream({
       results: results.map((r) => `0x${word(r)}` as Hex),
       skipped,
       gas: flatGas(results.length + skipped.length),
@@ -322,7 +327,7 @@ describe("deployless", () => {
       const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
         const sent = decodeSentAddresses((args.params[0] as { data: Hex }).data);
         throw revertWithSentinel(
-          pageToWire({
+          pageToStream({
             results: sent.map((a) => `0x${word(a).repeat(8)}` as Hex),
             skipped: [],
             gas: flatGas(sent.length),
@@ -516,7 +521,7 @@ describe("deployless", () => {
     });
 
     it("decodes sentinel data from an intermediate BaseError", async () => {
-      const encoded = pageToWire({ results: [`0x${word(1)}`], skipped: [], gas: flatGas(1) });
+      const encoded = pageToStream({ results: [`0x${word(1)}`], skipped: [], gas: flatGas(1) });
       const dataError = Object.assign(new BaseError("rpc", { cause: new Error("inner") }), {
         data: `${OK_SENTINEL}${encoded.slice(2)}` as Hex,
       });

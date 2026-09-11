@@ -24,7 +24,9 @@ contract EnvelopeTest {
     /// What a mode-6 element leaves itself to return with: a little over the return's own cost.
     uint256 constant DRAIN_TO = 60;
 
-    uint256 constant STATIC_CFG = uint256(uint32(StaticLens.item.selector)) << 224 | 64 << 64 | 32;
+    function staticCfg(bool compressed) internal pure returns (uint256) {
+        return Env.config(StaticLens.item.selector, false, 64, false, 32, compressed);
+    }
 
     function staticInputs(uint256[] memory a, uint256[] memory mode) internal pure returns (bytes memory) {
         StaticLens.In[] memory xs = new StaticLens.In[](a.length);
@@ -33,7 +35,7 @@ contract EnvelopeTest {
     }
 
     function staticIc(uint256[] memory a, uint256[] memory mode) internal view returns (bytes memory) {
-        return Env.wrap(envelope, address(factory), type(StaticLens).creationCode, staticInputs(a, mode), STATIC_CFG);
+        return Env.wrap(envelope, address(factory), type(StaticLens).creationCode, staticInputs(a, mode), staticCfg(false));
     }
 
     function staticPage(uint256[] memory a, uint256[] memory mode) internal returns (bytes memory) {
@@ -432,10 +434,8 @@ contract EnvelopeTest {
         require(malformedInputOf(ret) == 3, "MalformedInput(n)");
     }
 
-    uint256 constant STATIC_CFG_Z = uint256(uint32(StaticLens.item.selector)) << 224 | 1 << 221 | 64 << 64 | 32;
-
     function compressedStaticIc(bytes memory w) internal view returns (bytes memory) {
-        return Env.wrap(envelope, address(factory), type(StaticLens).creationCode, w, STATIC_CFG_Z);
+        return Env.wrap(envelope, address(factory), type(StaticLens).creationCode, w, staticCfg(true));
     }
 
     /// 50,000 identical elements (3.2 MB of body, ~37 KiB of wire): a page under 2M, more under 10M.
@@ -796,7 +796,7 @@ contract EnvelopeTest {
     //////////////////////////////////////////////////////////////*/
 
     function staticArgs(uint256[] memory a, uint256[] memory mode) internal view returns (bytes memory) {
-        return Env.args(address(factory), type(StaticLens).creationCode, staticInputs(a, mode), STATIC_CFG);
+        return Env.args(address(factory), type(StaticLens).creationCode, staticInputs(a, mode), staticCfg(false));
     }
 
     function deliveries(bytes memory args) internal returns (Env.Page memory ic, Env.Page memory ov) {
@@ -848,7 +848,7 @@ contract EnvelopeTest {
     function test_delivery_compressed() public {
         bytes memory w = Env.compress(staticInputs(values(6), modes(6)));
         (Env.Page memory ic, Env.Page memory ov) =
-            deliveries(Env.args(address(factory), type(StaticLens).creationCode, w, STATIC_CFG_Z));
+            deliveries(Env.args(address(factory), type(StaticLens).creationCode, w, staticCfg(true)));
         sameDelivery(ic, ov, "compressed");
         require(Env.uints(ic).length == 6, "page");
     }
@@ -867,7 +867,7 @@ contract EnvelopeTest {
 
     function test_delivery_factorySeesTheEnvelope() public {
         StrictFactory strict = new StrictFactory();
-        bytes memory args = Env.args(address(strict), type(StaticLens).creationCode, staticInputs(values(2), modes(2)), STATIC_CFG);
+        bytes memory args = Env.args(address(strict), type(StaticLens).creationCode, staticInputs(values(2), modes(2)), staticCfg(false));
         // Creation delivery reaches ENVELOPE_ADDRESS only when the zero account at nonce 0 CREATEs it.
         Env.VM.etch(address(0), type(Runner).runtimeCode);
         Env.Page memory ic = Env.page(Runner(address(0)).exec(abi.encodePacked(envelope, args)));
@@ -917,9 +917,9 @@ contract EnvelopeTest {
 
     function test_prologue_copyTerm_compressed() public {
         bytes memory small =
-            Env.args(address(factory), type(StaticLens).creationCode, Env.compress(staticInputs(values(5), modes(5))), STATIC_CFG_Z);
+            Env.args(address(factory), type(StaticLens).creationCode, Env.compress(staticInputs(values(5), modes(5))), staticCfg(true));
         bytes memory large =
-            Env.args(address(factory), type(StaticLens).creationCode, Env.compress(staticInputs(values(500), modes(500))), STATIC_CFG_Z);
+            Env.args(address(factory), type(StaticLens).creationCode, Env.compress(staticInputs(values(500), modes(500))), staticCfg(true));
         withinOnePercent(prologueOf(large) - prologueOf(small), copy(large.length, true) - copy(small.length, true), "compressed");
     }
 }

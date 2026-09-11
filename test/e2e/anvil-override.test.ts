@@ -12,9 +12,11 @@ import {
   createPublicClient,
   createWalletClient,
   custom,
+  encodeAbiParameters,
   getContractAddress,
   http,
   pad,
+  parseAbiParameters,
   toHex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -27,17 +29,31 @@ import { withLogging } from "../../src/observability.js";
 import { deployless } from "../../src/transports/deployless/index.js";
 import type { EnvelopeDelivery } from "../../src/utils/deployless/codec.envelope.js";
 import {
+  decodeEnvelopeRevert,
   deliveryParams,
   ENVELOPE_ADDRESS,
   encodeEnvelopeArgs,
   envelopeConfig,
-  extractRevertData,
   FACTORY_BYTECODE_REVERT,
 } from "../../src/utils/deployless/codec.envelope.js";
-import { arrayifiedAbi, arrayToWire, resolveArrayFunction } from "../../src/utils/deployless/codec.inner.js";
+import {
+  abiToArray,
+  arrayifiedAbi,
+  arrayToWire,
+  resolveArrayFunction,
+  streamToPage,
+} from "../../src/utils/deployless/codec.inner.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 
-import { ELEMENT_SIZE, FACTORY_BYTECODE, itemAbi, LENS_BYTECODE, lensAbi } from "./fixtures.js";
+import {
+  ECHO_LENS_BYTECODE,
+  ELEMENT_SIZE,
+  echoItemAbi,
+  FACTORY_BYTECODE,
+  itemAbi,
+  LENS_BYTECODE,
+  lensAbi,
+} from "./fixtures.js";
 
 const ANVIL_ACCOUNT_0 = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
 const SALT = pad("0x01", { size: 32 });
@@ -55,6 +71,13 @@ const hasAnvil = (() => {
 
 const solidity = resolveArrayFunction(arrayifiedAbi(itemAbi));
 const config = envelopeConfig(solidity, false);
+
+const DYNAMIC = { mode: "dynamic" } as const;
+const echoConfig = envelopeConfig(resolveArrayFunction(arrayifiedAbi(echoItemAbi)), true);
+
+/** Raw element bytes for a dynamic layout: each value's padded ABI tail. */
+const dynamicElements = (xs: readonly Hex[]) =>
+  abiToArray(DYNAMIC, encodeAbiParameters(parseAbiParameters("bytes[]"), [xs]));
 
 /** `n` elements of `item`'s input: `a = i + 1`, `mode = 0`, so the lens returns `2·(i + 1)`. */
 const inputs = (n: number) => Array.from({ length: n }, (_, i) => ({ a: BigInt(i + 1), mode: 0n }));
@@ -126,6 +149,8 @@ describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
   let factory: Address;
   let target: Address;
   let factoryData: Hex;
+  let echoTarget: Address;
+  let echoFactoryData: Hex;
   let rpc: (params: unknown[]) => Promise<Hex>;
 
   beforeAll(async () => {
@@ -142,6 +167,8 @@ describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
     factory = (await publicClient.waitForTransactionReceipt({ hash })).contractAddress!;
     factoryData = concat([SALT, LENS_BYTECODE]);
     target = getContractAddress({ opcode: "CREATE2", from: factory, salt: SALT, bytecode: LENS_BYTECODE });
+    echoFactoryData = concat([SALT, ECHO_LENS_BYTECODE]);
+    echoTarget = getContractAddress({ opcode: "CREATE2", from: factory, salt: SALT, bytecode: ECHO_LENS_BYTECODE });
     rpc = (params) => publicClient.request({ method: "eth_call", params } as never) as Promise<Hex>;
   }, 60_000);
 
@@ -157,7 +184,7 @@ describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
         target: { address: target, factory, factoryData },
         targetData: arrayToWire({ mode: "static", size: ELEMENT_SIZE }, elements),
       },
-      { compress: false, config },
+      config,
     );
   };
 
@@ -169,9 +196,9 @@ describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
     expect(upstreamMessage(refused)).toMatch(/initcode/i);
 
     const error = await rpc(deliveryParams("override", tuple, ["latest"], undefined)).catch((e) => e);
-    const page = extractRevertData(error);
-    if (!page.ok) throw new Error(`no page by override: ${upstreamMessage(error)}`);
-    expect(adjudicated(page.returnData)).toBe(ELEMENTS);
+    const page = decodeEnvelopeRevert(error);
+    if (page?.kind !== "page") throw new Error(`no page by override: ${upstreamMessage(error)}`);
+    expect(adjudicated(page.data)).toBe(ELEMENTS);
   });
 
   it("returns 0x when the state override is dropped, as an ignoring provider would", async () => {
@@ -190,6 +217,27 @@ describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
     // which viem renders as "Missing or invalid parameters"; the phrase the packer halves on is on
     // the innermost cause, where `classifyChunkError` reads it.
     expect(upstreamMessage(error)).toMatch(/floor data gas|intrinsic gas/i);
+  });
+
+  it("serves a dynamic input to a dynamic output through a compressed wire", async () => {
+    const xs: Hex[] = ["0x01", "0x0203", `0x${"ab".repeat(200)}`];
+    const tuple = encodeEnvelopeArgs(
+      {
+        target: { address: echoTarget, factory, factoryData: echoFactoryData },
+        targetData: arrayToWire(DYNAMIC, dynamicElements(xs)),
+      },
+      echoConfig,
+    );
+
+    const error = await rpc(deliveryParams("override", tuple, ["latest"], undefined)).catch((e) => e);
+    const page = decodeEnvelopeRevert(error);
+    if (page?.kind !== "page") throw new Error(`no page by override: ${upstreamMessage(error)}`);
+
+    // The three bits the static lens never sets — input-dynamic, output-dynamic, compressed —
+    // against the bytecode that reads them.
+    const { results, skipped } = streamToPage(DYNAMIC, page.data);
+    expect(skipped).toEqual([]);
+    expect(results).toEqual(dynamicElements(xs.map((x) => concat([x, x]))));
   });
 
   /** Every element through a fresh deployless client on `transport`, the lens still counterfactual. */
