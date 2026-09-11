@@ -468,37 +468,48 @@ linear shrink for measures that are not perfectly monotone (the compressed byte 
 chunk is a list of indices into the caller's array, ascending but not necessarily contiguous.
 
 The prediction. One predicate decides every chunk: `k` elements over the chunk's bytes fit when,
-beside the byte cap,
+beside the byte cap, both lines hold
 
 ```
-k = 1    or    intrinsic(bytes) + fixed + k·avg + z·stddev·√k ≤ cap
+21,000 + 10·zeros + 40·nonzeros ≤ cap
+k = 1    or    intrinsic(d) + copy(a) + fixed₀ + k·avg + z·stddev·√k ≤ cap
 ```
 
-with `intrinsic` what the node deducts before the envelope's first `gas()` returns — the
-transaction and creation base, calldata by byte (EIP-2028), initcode by word (EIP-3860), and that
-opcode's own 2 — computed from the chunk's exact bytes: prefix sums of zero and non-zero bytes on
-the clear path plus the four wrapper words whose zero bytes depend on the chunk; the wrapped chunk
-itself on the compressed path. `z = PACKING_SIGMAS = 2`. A lone element always fits: the estimate
-may shorten a chunk but never withhold an element, so the envelope decides what is served.
+with `intrinsic(d)` what the node deducts for this delivery `d` before the envelope's first `gas()`
+returns — the transaction base, calldata by byte (EIP-2028), as initcode the creation base and the
+initcode words (EIP-3860), and that opcode's own 2 — computed from the chunk's exact bytes: prefix
+sums of zero and non-zero bytes on the clear path plus the four wrapper words whose zero bytes
+depend on the chunk; the wrapped chunk itself on the compressed path. `copy(a)` is what the
+prologue spends copying the `a`-byte argument tuple into memory and expanding to the slab, and
+`fixed₀` the largest observed prologue less the copy of its own chunk, so the byte-dependent part of
+a page's `fixed` is charged against the candidate rather than against the page it was measured on.
+The first line is EIP-7623's floor, which a node checks before anything runs. `z = PACKING_SIGMAS =
+2`. A lone element always fits the item line: that estimate may shorten a chunk but never withhold
+an element, so the envelope decides what is served. The byte lines bind a lone element too — they
+are what the protocol and the frame charge before an attempt — so an element above them is declined
+as oversize, exactly as one above the byte cap is. The delivery, `copy` and the floor are derived in
+`000016-tib-override-delivered-envelope.md`.
 
 The parameters have two sources. Before any page has landed they are stated:
 `deployless(http(url), { gasLimit })` and `gasLimit` in the `cache` config name the provider's
-`eth_call` cap, one per transport instance; `policy({ batch: { gas: { fixed, item: { avg, stddev? }
-} } })` states the lens's cost in the units the wide event reports it. With either side missing, or
-any figure unusable or malformed, the opening wave packs by bytes alone. From the first page on they
-are observed. Every page's telemetry is pooled over the request — `cap` the smallest
-`intrinsic + fixed + budget` any page implied, `fixed` the largest, `served`, `sum`, `sumSquares`,
-`max` accumulated — and the predicate runs on `cap`, `fixed`, `μ = sum / served` and
+`eth_call` cap, one per transport instance, sent as each chunk's `gas` on chains whose definition
+says the nodes need it (see Notes); `policy({ batch: { gas: { fixed, item: { avg, stddev? }
+} } })` states the lens's cost in the units the wide event reports it. With `gasLimit` but no usable
+lens cost the byte lines still run against the stated cap and items pack by bytes alone; with no
+`gasLimit` the opening wave packs by bytes alone outright. From the first page on they are observed.
+Every page's telemetry is pooled over the request — `cap` the smallest `intrinsic + fixed + budget`
+any page implied, `fixed₀` the largest prologue less that page's own copy, `served`, `sum`,
+`sumSquares`, `max` accumulated — and the predicate runs on `cap`, `fixed₀`, `μ = sum / served` and
 `σ² = (served·sumSquares − sum²) / served²`. While no attempt has been costed the stated item cost
 fills in against the observed cap, else bytes alone. `PageGas.budget` excludes the reserve and
 `fixed` includes it, so `cap − intrinsic − fixed` counts it once. The stated cap therefore sizes
-the opening wave and nothing else, and the stated cost nothing after the first costed attempt, by
-construction: no later chunk consults them.
+the opening wave and nothing else in the prediction, and the stated cost nothing after the first
+costed attempt, by construction: no later chunk consults them.
 
-Two terms are estimates, both under Open risks: `fixed` grows with the chunk's bytes, and `min cap`
-with `max fixed` may combine pages that never co-occurred, which is conservative. On the compressed
-path bytes and zeros are not monotone in the prefix, so the search yields a fitting prefix rather
-than provably the longest, the heuristic the byte cap has always had.
+One term is an estimate, under Open risks: `min cap` with `max fixed₀` may combine pages that never
+co-occurred, which is conservative. On the compressed path bytes and zeros are not monotone in the
+prefix, so the search yields a fitting prefix rather than provably the longest, the heuristic the
+byte cap has always had.
 
 Flushes. The elements a page did not reach are not re-sent per parent. They wait in one pending
 list, and every chunk settling re-packs that list, sorted, from the pool as it stands. What is then
@@ -555,7 +566,7 @@ oversize rather than retried. So the request terminates without counters.
 | `attempts_unresolved`, `pages_escalated` | how often gas failed to resolve an element, and the singleton round trips that cost |
 | `splits_count`, `splits_size`, `splits_timeout`, `splits_max_depth` | provider refusals; any non-zero depth is pathology |
 | `elements_missing`, `elements_declined_oversize`, `elements_unresolved` | the caller-facing `skipped`, and its client-side and gas-terminal subsets |
-| `frame_gas`, `fixed_gas` | the smallest budget and the largest prologue any page reported |
+| `frame_gas`, `fixed_gas` | the smallest budget any page reported, and `fixed₀`: the largest prologue less the copy of its own chunk's bytes |
 | `item_gas_avg`, `item_gas_stddev`, `item_gas_max` | the pooled per-attempt cost |
 | `gas_limit_observed` | the smallest `intrinsic + fixed + budget`: the cap the provider actually granted |
 
@@ -736,10 +747,19 @@ element accounted for and no corpse.
   `readLens` aligns results to any order. A coalesced chunk mixes parents and shares less than the
   pages `μ` was measured on, so it costs a little more per element than predicted; the consequence
   is one continuation for that flush, whose own page pulls `μ` up.
-- **`fixed` is read off the largest page seen**, but grows with the chunk's bytes: the wire copy,
-  about 1.5k gas at 4 KiB and 15k at the wire cap. A chunk far larger than any page observed
-  over-packs by up to that, one continuation. Modelling it would put the envelope's memory layout
-  into the client; fitting a slope from two pages needs none if it ever matters.
+- **The prologue's copy of the chunk's bytes is modelled**, not carried inside an observed `fixed`:
+  it leaves `fixed₀` and is priced against the candidate (`000016-tib-override-delivered-envelope.md`).
+- **The cap is sent where the node needs it, and only there.** Probed on Monad mainnet
+  (2026-09-09): an `eth_call` with `gas` unspecified runs in a fixed 8.1M default, promoted to the
+  node's larger pool only on out-of-gas, which a paging envelope never is; with `gas` set it was
+  granted 150M and refused 199M as `gas limit too high`. On geth an unspecified `gas` is the cap and
+  a higher one is clamped, so sending would gain nothing and would hide the cap from
+  `gas_limit_observed` whenever the stated value is below it. Both are facts of the chain, so they
+  live in `src/chains` (`ethCall.gasWhenUnspecified`: `providerCap` | `fixedDefault`;
+  `ethCall.gasAboveCap`: `clamped` | `rejected`), keyed by the client's chain id with geth's
+  behaviour as the default, and `gasLimit` rides as `gas` only on a `fixedDefault` chain. There a
+  value above the cap is rejected and propagates as any other error, and `gas_limit_observed` reads
+  the stated value by construction.
 - **Route.** `budget` varies by provider; the pool takes the minimum over the request, so a request
   served by several nodes behind one URL packs to the smallest.
 - **The death is still censored.** Its cost is unknown by definition, and the only element whose
@@ -934,8 +954,8 @@ Dropping the term would reinstate that delta; a per-chain schedule would be a kn
 chain ever shows the residual costing a round trip, the slope is measurable without knowing the
 schedule: arrival gas is `fixed + budget`, the cap is constant across one provider's pages, so the
 change in arrival over the change in bytes is the chain's real cost per byte before the first
-attempt, and it absorbs `fixed`'s growth too. A two-point fit inside one request; declined until
-needed.
+attempt. A two-point fit inside one request; declined until needed. (`fixed`'s own growth with the
+chunk's bytes is modelled rather than fitted: `000016-tib-override-delivered-envelope.md`.)
 
 **Why a singleton is never refused by the prediction.** An estimate that could withhold an element
 would be load-bearing; the byte cap alone can, and that is a wire limit rather than a guess.
@@ -1058,8 +1078,9 @@ Declined along the way:
   **`batch.pageSizeHint`** and **a per-provider map of counts**; **`gasLimit` over a per-item cost
   alone**; **reporting the deploy's gas alone**; **`item_gas_max` as the item cost**; **a second
   `fits` predicate for continuations** (moot once one predicate packs every chunk); **a coalescing
-  timer** (`coalesceMs`); **modelling `fixed` against bytes** in the client; **a concurrency cap**
-  on flushes (the rate limiter shapes them); **`page_size_suggested`** (a data-independent count
+  timer** (`coalesceMs`); **modelling `fixed` against bytes** in the client (adopted since, in
+  `000016-tib-override-delivered-envelope.md`); **a concurrency cap** on flushes (the rate limiter
+  shapes them); **`page_size_suggested`** (a data-independent count
   made sense against a count hint; the tunables are stamped in their own units); **dropping or
   configuring the intrinsic term** for chains priced unlike Ethereum (the error mostly cancels after
   the first page; measuring the slope from arrival gas is the fix if it ever binds).

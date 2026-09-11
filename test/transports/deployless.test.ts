@@ -25,8 +25,10 @@ import type { EIP1193Parameters } from "../../src/types.js";
 import type { LensGas } from "../../src/utils/deployless/call.js";
 import {
   COUNTERFACTUAL_DEPLOY_FAILED_SELECTOR,
+  ENVELOPE_ADDRESS,
   envelopeConfig,
   FACTORY_BYTECODE_REVERT,
+  isRevertExpected,
   OK_SENTINEL,
   OOG_SENTINEL,
   unwrapDeploylessFactoryCall,
@@ -708,5 +710,47 @@ describe("deployless", () => {
       expect(requestFn).toHaveBeenCalledTimes(3); // 1 timed-out + 2 halves
       expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
     });
+  });
+});
+
+describe("isRevertExpected", () => {
+  const OTHER = "0x3333333333333333333333333333333333333333" as const;
+  const args = "0xf00dbabe" as Hex;
+  const initcode = `${FACTORY_BYTECODE_REVERT}${args.slice(2)}`;
+  const codeEntry = { [ENVELOPE_ADDRESS]: { code: FACTORY_BYTECODE_REVERT } };
+  const lower = ENVELOPE_ADDRESS.toLowerCase();
+
+  it.each([
+    ["the envelope delivered as initcode", [{ data: initcode }, "latest"]],
+    ["a call to the envelope's address carrying its code", [{ to: ENVELOPE_ADDRESS, data: args }, "latest", codeEntry]],
+    [
+      "the same call in lower case",
+      [{ to: lower, data: args }, "latest", { [lower]: { code: FACTORY_BYTECODE_REVERT } }],
+    ],
+  ])("expects the revert of %s", (_name, params) => {
+    expect(isRevertExpected({ method: "eth_call", params })).toBe(true);
+  });
+
+  it.each([
+    ["a call to the envelope's address with no state override", [{ to: ENVELOPE_ADDRESS, data: args }, "latest"]],
+    [
+      "a call to the envelope's address whose override names another",
+      [{ to: ENVELOPE_ADDRESS, data: args }, "latest", { [OTHER]: { balance: "0x1" } }],
+    ],
+    [
+      "an unrelated call to the envelope's address",
+      [{ to: ENVELOPE_ADDRESS, data: "0xdeadbeef" }, "latest", { [OTHER]: { code: "0x1234" } }],
+    ],
+    ["a call to another address carrying the entry", [{ to: OTHER, data: args }, "latest", codeEntry]],
+    [
+      "a call to the envelope's address with other code placed there",
+      [{ to: ENVELOPE_ADDRESS, data: args }, "latest", { [ENVELOPE_ADDRESS]: { code: "0x6001" } }],
+    ],
+  ])("does not expect the revert of %s", (_name, params) => {
+    expect(isRevertExpected({ method: "eth_call", params })).toBe(false);
+  });
+
+  it("is false for any method but eth_call", () => {
+    expect(isRevertExpected({ method: "eth_estimateGas", params: [{ data: initcode }, "latest"] })).toBe(false);
   });
 });

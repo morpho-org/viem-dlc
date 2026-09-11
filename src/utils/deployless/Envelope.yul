@@ -1,8 +1,10 @@
 /*
- * The envelope: initcode for a deployless eth_call over a paginated lens (Yul source).
+ * The envelope: a deployless eth_call over a paginated lens (Yul source), run as initcode or as
+ * runtime code placed by a state override (docs/000016-tib-override-delivered-envelope.md).
  * Design: docs/000016-tib-paginated-lenses.md.
  *
- * Constructor args (ABI tuple; viem's wrapper's four, plus a config word):
+ * Arguments (ABI tuple; viem's wrapper's four, plus a config word), trailing the initcode or sent
+ * as calldata:
  *   [0..32]:    target address
  *   [32..64]:   targetData offset
  *   [64..96]:   factory address
@@ -52,8 +54,12 @@ object "Envelope" {
             // Everything but [0, 0x80) scratch lives at or above `base`, which is what lets the
             // optimizer spill stack variables to memory if the loop needs it.
             let base := memoryguard(0x80)
-            let argsEnd := add(base, sub(codesize(), bytecodeLen))
-            codecopy(base, bytecodeLen, sub(argsEnd, base))
+            // One bytecode, two deliveries: as initcode the arguments trail the code and there is
+            // no calldata; as runtime code placed by a state override they are the calldata and
+            // nothing trails the code. Each copy is a no-op in the other delivery.
+            let argsEnd := add(add(base, sub(codesize(), bytecodeLen)), calldatasize())
+            codecopy(base, bytecodeLen, sub(codesize(), bytecodeLen))
+            calldatacopy(base, 0, calldatasize())
 
             let lens := mload(base)
             deploy(lens, mload(add(base, 0x40)), add(base, mload(add(base, 0x60))))

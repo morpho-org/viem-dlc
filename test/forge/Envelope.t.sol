@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import { DynInLens, DynOutLens, EchoLens, Env, Factory, HungryLens, Runner, StaticLens, WideLens } from "./Fixtures.sol";
+import { DynInLens, DynOutLens, EchoLens, Env, Factory, HungryLens, ImmLens, Runner, StaticLens, StrictFactory, WideLens } from "./Fixtures.sol";
 
 bytes4 constant OOG = 0xcc0bd34c;
 bytes4 constant DEPLOY_FAILED = 0x101bb98d;
@@ -789,5 +789,137 @@ contract EnvelopeTest {
         (xs[0], xs[1], xs[2], xs[3]) = (hex"01", hex"010203", new bytes(70), new bytes(64));
         Sweep memory s = boundarySweep(dynInIc(xs), 4);
         require(s.pages > 0 && s.maxAdjudicated == 4, "pages");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                              DELIVERIES
+    //////////////////////////////////////////////////////////////*/
+
+    function staticArgs(uint256[] memory a, uint256[] memory mode) internal view returns (bytes memory) {
+        return Env.args(address(factory), type(StaticLens).creationCode, staticInputs(a, mode), STATIC_CFG);
+    }
+
+    function deliveries(bytes memory args) internal returns (Env.Page memory ic, Env.Page memory ov) {
+        ic = Env.page(runner.exec(abi.encodePacked(envelope, args)));
+        ov = Env.page(runner.execOverride(envelope, args));
+    }
+
+    function sameDelivery(Env.Page memory ic, Env.Page memory ov, string memory what) internal pure {
+        require(ic.nA == ov.nA && ic.died == ov.died && ic.diedAt == ov.diedAt, string.concat(what, ": shape"));
+        require(ic.results.length == ov.results.length && ic.skipped.length == ov.skipped.length, string.concat(what, ": counts"));
+        for (uint256 i; i < ic.results.length; i++) {
+            require(keccak256(ic.results[i]) == keccak256(ov.results[i]), string.concat(what, ": result"));
+        }
+        for (uint256 i; i < ic.skipped.length; i++) {
+            require(ic.skipped[i] == ov.skipped[i], string.concat(what, ": skipped"));
+        }
+        require(ic.sum == ov.sum && ic.sumSq == ov.sumSq && ic.gmax == ov.gmax, string.concat(what, ": telemetry"));
+        require(ic.prologue == ov.prologue, string.concat(what, ": prologue"));
+    }
+
+    function test_delivery_static() public {
+        uint256[] memory m = modes(4);
+        m[1] = 2;
+        (Env.Page memory ic, Env.Page memory ov) = deliveries(staticArgs(values(4), m));
+        sameDelivery(ic, ov, "static");
+        require(Env.uints(ic).length == 3 && ic.skipped.length == 1 && ic.skipped[0] == 1, "page");
+    }
+
+    function test_delivery_dynamicInput() public {
+        bytes[] memory xs = new bytes[](4);
+        (xs[0], xs[1], xs[2], xs[3]) = (hex"01", hex"010203", new bytes(70), new bytes(64));
+        uint256 cfg = Env.config(DynInLens.item.selector, true, 0, false, 32, false);
+        (Env.Page memory ic, Env.Page memory ov) =
+            deliveries(Env.args(address(factory), type(DynInLens).creationCode, Env.wireDyn(xs), cfg));
+        sameDelivery(ic, ov, "dynamic in");
+        require(ic.results.length == 3 && ic.skipped.length == 1, "page");
+    }
+
+    function test_delivery_dynamicOutput() public {
+        uint256[] memory xs = new uint256[](5);
+        (xs[0], xs[1], xs[2], xs[3], xs[4]) = (1, 7, 33, 8, 100);
+        uint256 cfg = Env.config(DynOutLens.item.selector, false, 32, true, 0, false);
+        (Env.Page memory ic, Env.Page memory ov) =
+            deliveries(Env.args(address(factory), type(DynOutLens).creationCode, Env.wire(abi.encode(xs)), cfg));
+        sameDelivery(ic, ov, "dynamic out");
+        require(ic.results.length == 3 && ic.skipped.length == 2, "page");
+    }
+
+    function test_delivery_compressed() public {
+        bytes memory w = Env.compress(staticInputs(values(6), modes(6)));
+        (Env.Page memory ic, Env.Page memory ov) =
+            deliveries(Env.args(address(factory), type(StaticLens).creationCode, w, STATIC_CFG_Z));
+        sameDelivery(ic, ov, "compressed");
+        require(Env.uints(ic).length == 6, "page");
+    }
+
+    /// A lens whose values only exist once its constructor has run, deployed inside both frames.
+    function test_delivery_immutableAndStorageLens() public {
+        ImmLens.In[] memory xs = new ImmLens.In[](3);
+        for (uint256 i; i < xs.length; i++) xs[i] = ImmLens.In(i + 1, 0);
+        uint256 cfg = Env.config(ImmLens.item.selector, false, 64, false, 32, false);
+        (Env.Page memory ic, Env.Page memory ov) =
+            deliveries(Env.args(address(factory), type(ImmLens).creationCode, Env.wire(abi.encode(xs)), cfg));
+        sameDelivery(ic, ov, "immutable lens");
+        uint256[] memory r = Env.uints(ic);
+        require(r.length == 3 && r[0] == 18 && r[1] == 25 && r[2] == 32, "values");
+    }
+
+    function test_delivery_factorySeesTheEnvelope() public {
+        StrictFactory strict = new StrictFactory();
+        bytes memory args = Env.args(address(strict), type(StaticLens).creationCode, staticInputs(values(2), modes(2)), STATIC_CFG);
+        // Creation delivery reaches ENVELOPE_ADDRESS only when the zero account at nonce 0 CREATEs it.
+        Env.VM.etch(address(0), type(Runner).runtimeCode);
+        Env.Page memory ic = Env.page(Runner(address(0)).exec(abi.encodePacked(envelope, args)));
+        Env.Page memory ov = Env.page(runner.execOverride(envelope, args));
+        require(Env.uints(ic).length == 2 && Env.uints(ov).length == 2, "deployed in both");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                              COPY TERM
+    //////////////////////////////////////////////////////////////*/
+
+    /// `Envelope.yul`'s frame comment: state lives from `base = 0x80`, the frame is `0x1c0` bytes,
+    /// and the compressed history sits between it and the slab.
+    uint256 constant BASE = 0x80;
+    uint256 constant FRAME = 0x1c0;
+    uint256 constant HISTORY = 2 * 8192 + 320;
+
+    function memcost(uint256 b) internal pure returns (uint256) {
+        uint256 w = (b + 31) / 32;
+        return 3 * w + (w * w) / 512;
+    }
+
+    /// What `a` argument bytes cost the prologue: the copy, then the expansion to one word past the
+    /// slab's start, which the sentinel write touches before `paginate` samples the budget.
+    function copy(uint256 a, bool compressed) internal pure returns (uint256) {
+        uint256 slab = ((BASE + a + 31) / 32) * 32 + FRAME + (compressed ? HISTORY : 0);
+        return 3 * ((a + 31) / 32) + memcost(slab + 0x20);
+    }
+
+    function withinOnePercent(uint256 measured, uint256 predicted, string memory what) internal pure {
+        uint256 diff = measured > predicted ? measured - predicted : predicted - measured;
+        require(
+            diff * 100 < measured,
+            string.concat(what, ": ", Env.VM.toString(predicted), " predicted, ", Env.VM.toString(measured), " measured")
+        );
+    }
+
+    function prologueOf(bytes memory args) internal returns (uint256) {
+        return Env.page(runner.exec(abi.encodePacked(envelope, args))).prologue;
+    }
+
+    function test_prologue_copyTerm() public {
+        bytes memory small = staticArgs(values(5), modes(5));
+        bytes memory large = staticArgs(values(500), modes(500));
+        withinOnePercent(prologueOf(large) - prologueOf(small), copy(large.length, false) - copy(small.length, false), "clear");
+    }
+
+    function test_prologue_copyTerm_compressed() public {
+        bytes memory small =
+            Env.args(address(factory), type(StaticLens).creationCode, Env.compress(staticInputs(values(5), modes(5))), STATIC_CFG_Z);
+        bytes memory large =
+            Env.args(address(factory), type(StaticLens).creationCode, Env.compress(staticInputs(values(500), modes(500))), STATIC_CFG_Z);
+        withinOnePercent(prologueOf(large) - prologueOf(small), copy(large.length, true) - copy(small.length, true), "compressed");
     }
 }
