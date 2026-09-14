@@ -4,9 +4,11 @@ import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
 import { getObservability } from "../../../observability.js";
 import type { EIP1193Parameters } from "../../../types.js";
 import { factorisedFactoryCall } from "../../../utils/deployless/call.js";
+import { type RestOfEthCallParams, unwrapDeploylessFactoryCall } from "../../../utils/deployless/codec.envelope.js";
+import { calldataToArray, pageToAbi, resolveArrayFunction } from "../../../utils/deployless/codec.inner.js";
 import { cyrb64Hash } from "../../../utils/hash.js";
 import { parse, stringify } from "../../../utils/json.js";
-import { aggregatedPage, parseMarkedEthCall } from "../../state-overrides.js";
+import { extractEthCallPolicy } from "../../state-overrides.js";
 import { keychain } from "../keychain.js";
 import type { CacheSchema } from "../schema.js";
 import type { HandlerContext } from "../types.js";
@@ -17,17 +19,37 @@ export async function handleEthCall(
   { store, coalesce, requestFn, chainId, provider, facetId }: HandlerContext,
   req: EIP1193Parameters<CacheSchema, "eth_call">,
 ): Promise<Hex> {
-  const marked = parseMarkedEthCall(req);
-  if (!marked) {
+  const [txn, block, stateOverride, ...blockOverrides] = req.params;
+  const extracted = extractEthCallPolicy(stateOverride);
+  if (!extracted) {
     return requestFn(req);
   }
-  const { policy, target, lens, elements: inputElements, rest: restOfEthCallParams } = marked;
+  const { policy } = extracted;
+  if (txn.data === undefined) throw new Error("[cache] eth_call with policy requires `data`");
+  const extras = Object.keys(txn).filter((k) => k !== "data" && txn[k as keyof typeof txn] !== undefined);
+  if (extras.length > 0) {
+    throw new Error(
+      `[cache] eth_call with policy: tx object may only set \`data\` (found extras: ${extras.join(", ")})`,
+    );
+  }
+  // Nodes reject a trailing `undefined` param, so the tail is trimmed rather than passed through.
+  const trimmed: unknown[] = [
+    block,
+    extracted.stateOverride ?? (blockOverrides[0] ? {} : undefined),
+    ...blockOverrides,
+  ];
+  while (trimmed.length > 0 && trimmed[trimmed.length - 1] === undefined) trimmed.pop();
+  const restOfEthCallParams = trimmed as unknown as RestOfEthCallParams;
+
+  const { target, targetData } = unwrapDeploylessFactoryCall(txn.data);
+  const lens = resolveArrayFunction(policy.abi);
+  const inputElements = calldataToArray(lens, targetData);
 
   const facet = getObservability()?.facet(facetId).sub("eth_call");
   facet?.set({ input_elements: inputElements.length });
 
   if (inputElements.length === 0) {
-    return aggregatedPage(lens, [], []);
+    return pageToAbi(lens.outputLayout, { results: [], skipped: [] });
   }
 
   const blobKey = keychain.blobKey(chainId, req);
@@ -45,7 +67,7 @@ export async function handleEthCall(
       restOfEthCallParams,
       facet,
     });
-    return aggregatedPage(lens, outputs, missing);
+    return pageToAbi(lens.outputLayout, { results: outputs.filter((o) => o !== undefined), skipped: missing });
   }
 
   facet?.set({ blob_key: blobKey, ttl_ms: ttl, delta_ms: delta });
@@ -168,11 +190,10 @@ export async function handleEthCall(
                                  FAN OUT
     //////////////////////////////////////////////////////////////*/
 
-    const result = aggregatedPage(
-      lens,
-      hits,
-      unservable.sort((a, b) => a - b),
-    );
+    const result = pageToAbi(lens.outputLayout, {
+      results: hits.filter((o) => o !== undefined),
+      skipped: unservable.sort((a, b) => a - b),
+    });
 
     const leaderHash = cyrb64Hash(JSON.stringify(req.params));
     const collected = collectFollowers();

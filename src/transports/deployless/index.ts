@@ -4,7 +4,9 @@ import { chainDefinition } from "../../chains/index.js";
 import { createFacetId, type FacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 import { factorisedFactoryCall, type Provider, providerOf } from "../../utils/deployless/call.js";
-import { aggregatedPage, parseMarkedEthCall } from "../state-overrides.js";
+import { type RestOfEthCallParams, unwrapDeploylessFactoryCall } from "../../utils/deployless/codec.envelope.js";
+import { calldataToArray, pageToAbi, resolveArrayFunction } from "../../utils/deployless/codec.inner.js";
+import { extractEthCallPolicy } from "../state-overrides.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
 
@@ -71,17 +73,37 @@ async function handleEthCall(
   provider: Provider,
   facetId: FacetId,
 ) {
-  const marked = parseMarkedEthCall(req);
-  if (!marked) {
+  const [txn, block, stateOverride, ...blockOverrides] = req.params;
+  const extracted = extractEthCallPolicy(stateOverride);
+  if (!extracted) {
     return requestFn(req);
   }
-  const { policy, target, lens, elements, rest } = marked;
+  const { policy } = extracted;
+  if (txn.data === undefined) throw new Error("[deployless] eth_call with policy requires `data`");
+  const extras = Object.keys(txn).filter((k) => k !== "data" && txn[k as keyof typeof txn] !== undefined);
+  if (extras.length > 0) {
+    throw new Error(
+      `[deployless] eth_call with policy: tx object may only set \`data\` (found extras: ${extras.join(", ")})`,
+    );
+  }
+  // Nodes reject a trailing `undefined` param, so the tail is trimmed rather than passed through.
+  const trimmed: unknown[] = [
+    block,
+    extracted.stateOverride ?? (blockOverrides[0] ? {} : undefined),
+    ...blockOverrides,
+  ];
+  while (trimmed.length > 0 && trimmed[trimmed.length - 1] === undefined) trimmed.pop();
+  const rest = trimmed as unknown as RestOfEthCallParams;
+
+  const { target, targetData } = unwrapDeploylessFactoryCall(txn.data);
+  const lens = resolveArrayFunction(policy.abi);
+  const elements = calldataToArray(lens, targetData);
 
   const facet = getObservability()?.facet(facetId).sub("eth_call");
   facet?.set({ input_elements: elements.length });
 
   if (elements.length === 0) {
-    return aggregatedPage(lens, [], []);
+    return pageToAbi(lens.outputLayout, { results: [], skipped: [] });
   }
 
   const { outputs, missing } = await factorisedFactoryCall(requestFn, {
@@ -93,5 +115,5 @@ async function handleEthCall(
     restOfEthCallParams: rest,
     facet,
   });
-  return aggregatedPage(lens, outputs, missing);
+  return pageToAbi(lens.outputLayout, { results: outputs.filter((o) => o !== undefined), skipped: missing });
 }
