@@ -308,10 +308,12 @@ export async function factorisedFactoryCall(
     if (entries.length > 0) await onResolved?.(entries);
   };
 
+  /** Halves inherit the job's delivery, except that an override job halves as `later` once that is initcode. */
   const halve = ({ indices, ...rest }: ChunkJob, timeoutSplits: number) => {
     const mid = Math.floor(indices.length / 2);
+    const delivery = rest.delivery === "initcode" ? "initcode" : later;
     for (const half of [indices.slice(0, mid), indices.slice(mid)]) {
-      wave.dispatch({ ...rest, indices: half, timeoutSplits, depth: rest.depth + 1 });
+      wave.dispatch({ ...rest, indices: half, delivery, timeoutSplits, depth: rest.depth + 1 });
     }
   };
 

@@ -1429,6 +1429,26 @@ describe("override delivery", () => {
     expect(field("override_fallbacks_unsupported")).toBe(1);
   });
 
+  it("halves a refused override chunk as initcode once a sibling proved the provider ignores overrides", async () => {
+    // The whole input is refused for size and halves by override; the first half proves the
+    // provider ignores overrides, and the second is refused again a tick later, in flight all along.
+    const requestFn = withOverride(async (_serve, params) => {
+      const sent = sentAddresses(params);
+      if (sent.length === 2 && sent.map(addrValue).includes(1)) return "0x";
+      if (sent.length === 2) await new Promise((resolve) => setTimeout(resolve, 0));
+      throw new Error(`request too large: ${sent.length} elements`);
+    });
+
+    const { result, field } = await withFacet(() => createTransport(requestFn).request(createRequest(four, OVERRIDE)));
+
+    // The second half's halves are new work dispatched after the proof, so they open as initcode.
+    expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n]);
+    expect(deliveries(requestFn)).toEqual(["override", "override", "override", "initcode", "initcode", "initcode"]);
+    expect([...requestedIndices(requestFn)].sort()).toEqual([[1, 2], [1, 2], [1, 2, 3, 4], [3], [3, 4], [4]]);
+    expect(field("override_fallbacks_unsupported")).toBe(1);
+    expect(field("splits_size")).toBe(2);
+  });
+
   it("sends the tails an unproven fallback's pages leave behind by override", async () => {
     let pending = true;
     const requestFn = withOverride(
