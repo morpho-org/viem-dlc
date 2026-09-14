@@ -88,8 +88,9 @@ envelope-shaped revert is handled as today. A size or timeout refusal halves by 
 there's room. Everything else gets one initcode attempt for the same range, dispatched where the
 failed chunk stood, so the request settles the usual way. The fallback's reason is reported: a call
 that returned instead of reverting or a JSON-RPC refusal of the request's shape says the provider
-doesn't honor overrides, and anything else is unproven. Nothing is remembered between requests. The
-option is the lever, and the wide event tells the caller when to pull it.
+doesn't honor overrides, and anything else is unproven. That proof holds for the rest of the request,
+so its tails open as initcode, and nothing is remembered between requests. The option is the lever,
+and the wide event tells the caller when to pull it.
 
 **Chain definitions.** Whether a node needs to be told the frame is a fact of the chain, not of the
 transport. geth grants an unspecified `eth_call` the provider's cap, and Monad grants a fixed

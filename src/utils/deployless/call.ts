@@ -69,8 +69,9 @@ export type BatchOptions = {
    * How a chunk reaches the node. `initcode` (default) creates the envelope with the elements
    * trailing it, bounded by the chain's initcode cap. `override` calls the envelope at a fixed
    * address placed by `eth_call`'s state-override parameter, so the frame's gas is the only bound; a
-   * provider that does not honour overrides is detected on the opening wave and the range re-fetched
-   * as initcode, counted in `override_fallbacks_unsupported` on the wide event. Pays only when
+   * provider that does not honour overrides is detected on the opening wave, the range re-fetched
+   * as initcode and the rest of the request sent that way, counted in `override_fallbacks_unsupported`
+   * on the wide event. Pays only when
    * bytes bind: `(gas_limit_observed − fixed_gas) / item_gas_avg` well above
    * `elements_requested / nominal_batches` on the wide event.
    */
@@ -273,6 +274,8 @@ export async function factorisedFactoryCall(
   };
 
   const opening = envelope;
+  // What chunks opened after the opening wave use: the option's delivery until a provider proves it ignores overrides.
+  let later: EnvelopeDelivery = envelope;
   const chunks = pack(everything, opening);
 
   facet?.set({
@@ -315,9 +318,11 @@ export async function factorisedFactoryCall(
   /**
    * An override chunk that failed without proving the envelope ran is re-packed as initcode and
    * each piece dispatched at its generation, so the pending list waits for them as for any chunk.
+   * Proof that the provider ignores overrides holds for the rest of the request, and no longer.
    */
   const fallback = ({ indices, generation }: ChunkJob, reason: FallbackReason) => {
     fallbacks[reason] += 1;
+    if (reason === "unsupported") later = "initcode";
     for (const piece of pack(indices, "initcode")) wave.dispatch(job(piece, generation, "initcode"));
   };
 
@@ -367,7 +372,7 @@ export async function factorisedFactoryCall(
       pages.unresolvedAttempts += 1;
       const pos = indices[page.died]!;
       if (count > 1) {
-        wave.dispatch(job([pos], generation, envelope));
+        wave.dispatch(job([pos], generation, later));
       } else {
         decline(pos, "gas");
       }
@@ -380,7 +385,7 @@ export async function factorisedFactoryCall(
   };
 
   const wave = createWave<ChunkJob>({
-    pack: (indices, generation) => pack(indices, envelope).map((chunk) => job(chunk, generation, envelope)),
+    pack: (indices, generation) => pack(indices, later).map((chunk) => job(chunk, generation, later)),
     send: runChunk,
     eager: continuations === "eager",
   });

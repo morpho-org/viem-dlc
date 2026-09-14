@@ -1413,21 +1413,20 @@ describe("override delivery", () => {
     expect(field("override_fallbacks")).toBe(0);
   });
 
-  it("sends the tails a fallback's pages leave behind by override, and falls back again", async () => {
+  it("sends the tails a fallback's pages leave behind as initcode once the provider proved it ignores overrides", async () => {
     const requestFn = ignoresOverrides(mockPagedLens({ pageSize: 2 }));
 
     const { result, field } = await withFacet(() => createTransport(requestFn).request(createRequest(four, OVERRIDE)));
 
-    // Nothing is remembered within the request either: the option picks every chunk's opening delivery.
+    // The proof holds for the rest of the request: one wasted wave, then initcode throughout.
     expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n]);
     expect(requestedIndices(requestFn)).toEqual([
       [1, 2, 3, 4],
       [1, 2, 3, 4],
       [3, 4],
-      [3, 4],
     ]);
-    expect(deliveries(requestFn)).toEqual(["override", "initcode", "override", "initcode"]);
-    expect(field("override_fallbacks_unsupported")).toBe(2);
+    expect(deliveries(requestFn)).toEqual(["override", "initcode", "initcode"]);
+    expect(field("override_fallbacks_unsupported")).toBe(1);
   });
 
   it("sends the tails an unproven fallback's pages leave behind by override", async () => {
