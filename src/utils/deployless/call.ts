@@ -273,10 +273,9 @@ export async function factorisedFactoryCall(
     return packed.chunks;
   };
 
-  const opening = envelope;
   // What chunks opened after the opening wave use: the option's delivery until a provider proves it ignores overrides.
   let later: EnvelopeDelivery = envelope;
-  const chunks = pack(everything, opening);
+  const chunks = pack(everything, envelope);
 
   facet?.set({
     elements_requested: elements.length,
@@ -287,13 +286,13 @@ export async function factorisedFactoryCall(
   // Halved children and continuations are not resampled. Guarded rather than
   // `facet?.stat(...)` so unobserved calls skip re-measuring.
   if (facet)
-    for (const chunk of chunks) facet.stat("batch_bytes", sentSize(measurer(chunk)(0, chunk.length), opening).bytes);
+    for (const chunk of chunks) facet.stat("batch_bytes", sentSize(measurer(chunk)(0, chunk.length), envelope).bytes);
   const splits = { size: 0, timeout: 0, maxDepth: 0 };
   const sent = { override: 0, initcode: 0 };
   const fallbacks: Record<FallbackReason, number> = { unsupported: 0, unproven: 0, exhausted: 0 };
   // A lens stopping early is a continuation, a mid-page gas death an escalation; neither is a
   // split, which means only "the provider refused the request's size or timed out".
-  const pages = { continued: 0, unresolvedAttempts: 0, allSkipped: 0 };
+  const pages = { continued: 0, unresolvedAttempts: 0, escalated: 0, allSkipped: 0 };
   const continuations: ContinuationMode = batch?.continuations === "eager" ? "eager" : "fill";
   const job = (indices: Chunk, generation: number, delivery: EnvelopeDelivery): ChunkJob => ({
     indices,
@@ -303,17 +302,28 @@ export async function factorisedFactoryCall(
     depth: 0,
   });
 
+  /** Packs `indices` for `delivery`, declining what cannot fit alone, and dispatches the pieces; returns how many. */
+  const dispatchPacked = (indices: Chunk, generation: number, delivery: EnvelopeDelivery): number => {
+    const pieces = pack(indices, delivery);
+    for (const piece of pieces) wave.dispatch(job(piece, generation, delivery));
+    return pieces.length;
+  };
+
   const commit = async (entries: readonly ResolvedElement[]) => {
     for (const { index, output } of entries) outcomes[index] = { kind: "resolved", output };
     if (entries.length > 0) await onResolved?.(entries);
   };
 
-  /** Halves inherit the job's delivery, except that an override job halves as `later` once that is initcode. */
+  /**
+   * Halves inherit the job's delivery, except that an override job halves as `later` once that is
+   * initcode; a half that changes delivery is packed for it, since it was never admitted as such.
+   */
   const halve = ({ indices, ...rest }: ChunkJob, timeoutSplits: number) => {
     const mid = Math.floor(indices.length / 2);
     const delivery = rest.delivery === "initcode" ? "initcode" : later;
     for (const half of [indices.slice(0, mid), indices.slice(mid)]) {
-      wave.dispatch({ ...rest, indices: half, delivery, timeoutSplits, depth: rest.depth + 1 });
+      if (delivery !== rest.delivery) dispatchPacked(half, rest.generation, delivery);
+      else wave.dispatch({ ...rest, indices: half, delivery, timeoutSplits, depth: rest.depth + 1 });
     }
   };
 
@@ -325,7 +335,7 @@ export async function factorisedFactoryCall(
   const fallback = ({ indices, generation }: ChunkJob, reason: FallbackReason) => {
     fallbacks[reason] += 1;
     if (reason === "unsupported") later = "initcode";
-    for (const piece of pack(indices, "initcode")) wave.dispatch(job(piece, generation, "initcode"));
+    dispatchPacked(indices, generation, "initcode");
   };
 
   const runChunk = async (chunk: ChunkJob) => {
@@ -374,7 +384,7 @@ export async function factorisedFactoryCall(
       pages.unresolvedAttempts += 1;
       const pos = indices[page.died]!;
       if (count > 1) {
-        wave.dispatch(job([pos], generation, later));
+        pages.escalated += dispatchPacked([pos], generation, later);
       } else {
         decline(pos, "gas");
       }
@@ -393,7 +403,7 @@ export async function factorisedFactoryCall(
   });
 
   try {
-    for (const chunk of chunks) wave.dispatch(job(chunk, 0, opening));
+    for (const chunk of chunks) wave.dispatch(job(chunk, 0, envelope));
     await wave.run();
   } finally {
     const unresolved = declined("gas").length;
@@ -405,7 +415,7 @@ export async function factorisedFactoryCall(
       splits_timeout: splits.timeout,
       splits_max_depth: splits.maxDepth,
       attempts_unresolved: pages.unresolvedAttempts,
-      pages_escalated: pages.unresolvedAttempts - unresolved,
+      pages_escalated: pages.escalated,
       pages_all_skipped: pages.allSkipped,
       pages_continued: pages.continued,
       continuations,

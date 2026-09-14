@@ -1449,6 +1449,54 @@ describe("override delivery", () => {
     expect(field("splits_size")).toBe(2);
   });
 
+  it("admits a half that switches to initcode after the proof, declining what cannot fit alone", async () => {
+    // A byte cap two override elements fit under, which no initcode request does.
+    const probe = mockPagedLens();
+    await createTransport(probe).request(createRequest([1, 2].map(addr), OVERRIDE));
+    const batchSize = byteLength(paramsOf(probe)[0].data as Hex);
+    const requestFn = withOverride(async (_serve, params) => {
+      const sent = sentAddresses(params);
+      if (sent.map(addrValue).includes(1)) return "0x";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      throw new Error(`request too large: ${sent.length} elements`);
+    });
+
+    const { result, field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest(four, { ...OVERRIDE, batchSize })),
+    );
+
+    // Neither the fallback's pieces nor the refused chunk's halves can be sent as initcode under the cap.
+    expect(decodePage(result)).toEqual({ results: [], skipped: [0, 1, 2, 3] });
+    expect(deliveries(requestFn)).toEqual(["override", "override"]);
+    expect(field("elements_declined_oversize")).toBe(4);
+    expect(field("splits_size")).toBe(1);
+  });
+
+  it("admits an escalation that switches to initcode after the proof, and counts only what it sends", async () => {
+    const probe = mockPagedLens();
+    await createTransport(probe).request(createRequest([1, 2].map(addr), OVERRIDE));
+    const batchSize = byteLength(paramsOf(probe)[0].data as Hex);
+    const requestFn = withOverride(
+      async (serve, params) => {
+        if (sentAddresses(params).map(addrValue).includes(1)) return "0x";
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return serve();
+      },
+      mockPagedLens({ starve: [4] }),
+    );
+
+    const { result, field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest(four, { ...OVERRIDE, batchSize })),
+    );
+
+    // The death's singleton would open as initcode, which the cap does not admit: declined, not sent.
+    expect(decodePage(result)).toEqual({ results: [3n], skipped: [0, 1, 3] });
+    expect(deliveries(requestFn)).toEqual(["override", "override"]);
+    expect(field("attempts_unresolved")).toBe(1);
+    expect(field("pages_escalated")).toBe(0);
+    expect(field("elements_declined_oversize")).toBe(3);
+  });
+
   it("sends the tails an unproven fallback's pages leave behind by override", async () => {
     let pending = true;
     const requestFn = withOverride(
