@@ -38,7 +38,7 @@ import {
   resolveArrayFunction,
   wireToArray,
 } from "../../src/utils/deployless/codec.inner.js";
-import type { LensGas } from "../../src/utils/deployless/pricing.js";
+import type { LensGas } from "../../src/utils/deployless/sizing.js";
 import { wrapDeploylessFactoryCall } from "../helpers/envelope.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 import { flatGas } from "../helpers/page.js";

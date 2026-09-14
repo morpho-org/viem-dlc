@@ -32,7 +32,7 @@ import {
   unwrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
 import { type PageGas, pageToStream, wireToArray } from "../../src/utils/deployless/codec.inner.js";
-import { copyGas, floorGas, wireSize } from "../../src/utils/deployless/pricing.js";
+import { copyGas, floorGas, wireSize } from "../../src/utils/deployless/sizing.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 import { flatGas, gasOf } from "../helpers/page.js";
 
@@ -212,7 +212,7 @@ const openAt = (k: number) => ({
   batch: { gas: { fixed: 0, item: { avg: 1_000_000 } } },
 });
 
-/** What a node deducts for an `eth_call`'s data before the envelope runs, as `pricing.ts` prices it. */
+/** What a node deducts for an `eth_call`'s data before the envelope runs, as `sizing.ts` prices it. */
 function intrinsicGasOf(data: Hex, delivery: "initcode" | "override" = "initcode"): number {
   const bytes = (data.length - 2) / 2;
   let zeros = 0;

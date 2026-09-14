@@ -18,7 +18,7 @@ import {
   type RpcEthCallParams,
 } from "./codec.envelope.js";
 import { arrayToWire, type Page, type ResolvedArrayFunction, streamToPage } from "./codec.inner.js";
-import { costModel, hexByteLength, type LensGas, sentSize, type WireSize, wireSize, zeroBytes } from "./pricing.js";
+import { costModel, hexByteLength, type LensGas, sentSize, type WireSize, wireSize, zeroBytes } from "./sizing.js";
 
 /** Ascending indices into `elements`, sent as one request. */
 type Chunk = readonly number[];

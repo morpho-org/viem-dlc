@@ -2,7 +2,7 @@ import type { Hex } from "viem";
 import { describe, expect, it } from "vitest";
 
 import { FACTORY_BYTECODE_REVERT } from "../../../src/utils/deployless/codec.envelope.js";
-import { copyGas, floorGas, intrinsicGas, sentSize, wireSize } from "../../../src/utils/deployless/pricing.js";
+import { copyGas, floorGas, intrinsicGas, sentSize, wireSize } from "../../../src/utils/deployless/sizing.js";
 
 /** Ethereum's memory expansion, written out here so the schedule the prologue is priced on is pinned. */
 function memcost(bytes: number): number {
