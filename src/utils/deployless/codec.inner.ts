@@ -286,6 +286,10 @@ export function pageToAbi(layout: ElementLayout, { results, skipped }: Pick<Page
   return `0x${writeSize(64)}${writeSize(skippedAt)}${resultsBody}${skippedBody}` as Hex;
 }
 
+/*//////////////////////////////////////////////////////////////
+                       ARRAY BODY CODEC
+//////////////////////////////////////////////////////////////*/
+
 /**
  * Slices the array whose length word sits at `arrayAt`, treating `regionEnd` as the end of its
  * body. Callers must pass the true end: for a dynamic layout the last element's extent is only
@@ -422,6 +426,10 @@ export function wireToArray(layout: ElementLayout, wire: Hex): readonly Hex[] {
   if (at !== totalBytes) throw new Error("wire has trailing bytes");
   return out;
 }
+
+/*//////////////////////////////////////////////////////////////
+                           PRIVATE
+//////////////////////////////////////////////////////////////*/
 
 /** Reads a 32-byte big-endian unsigned integer from `hex` at byte offset `byteOffset`. */
 function readSize(hex: string, byteOffset: number): number {

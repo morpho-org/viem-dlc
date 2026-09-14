@@ -70,7 +70,7 @@ export type BatchOptions = {
    * trailing it, bounded by the chain's initcode cap. `override` calls the envelope at a fixed
    * address placed by `eth_call`'s state-override parameter, so the frame's gas is the only bound; a
    * provider that does not honour overrides is detected on the opening wave and the range re-fetched
-   * as initcode, with unambiguous non-support remembered per transport instance. Pays only when
+   * as initcode, counted in `override_fallbacks_unsupported` on the wide event. Pays only when
    * bytes bind: `(gas_limit_observed − fixed_gas) / item_gas_avg` well above
    * `elements_requested / nominal_batches` on the wide event.
    */
@@ -83,22 +83,23 @@ export type BatchOptions = {
  */
 export type Provider = {
   /**
-   * The stated `eth_call` cap, when usable: sizes the opening wave's bytes and, with `batch.gas`,
-   * its items; every later chunk is sized from what the pages report.
+   * The stated `eth_call` cap, when usable: bounds the opening chunks and, with `batch.gas`, sizes
+   * them element by element; every later chunk is sized from what the pages report.
    */
   cap?: number;
   /**
    * Sent as every chunk's `gas`: the cap, on a chain whose nodes give an unspecified `gas` a fixed
-   * default ({@link EthCallGas}); nothing elsewhere, where the node grants its cap unasked.
+   * default ({@link EthCallGas}); nothing elsewhere, or on a chain this package has no definition
+   * for, where the node is taken to grant its cap unasked.
    */
   gas?: Hex;
 };
 
-export function providerOf(chain: ChainDefinition, gasLimit: number | undefined): Provider {
+export function providerOf(chain: ChainDefinition | undefined, gasLimit: number | undefined): Provider {
   const cap = gasLimit !== undefined && Number.isSafeInteger(gasLimit) && gasLimit > 0 ? gasLimit : undefined;
   return {
     cap,
-    gas: cap !== undefined && chain.ethCall.gasWhenUnspecified === "fixedDefault" ? toHex(cap) : undefined,
+    gas: cap !== undefined && chain?.ethCall.gasWhenUnspecified === "fixedDefault" ? toHex(cap) : undefined,
   };
 }
 

@@ -39,10 +39,7 @@ export const monad: ChainDefinition = {
 
 export const chains: readonly ChainDefinition[] = [mainnet, base, arbitrum, robinhood, monad];
 
-/**
- * The definition for `chainId`, or geth's behaviour for a chain this package has no entry for and
- * for a transport whose client has no chain.
- */
-export function chainDefinition(chainId: number | undefined): ChainDefinition {
-  return chains.find((c) => c.id === chainId) ?? { id: chainId ?? 0, name: "unknown", ethCall: gethEthCall };
+/** The definition for `chainId`, or `undefined` for a chain this package has no entry for. */
+export function chainDefinition(chainId: number | undefined): ChainDefinition | undefined {
+  return chains.find((c) => c.id === chainId);
 }

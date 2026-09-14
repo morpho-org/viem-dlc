@@ -299,8 +299,8 @@ export function observe<F extends (req: never) => Promise<unknown>>(fn: F, id: F
     const logger = scope.parentLogger.child().withContext({
       // Seeded context first, so the canonical fields below can't be overwritten.
       ...scope.context,
-      library: "viem-dlc",
       ...(chainId === undefined ? {} : { chain_id: chainId }),
+      library: "viem-dlc",
       // Trimmed so a large calldata or filter payload can't dominate the event.
       req: deepTransform(req, {
         transformLeaf: <T>(v: T) => (typeof v === "string" && v.length > 100 ? v.slice(0, 97).concat("...") : v) as T,

@@ -50,6 +50,10 @@ export async function handleEthCall(
 
   facet?.set({ blob_key: blobKey, ttl_ms: ttl, delta_ms: delta });
   return coalesce(blobKey, req, async (_leaderReq, collectFollowers) => {
+    /*//////////////////////////////////////////////////////////////
+                                LEADER OPS
+    //////////////////////////////////////////////////////////////*/
+
     // Dedup identical input elements so repeated keys map to a single blob entry.
     const keyToInfo = new Map<string, { indices: number[]; element: Hex }>();
     inputElements.forEach((element, i) => {
@@ -159,6 +163,10 @@ export async function handleEthCall(
         facet?.set({ fetch_cache_ms: t1 - t0, read_cache_ms: t3 - t2, flush_cache_ms: performance.now() - t4 });
       }
     }
+
+    /*//////////////////////////////////////////////////////////////
+                                 FAN OUT
+    //////////////////////////////////////////////////////////////*/
 
     const result = aggregatedPage(
       lens,

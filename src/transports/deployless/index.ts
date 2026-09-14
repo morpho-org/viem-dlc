@@ -12,13 +12,15 @@ export const deploylessTransportKey = "viem-dlc-deployless" as const;
 
 export type DeploylessConfig = {
   /**
-   * The provider's `eth_call` gas cap. It bounds the opening wave's bytes, and with
-   * `policy().batch.gas` its elements; every later chunk is sized from what the pages report, so a
-   * value too low costs a round trip, never a result. On a chain whose nodes give an unspecified
-   * `gas` a fixed default below the cap (see `chains`), it is also sent as every chunk's `gas`, and
-   * there a value above the cap is rejected by the node (Monad: `gas limit too high`) and fails the
-   * request — state the cap the provider documents. Elsewhere nothing is sent and
-   * `gas_limit_observed` on the wide event is the cap the provider granted.
+   * The provider's `eth_call` gas cap. It bounds the opening chunks, and with `policy().batch.gas`
+   * sizes them element by element; every later chunk is sized from what the pages report, so a
+   * value too low costs a round trip, never a result. `gas_limit_observed` on the wide event is
+   * what the node granted.
+   *
+   * Most nodes run an `eth_call` that leaves `gas` unspecified in the whole cap, and nothing is
+   * sent. Monad's run it in a fixed default instead (see `chains`), so there the value is sent as
+   * every chunk's `gas`, and one above the provider's cap fails the request with
+   * `gas limit too high`: state the cap the provider documents.
    */
   gasLimit?: number;
 };
