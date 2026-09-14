@@ -13,7 +13,7 @@ interface Vm {
 library Env {
     Vm constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     bytes32 constant SALT = bytes32(uint256(1));
-    bytes4 constant OK = 0xa55835c3;
+    bytes4 constant OK = 0xf90a85b5;
     /// Sentinel, nA and the five telemetry words.
     uint256 constant HEADER = 4 + 32 + 160;
     /// `CREATE` from the zero account at nonce 0: where the envelope already runs in creation

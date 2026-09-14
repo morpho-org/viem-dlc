@@ -140,8 +140,8 @@ object "Envelope" {
         // — never above the true high-water — so every admission prices memory expansion exactly
         // or conservatively.
         function paginate(F, slab) {
-            // OK_SENTINEL = bytes4(keccak256("ViemDlcPage3()")) = 0xa55835c3
-            mstore(slab, 0xa55835c300000000000000000000000000000000000000000000000000000000)
+            // OK_SENTINEL = bytes4(keccak256("ViemDlcPage()")) = 0xf90a85b5
+            mstore(slab, 0xf90a85b500000000000000000000000000000000000000000000000000000000)
             // The budget attempts can spend, and what arriving here cost. Fresh memory zeroes the
             // three accumulators.
             mstore(0x20, gas())

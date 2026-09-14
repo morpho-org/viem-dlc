@@ -391,7 +391,7 @@ valid ABI the lens answers plausibly and the cache stores under the original ele
 
 #### The response
 
-After the sentinel `OK_SENTINEL = bytes4(keccak256("ViemDlcPage3()")) = 0xa55835c3`:
+After the sentinel `OK_SENTINEL = bytes4(keccak256("ViemDlcPage()")) = 0xf90a85b5`:
 
 ```
 nA ‖ budget ‖ fixed ‖ Σg ‖ Σg² ‖ gmax ‖ records
