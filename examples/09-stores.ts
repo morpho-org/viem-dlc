@@ -26,7 +26,9 @@ const tiers: Store[] = [
 
 if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
   const { createOptimizedUpstashStore } = await import("@morpho-org/viem-dlc/stores/upstash");
-  tiers.push(createOptimizedUpstashStore({ maxRequestBytes: 1_000_000 }));
+  // Leaving `redis.url`/`redis.token` out reads them from the environment, so the rest of the
+  // client's options can be set without restating the credentials.
+  tiers.push(createOptimizedUpstashStore({ maxRequestBytes: 1_000_000, redis: { retry: { retries: 3 } } }));
   console.log("attached Upstash tier");
 }
 

@@ -11,8 +11,13 @@
  *
  * Candidates come from Morpho's GraphQL API, ordered by health factor. The API is a coverage source,
  * never a correctness dependency: every pair is re-read on-chain by the lens.
+ *
+ * This one is delivered by state override rather than as initcode, which is what to reach for when
+ * bytes bind well before gas — here EIP-3860 caps a chunk at ~700 pairs while the frame would pay
+ * for a few thousand. The wide event says when it is worth it: `(gas_limit_observed - fixed_gas) /
+ * item_gas_avg` far above `elements_requested / nominal_batches`.
  */
-import { MAX_INITCODE_SIZE, readLens } from "@morpho-org/viem-dlc/actions";
+import { readLens } from "@morpho-org/viem-dlc/actions";
 import { deployless } from "@morpho-org/viem-dlc/transports";
 import { sol } from "soltag";
 import { type Address, createPublicClient, getAddress, type Hex, http, keccak256, toHex } from "viem";
@@ -130,7 +135,11 @@ const healthLens = sol("BlueHealthLens")`
 
 const client = createPublicClient({
   chain: robinhood,
-  transport: deployless(http(rpcUrl)),
+  // What the chain's public endpoint grants, as `gas_limit_observed` reported it — a figure of the
+  // provider, not the chain: a paid endpoint for this same chain answers with 600M. It only has to
+  // be close, and low is the safe side: it sizes the opening wave, every later chunk is packed from
+  // what the pages measured, and understating it costs a round trip rather than a result.
+  transport: deployless(http(rpcUrl), { gasLimit: 50_000_000 }),
 });
 
 const candidates = await fetchCandidates(1.5);
@@ -151,13 +160,14 @@ const { results, skipped } = await readLens(client, {
   ...healthLens.with(MORPHO),
   functionName: "healthOf",
   args: inputs,
-  // Uncompressed, the 49,152-byte initcode cap binds first (~700 pairs/call at 64 B each);
-  // `compress` shrinks the ABI-padded input several-fold on the wire, so a chunk carries far more
-  // pairs than one frame can serve and the envelope pages: an over-packed chunk costs one more
-  // round trip, never a bisection. `pageSizeHint` sizes the opening wave so that round trip is
-  // spent only on inputs past the hint — the value is `page_size_suggested`, read off the wide
-  // event (10-observability) of a run without it.
-  batch: { batchSize: MAX_INITCODE_SIZE, compress: true, pageSizeHint: 2_000 },
+  // `override` places the envelope at a fixed address through `eth_call`'s state-override
+  // parameter instead of creating it from initcode, so no byte cap applies and the frame's gas is
+  // the only bound — ~2 300 pairs a frame against that 50M cap, where the byte cap allowed ~700. A provider
+  // that ignores overrides is detected on the opening wave and the request finishes as initcode,
+  // counted in `override_fallbacks_unsupported`. `gas` is this lens's own cost, copied from
+  // `fixed_gas`, `item_gas_avg` and `item_gas_stddev`; it is a property of the lens, so the same
+  // three numbers serve every provider and chain.
+  batch: { envelope: "override", gas: { fixed: 565_000, item: { avg: 22_000, stddev: 8_400 } } },
 });
 
 console.log(`${inputs.length} inputs → ${results.length} results, ${skipped.length} skipped`);

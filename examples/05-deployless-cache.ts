@@ -3,6 +3,9 @@
  * cached under `blobKey` for `ttl` ms. Repeat elements are served from the store; only novel
  * elements go upstream. `delta` desynchronizes refreshes so many keys populated together don't
  * all expire in the same instant.
+ *
+ * The provider's cap and the lens's cost are stated exactly as in 04 — `gasLimit` on the transport,
+ * `batch.gas` on the read — and mean the same thing here. Only what a cache hit skips differs.
  */
 import { MAX_INITCODE_SIZE, readLens } from "@morpho-org/viem-dlc/actions";
 import { LruStore } from "@morpho-org/viem-dlc/stores";
@@ -71,6 +74,7 @@ const transport = cache(http(rpcUrl), [
     binSize: 10_000,
     store: new LruStore({ maxBytes: 100_000_000 }),
     invalidationStrategy: createSimpleInvalidation(),
+    gasLimit: 600_000_000,
   },
   { maxBlockRange: 100_000 },
   { retryCount: 3, retryDelay: 1_000, blockTimestamp: false },
@@ -89,7 +93,7 @@ const cachedPositions = (keys: typeof inputs) =>
     ...positionsLens.with(),
     functionName: "positionOf",
     args: keys,
-    batch: { batchSize: MAX_INITCODE_SIZE },
+    batch: { batchSize: MAX_INITCODE_SIZE, gas: { fixed: 242_000, item: { avg: 7_300, stddev: 150 } } },
     cache: { blobKey: "morpho-positions", ttl: 300_000, delta: 10_000 },
   });
 

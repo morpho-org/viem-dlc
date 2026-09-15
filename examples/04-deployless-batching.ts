@@ -1,12 +1,17 @@
 /**
  * `deployless` + `readLens`: read thousands of positions through a lens contract that is never
  * deployed. The lens is one per-item view function written inline with soltag; `readLens` splits
- * the input array across upstream `eth_call`s under a byte budget, and the envelope calls the lens
- * once per element in its own frame. No gas budget exists anywhere: the envelope reports how far
- * it got, so a chunk adapts to whatever gas the node grants.
+ * the input array across upstream `eth_call`s and the envelope calls the lens once per element in
+ * its own frame.
+ *
+ * Two figures size the opening wave, and nothing else is tuned: the provider's cap, stated once on
+ * the transport as `gasLimit`, and the lens's own cost, stated as `batch.gas`. Both come from a run
+ * under observability (10-observability): `gas_limit_observed`, then `fixed_gas`, `item_gas_avg`
+ * and `item_gas_stddev`. Every later chunk is sized from what the pages actually reported, so a
+ * wrong figure costs a round trip, never a result.
  */
 import { MAX_INITCODE_SIZE, readLens } from "@morpho-org/viem-dlc/actions";
-import { deployless } from "@morpho-org/viem-dlc/transports";
+import { deployless, logsDivider } from "@morpho-org/viem-dlc/transports";
 import { sol } from "soltag";
 import {
   type Address,
@@ -68,7 +73,17 @@ const positionsLens = sol("MorphoPositionsLens")`
 
 const client = createPublicClient({
   chain: base,
-  transport: deployless(http(rpcUrl)),
+  // `logsDivider` is here only so discovery survives whatever `eth_getLogs` range the provider
+  // allows (see 01); `deployless` is the transport this example is about.
+  transport: deployless(
+    logsDivider(http(rpcUrl), [
+      { maxBlockRange: 10_000 },
+      { retryCount: 3, retryDelay: 1_000, blockTimestamp: false },
+      { maxBytes: 8_192 },
+      { maxRequestsPerSecond: 10, maxConcurrentRequests: 5 },
+    ]),
+    { gasLimit: 600_000_000 },
+  ),
 });
 
 const toBlock = await getBlockNumber(client);
@@ -80,7 +95,10 @@ const { results: positions, skipped } = await measure("positionOf × inputs", ()
     ...positionsLens.with(),
     functionName: "positionOf",
     args: inputs,
-    batch: { batchSize: MAX_INITCODE_SIZE },
+    // Delivered as initcode (the default), so a chunk is capped at `MAX_INITCODE_SIZE` bytes —
+    // ~690 pairs at 64 B each, while this frame's gas would pay for ~80 000. When bytes bind that
+    // far ahead of gas, `envelope: "override"` lifts the cap entirely; 06 does exactly that.
+    batch: { batchSize: MAX_INITCODE_SIZE, gas: { fixed: 242_000, item: { avg: 7_300, stddev: 150 } } },
   }),
 );
 

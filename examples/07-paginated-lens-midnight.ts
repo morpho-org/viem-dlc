@@ -9,6 +9,9 @@
  *
  * Candidates come from Morpho's liquidation-candidates API, an over-inclusive feed that itself says
  * to re-read every pair on-chain before acting — which is exactly what the lens does.
+ *
+ * Bytes bind here too, but this one stays on initcode delivery and reaches for `compress` instead —
+ * what to do when a provider will not honour the state overrides 06 relies on.
  */
 import { MAX_INITCODE_SIZE, readLens } from "@morpho-org/viem-dlc/actions";
 import { deployless } from "@morpho-org/viem-dlc/transports";
@@ -104,7 +107,7 @@ const healthLens = sol("MidnightHealthLens")`
 
 const client = createPublicClient({
   chain: base,
-  transport: deployless(http(rpcUrl)),
+  transport: deployless(http(rpcUrl), { gasLimit: 600_000_000 }),
 });
 
 const candidates = await fetchCandidates(1.5);
@@ -125,7 +128,16 @@ const { results, skipped } = await readLens(client, {
   ...healthLens.with(MIDNIGHT),
   functionName: "healthOf",
   args: inputs,
-  batch: { batchSize: MAX_INITCODE_SIZE },
+  // Initcode delivery caps a chunk at 49 152 bytes, ~700 pairs at 64 B each, while this frame's
+  // gas would pay for ~21 000. `compress` FastLZ-compresses the elements on the wire, trading
+  // encoding time and decompression gas for more of them per chunk; the envelope decompresses one
+  // element at a time as it attempts them, so a chunk packed past what the frame can serve pages
+  // rather than dying. 06 removes the cap outright instead.
+  batch: {
+    batchSize: MAX_INITCODE_SIZE,
+    compress: true,
+    gas: { fixed: 575_000, item: { avg: 28_000, stddev: 13_400 } },
+  },
 });
 
 const planted = skipped.filter((i) => inputs[i]?.id === bogusMarket).length;

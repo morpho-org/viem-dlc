@@ -39,13 +39,13 @@ workspace TypeScript version for inline Solidity diagnostics.
 | `01-logs-divider.ts` | chunked `eth_getLogs` with alignment, retry, and `onLogsResponse` progress | [`logsDivider`](../README.md#logsdivider) |
 | `02-cache-logs.ts` | the all-in-one `cache` transport; cold vs. warm, LRU over disk | [`cache`](../README.md#cache) |
 | `03-search-and-reduce.ts` | narrowing a shared cache to one account: filter vs. `reduce` vs. `search` + `reduce` | [`getLogs2`](../README.md#getlogs2) |
-| `04-deployless-batching.ts` | `deployless` + `readLens` over an inline per-item lens | [`deployless`](../README.md#deployless) |
+| `04-deployless-batching.ts` | `deployless` + `readLens` over an inline per-item lens; the provider's cap as `gasLimit` and the lens's cost as `batch.gas` | [`deployless`](../README.md#deployless) |
 | `05-deployless-cache.ts` | `readLens` with per-element `eth_call` caching: `blobKey`, `ttl`, `delta` | [`policy`](../README.md#eth_call-policy) |
-| `06-paginated-lens-blue.ts` | a Morpho Blue borrower-health paginated lens on Robinhood Chain (accrued debt vs. oracle-priced capacity); candidates from the GraphQL API, re-read on-chain; un-created markets land in `skipped` | [Paginated lenses](../README.md#paginated-lenses) |
-| `07-paginated-lens-midnight.ts` | the same shape for Midnight on Base, with liquidatability (maturity, lock); candidates from the liquidation-candidates API | [Paginated lenses](../README.md#paginated-lenses) |
+| `06-paginated-lens-blue.ts` | a Morpho Blue borrower-health paginated lens on Robinhood Chain (accrued debt vs. oracle-priced capacity), delivered by `envelope: "override"` so no byte cap applies; candidates from the GraphQL API, re-read on-chain; un-created markets land in `skipped` | [Paginated lenses](../README.md#paginated-lenses) |
+| `07-paginated-lens-midnight.ts` | the same shape for Midnight on Base, with liquidatability (maturity, lock), staying on initcode delivery and using `compress` to fit more elements under the cap | [Paginated lenses](../README.md#paginated-lenses) |
 | `08-failover.ts` | two providers with their own limits sharing one store; custom `shouldThrow` | [`failover`](../README.md#failover) |
 | `09-stores.ts` | `HierarchicalStore` / `TtlStore` / `CompressedStore` / `NodeFsStore`, optional remote tiers | [Stores](../README.md#stores) |
-| `10-observability.ts` | `withLogging` with a real LogLayer; one wide event per call | [Observability](../README.md#observability-optional) |
+| `10-observability.ts` | `withLogging` with a real LogLayer; one wide event per call, and where 04-07's `gasLimit` / `batch.gas` figures are read from | [Observability](../README.md#observability-optional) |
 | `11-deployment-block.ts` | `getDeploymentBlockNumber` | [`getDeploymentBlockNumber`](../README.md#getdeploymentblocknumber) |
 
 `NodeFsStore` and `CompressedStore` are Node/Bun-only; everything else runs wherever viem does.
