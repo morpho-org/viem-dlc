@@ -484,6 +484,22 @@ A partial result is a **successful response**: `skipped` merges elements the len
 (its per-item call reverted), elements declined client-side for size, and elements
 that ran out of gas even when retried alone. Check it if you need every element.
 
+`cache` is typed by the client's transport: it only typechecks on a client built with the `cache`
+transport, since no other transport can serve it. A client whose transport type is not known
+statically is unconstrained. Wrappers pass the constraint on to their own callers by spreading
+`LensClientParameters<client>` into their parameters:
+
+```ts
+import type { LensClientParameters } from '@morpho-org/viem-dlc/actions'
+
+async function healthOf<client extends Client>(
+  client: client,
+  parameters: { users: Address[] } & LensClientParameters<client>,
+) {
+  return readLens(client, { ...healthLens.with(MORPHO), functionName: 'healthOf', args: parameters.users, cache: parameters.cache })
+}
+```
+
 ### `eth_call` `policy`
 
 The lower-level marker `readLens` attaches for you: a `stateOverride` entry that tells the

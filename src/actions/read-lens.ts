@@ -14,6 +14,7 @@ import type {
 import { decodeFunctionResult, encodeFunctionData } from "viem";
 import { call } from "viem/actions";
 
+import type { cacheTransportKey } from "../transports/cache/schema.js";
 import type { EthCallPolicy } from "../transports/state-overrides.js";
 import { arrayifiedAbi } from "../utils/deployless/codec.inner.js";
 
@@ -40,24 +41,40 @@ type ItemInput<abi extends Abi, functionName extends LensFunctionName<abi>> =
     ? input
     : unknown;
 
-export type ReadLensParameters<abi extends Abi, functionName extends LensFunctionName<abi>> = Pick<
-  EthCallPolicy,
-  "batch" | "cache"
-> & {
-  abi: abi;
-  /** The per-item function: one parameter in, one value out. */
-  functionName: functionName;
-  /** One entry per element; each becomes its own per-item call. */
-  args: readonly ItemInput<abi, functionName>[];
-  /** The lens's counterfactual address: what `factory` deploys when called with `factoryData`. */
-  address: Address;
-  factory: Address;
-  factoryData: Hex;
-  blockNumber?: bigint;
-  blockTag?: BlockTag;
-  /** Appended to the `policy` entry the action adds. */
-  stateOverride?: StateOverride;
-};
+/**
+ * The call options a client's transport can honor: only a `cache` transport serves `cache`, so on
+ * any other it must be left out. A client whose transport type is not known statically allows
+ * everything. Spread it into a wrapper's own parameters to pass the constraint to its callers.
+ */
+export type LensClientParameters<client extends Client> = client["transport"]["type"] extends typeof cacheTransportKey
+  ? Pick<EthCallPolicy, "cache">
+  : string extends client["transport"]["type"]
+    ? Pick<EthCallPolicy, "cache">
+    : {
+        /** Unavailable: this client's transport cannot cache. Read through a `cache` transport to use it. */
+        cache?: undefined;
+      };
+
+export type ReadLensParameters<
+  abi extends Abi,
+  functionName extends LensFunctionName<abi>,
+  client extends Client = Client,
+> = Pick<EthCallPolicy, "batch"> &
+  LensClientParameters<client> & {
+    abi: abi;
+    /** The per-item function: one parameter in, one value out. */
+    functionName: functionName;
+    /** One entry per element; each becomes its own per-item call. */
+    args: readonly ItemInput<abi, functionName>[];
+    /** The lens's counterfactual address: what `factory` deploys when called with `factoryData`. */
+    address: Address;
+    factory: Address;
+    factoryData: Hex;
+    blockNumber?: bigint;
+    blockTag?: BlockTag;
+    /** Appended to the `policy` entry the action adds. */
+    stateOverride?: StateOverride;
+  };
 
 export type ReadLensReturnType<abi extends Abi, functionName extends LensFunctionName<abi>> = {
   /** In input order, dense: one per element not in `skipped`. */
@@ -77,9 +94,9 @@ export type ReadLensReturnType<abi extends Abi, functionName extends LensFunctio
  *
  * A partial result is a successful response — check `skipped` if you need every element.
  */
-export function readLens<const abi extends Abi, functionName extends LensFunctionName<abi>>(
-  client: Client,
-  parameters: ReadLensParameters<abi, functionName>,
+export function readLens<const abi extends Abi, functionName extends LensFunctionName<abi>, client extends Client>(
+  client: client,
+  parameters: ReadLensParameters<abi, functionName, client>,
 ): Promise<ReadLensReturnType<abi, functionName>>;
 export async function readLens(
   client: Client,
