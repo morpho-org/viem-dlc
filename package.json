@@ -64,6 +64,11 @@
       "types": "./dist/utils/index.d.ts",
       "import": "./dist/utils/index.js",
       "default": "./dist/utils/index.js"
+    },
+    "./utils/deployless": {
+      "types": "./dist/utils/deployless/index.d.ts",
+      "import": "./dist/utils/deployless/index.js",
+      "default": "./dist/utils/deployless/index.js"
     }
   },
   "scripts": {

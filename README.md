@@ -699,3 +699,18 @@ Exported from `@morpho-org/viem-dlc/utils`:
 - `stringify` / `parse` / `estimateUtf8Bytes` — JSON serialization with bigint support
 - `pick` / `omit` — object helpers
 - `measureUtf8Bytes` / `shardString` — string utilities
+
+The envelope's codecs are exported separately, from `@morpho-org/viem-dlc/utils/deployless`, for
+building fixtures and mocks: everything needed to read a chunk off a request the transports sent and
+to answer it the way a node running the envelope would.
+
+- `unwrapDeploylessFactoryCall` / `encodeEnvelopeArgs` / `envelopeConfig` / `deliveryParams` — the
+  outbound request, both deliveries
+- `decodeEnvelopeRevert`, `FACTORY_BYTECODE_REVERT`, `ENVELOPE_ADDRESS`, `OK_SENTINEL` and the other
+  sentinels — what the envelope reverts with, and what identifies it
+- `arrayifiedAbi` / `resolveArrayFunction` / `abiToArray` / `arrayToAbi` — the caller's array
+- `arrayToWire` / `wireToArray` / `streamToPage` / `pageToStream` / `pageToAbi` — the envelope's wire
+  and the page it reverts
+
+The packer, the cost model and the FastLZ codec stay internal: their shapes follow the
+implementation rather than the wire.
