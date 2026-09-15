@@ -31,8 +31,8 @@ import {
   OOG_SENTINEL,
   unwrapDeploylessFactoryCall,
 } from "../../src/utils/deployless/codec.envelope.js";
-import { type PageGas, pageToWire, wireToArray } from "../../src/utils/deployless/codec.inner.js";
-import { copyGas, floorGas, wireSize } from "../../src/utils/deployless/pricing.js";
+import { type PageGas, pageToStream, wireToArray } from "../../src/utils/deployless/codec.inner.js";
+import { copyGas, floorGas, wireSize } from "../../src/utils/deployless/sizing.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 import { flatGas, gasOf } from "../helpers/page.js";
 
@@ -136,7 +136,7 @@ function revertWithPage(results: readonly bigint[], skipped: readonly number[], 
     gas,
     ...(died === undefined ? {} : { died }),
   };
-  return revertWith(`${OK_SENTINEL}${pageToWire(page).slice(2)}` as Hex);
+  return revertWith(`${OK_SENTINEL}${pageToStream(page).slice(2)}` as Hex);
 }
 
 type LensBehavior = {
@@ -212,7 +212,7 @@ const openAt = (k: number) => ({
   batch: { gas: { fixed: 0, item: { avg: 1_000_000 } } },
 });
 
-/** What a node deducts for an `eth_call`'s data before the envelope runs, as `pricing.ts` prices it. */
+/** What a node deducts for an `eth_call`'s data before the envelope runs, as `sizing.ts` prices it. */
 function intrinsicGasOf(data: Hex, delivery: "initcode" | "override" = "initcode"): number {
   const bytes = (data.length - 2) / 2;
   let zeros = 0;
@@ -1413,21 +1413,113 @@ describe("override delivery", () => {
     expect(field("override_fallbacks")).toBe(0);
   });
 
-  it("sends the tails a fallback's pages leave behind by override, and falls back again", async () => {
+  it("sends the tails a fallback's pages leave behind as initcode once the provider proved it ignores overrides", async () => {
     const requestFn = ignoresOverrides(mockPagedLens({ pageSize: 2 }));
 
     const { result, field } = await withFacet(() => createTransport(requestFn).request(createRequest(four, OVERRIDE)));
 
-    // Nothing is remembered within the request either: the option picks every chunk's opening delivery.
+    // The proof holds for the rest of the request: one wasted wave, then initcode throughout.
     expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n]);
     expect(requestedIndices(requestFn)).toEqual([
       [1, 2, 3, 4],
       [1, 2, 3, 4],
       [3, 4],
+    ]);
+    expect(deliveries(requestFn)).toEqual(["override", "initcode", "initcode"]);
+    expect(field("override_fallbacks_unsupported")).toBe(1);
+  });
+
+  it("halves a refused override chunk as initcode once a sibling proved the provider ignores overrides", async () => {
+    // The whole input is refused for size and halves by override; the first half proves the
+    // provider ignores overrides, and the second is refused again a tick later, in flight all along.
+    const requestFn = withOverride(async (_serve, params) => {
+      const sent = sentAddresses(params);
+      if (sent.length === 2 && sent.map(addrValue).includes(1)) return "0x";
+      if (sent.length === 2) await new Promise((resolve) => setTimeout(resolve, 0));
+      throw new Error(`request too large: ${sent.length} elements`);
+    });
+
+    const { result, field } = await withFacet(() => createTransport(requestFn).request(createRequest(four, OVERRIDE)));
+
+    // The second half's halves are new work dispatched after the proof, so they open as initcode.
+    expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n]);
+    expect(deliveries(requestFn)).toEqual(["override", "override", "override", "initcode", "initcode", "initcode"]);
+    expect([...requestedIndices(requestFn)].sort()).toEqual([[1, 2], [1, 2], [1, 2, 3, 4], [3], [3, 4], [4]]);
+    expect(field("override_fallbacks_unsupported")).toBe(1);
+    expect(field("splits_size")).toBe(2);
+  });
+
+  it("admits a half that switches to initcode after the proof, declining what cannot fit alone", async () => {
+    // A byte cap two override elements fit under, which no initcode request does.
+    const probe = mockPagedLens();
+    await createTransport(probe).request(createRequest([1, 2].map(addr), OVERRIDE));
+    const batchSize = byteLength(paramsOf(probe)[0].data as Hex);
+    const requestFn = withOverride(async (_serve, params) => {
+      const sent = sentAddresses(params);
+      if (sent.map(addrValue).includes(1)) return "0x";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      throw new Error(`request too large: ${sent.length} elements`);
+    });
+
+    const { result, field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest(four, { ...OVERRIDE, batchSize })),
+    );
+
+    // Neither the fallback's pieces nor the refused chunk's halves can be sent as initcode under the cap.
+    expect(decodePage(result)).toEqual({ results: [], skipped: [0, 1, 2, 3] });
+    expect(deliveries(requestFn)).toEqual(["override", "override"]);
+    expect(field("elements_declined_oversize")).toBe(4);
+    expect(field("splits_size")).toBe(1);
+  });
+
+  it("admits an escalation that switches to initcode after the proof, and counts only what it sends", async () => {
+    const probe = mockPagedLens();
+    await createTransport(probe).request(createRequest([1, 2].map(addr), OVERRIDE));
+    const batchSize = byteLength(paramsOf(probe)[0].data as Hex);
+    const requestFn = withOverride(
+      async (serve, params) => {
+        if (sentAddresses(params).map(addrValue).includes(1)) return "0x";
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return serve();
+      },
+      mockPagedLens({ starve: [4] }),
+    );
+
+    const { result, field } = await withFacet(() =>
+      createTransport(requestFn).request(createRequest(four, { ...OVERRIDE, batchSize })),
+    );
+
+    // The death's singleton would open as initcode, which the cap does not admit: declined, not sent.
+    expect(decodePage(result)).toEqual({ results: [3n], skipped: [0, 1, 3] });
+    expect(deliveries(requestFn)).toEqual(["override", "override"]);
+    expect(field("attempts_unresolved")).toBe(1);
+    expect(field("pages_escalated")).toBe(0);
+    expect(field("elements_declined_oversize")).toBe(3);
+  });
+
+  it("sends the tails an unproven fallback's pages leave behind by override", async () => {
+    let pending = true;
+    const requestFn = withOverride(
+      (serve) => {
+        if (!pending) return serve();
+        pending = false;
+        throw Object.assign(new Error("Internal Server Error"), { status: 500 });
+      },
+      mockPagedLens({ pageSize: 2 }),
+    );
+
+    const { result, field } = await withFacet(() => createTransport(requestFn).request(createRequest(four, OVERRIDE)));
+
+    // The tail the initcode retry's page left opens by override, as every chunk of the request does.
+    expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n]);
+    expect(requestedIndices(requestFn)).toEqual([
+      [1, 2, 3, 4],
+      [1, 2, 3, 4],
       [3, 4],
     ]);
-    expect(deliveries(requestFn)).toEqual(["override", "initcode", "override", "initcode"]);
-    expect(field("override_fallbacks_unsupported")).toBe(2);
+    expect(deliveries(requestFn)).toEqual(["override", "initcode", "override"]);
+    expect(paramsOf(requestFn, 2)[0]).toEqual({ to: ENVELOPE_ADDRESS, data: paramsOf(requestFn, 2)[0].data });
+    expect(field("override_fallbacks_unproven")).toBe(1);
   });
 
   it.each([

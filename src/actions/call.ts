@@ -2,6 +2,7 @@ import type { StateOverride } from "viem";
 import { toHex } from "viem";
 
 import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state-overrides.js";
+import type { BatchOptions } from "../utils/deployless/call.js";
 
 /**
  * Ethereum's EIP-3860 initcode cap. Deployless calldata rides inside initcode unless
@@ -28,30 +29,8 @@ export const MAX_INITCODE_SIZE = 49_152;
  *
  * @param opts.abi The array-shaped fragment from `arrayifiedAbi`, built from the contract's real
  *   ABI: the per-item selector the envelope calls is derived from it.
- * @param opts.batch Optional batching config. Omit to send all elements in one upstream
- *   `eth_call`.
- * @param opts.batch.batchSize Maximum bytes of the `eth_call` `data` field per chunk; elements
- *   are greedy-packed under it and fetched in parallel. {@link MAX_INITCODE_SIZE} is the usual
- *   value for initcode delivery; by override the provider's request size limit is the bound.
- * @param opts.batch.compress FastLZ-compress calldata on the wire so more elements fit per chunk,
- *   at the cost of encoding time and decompression gas.
- * @param opts.batch.gas The lens's cost, as the wide event reports it: `fixed` from `fixed_gas`,
- *   `item.avg` and `item.stddev` from `item_gas_avg` and `item_gas_stddev`. With the transport's
- *   `gasLimit`, sizes the opening wave; every later chunk is sized from what the pages report, the
- *   stated cost standing in only until an attempt has been costed. Over-estimating costs extra
- *   parallel requests, under-estimating costs one continuation.
- * @param opts.batch.envelope How a chunk reaches the node. `initcode` (default) creates the envelope
- *   with the elements trailing it, bounded by the chain's initcode cap. `override` calls the envelope
- *   at a fixed address placed by `eth_call`'s state-override parameter, so the frame's gas is the
- *   only bound; a provider that does not honour overrides is detected on the opening wave and the
- *   range re-fetched as initcode. `override_fallbacks_unsupported` on the wide event says when a
- *   provider does not honour it, so the option can be turned off for that provider.
- *   Pays only when bytes bind: `(gas_limit_observed − fixed_gas) / item_gas_avg` well above
- *   `elements_requested / nominal_batches` on the wide event.
- * @param opts.batch.continuations When the elements a page did not reach are re-sent. `fill`
- *   (default) pools them across pages and sends full pages at once and the remainder once no earlier
- *   chunk that could still add to it is in flight: fewer requests. `eager` sends every tail as its
- *   page lands: more requests, no waiting.
+ * @param opts.batch Optional batching config, see {@link BatchOptions}. Omit to send all elements in
+ *   one upstream `eth_call`.
  * @param opts.cache Optional cache config. Honored by the `cache` transport only; if omitted,
  *   or when used with `deployless`, `batch` is still honored without caching.
  * @param opts.cache.blobKey Identifies the backing cache blob. Requests with the same

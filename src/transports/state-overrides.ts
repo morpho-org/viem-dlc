@@ -1,8 +1,7 @@
 import type { AbiFunction, Address, RpcStateOverride } from "viem";
 import { fromHex, getAddress, keccak256, toHex } from "viem";
 
-import type { ContinuationMode, LensGas } from "../utils/deployless/call.js";
-import type { EnvelopeDelivery } from "../utils/deployless/codec.envelope.js";
+import type { BatchOptions } from "../utils/deployless/call.js";
 import { omit } from "../utils/omit.js";
 
 export const ETH_CALL_POLICY_ADDRESS: Address = getAddress(`0x${keccak256(toHex("viem-dlc-policy")).slice(26)}`);
@@ -12,13 +11,7 @@ const ETH_CALL_POLICY_ADDRESS_LOWER = ETH_CALL_POLICY_ADDRESS.toLowerCase() as A
 export type EthCallPolicy = {
   /** The array-shaped fragment `arrayifiedAbi` derives: `f(T[]) returns (U[] results, uint256[] skipped)`. */
   abi: AbiFunction;
-  batch?: {
-    batchSize?: number;
-    compress?: boolean;
-    gas?: LensGas;
-    continuations?: ContinuationMode;
-    envelope?: EnvelopeDelivery;
-  };
+  batch?: BatchOptions;
   cache?: {
     blobKey: string;
     ttl: number;

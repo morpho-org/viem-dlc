@@ -12,16 +12,16 @@ import { describe, expect, it } from "vitest";
 
 import { envelopeConfig } from "../../../src/utils/deployless/codec.envelope.js";
 import {
+  abiToArray,
   arrayifiedAbi,
   arrayToWire,
-  hexToArray,
-  hexToPage,
   itemFragmentOf,
   type Page,
   type PageGas,
-  pageToHex,
-  pageToWire,
+  pageToAbi,
+  pageToStream,
   resolveArrayFunction,
+  streamToPage,
   wireToArray,
 } from "../../../src/utils/deployless/codec.inner.js";
 import { flatGas } from "../../helpers/page.js";
@@ -52,9 +52,9 @@ function encodePage(types: string, results: readonly unknown[], skipped: readonl
   return encodeAbiParameters(parseAbiParameters(`${types}, uint256[]`), [results, skipped.map(BigInt)] as never);
 }
 
-/** The raw element bytes of `values` as `hexToArray` slices them: words for a static `T`, padded tails otherwise. */
+/** The raw element bytes of `values` as `abiToArray` slices them: words for a static `T`, padded tails otherwise. */
 function elementsOf(type: string, values: readonly unknown[]): readonly Hex[] {
-  return hexToArray(layoutOf(type), encodeAbiParameters(parseAbiParameters(type), [values] as never));
+  return abiToArray(layoutOf(type), encodeAbiParameters(parseAbiParameters(type), [values] as never));
 }
 
 function layoutOf(type: string) {
@@ -258,7 +258,7 @@ describe("arrayToWire", () => {
   });
 });
 
-describe("hexToPage", () => {
+describe("streamToPage", () => {
   it.each([
     ["static U", "uint256[]", [1n, 2n, 3n], [1], undefined],
     ["static U, no skips", "uint256[]", [1n, 2n], [], undefined],
@@ -282,16 +282,16 @@ describe("hexToPage", () => {
     const layout = layoutOf(types);
     const gas = flatGas(results.length + skipped.length);
     const page: Page = { results: elementsOf(types, results), skipped, gas, ...(died === undefined ? {} : { died }) };
-    const decoded = hexToPage(layout, pageToWire(page));
+    const decoded = streamToPage(layout, pageToStream(page));
 
     expect(decoded).toEqual(page);
     // The caller-facing tuple never carries the death: the client resolves it before aggregating.
-    expect(pageToHex(layout, decoded)).toBe(encodePage(types, results, skipped));
+    expect(pageToAbi(layout, decoded)).toBe(encodePage(types, results, skipped));
   });
 
   it("reads records in attempt order and binds each to its ordinal", () => {
     const encoded = stream(success(wordHex(7)), word(1), success(wordHex(9)), word(tag(3)));
-    expect(hexToPage(STATIC, encoded)).toEqual({
+    expect(streamToPage(STATIC, encoded)).toEqual({
       results: [wordHex(7), wordHex(9)],
       skipped: [1],
       died: 3,
@@ -317,7 +317,7 @@ describe("hexToPage", () => {
     ],
     ["trailing bytes", `${stream(word(0))}00`, /trailing bytes/],
   ])("rejects %s", (_name, encoded, expected) => {
-    expect(() => hexToPage(STATIC, encoded as Hex)).toThrow(expected);
+    expect(() => streamToPage(STATIC, encoded as Hex)).toThrow(expected);
   });
 
   it.each([
@@ -329,11 +329,11 @@ describe("hexToPage", () => {
       /runs past the payload/,
     ],
   ])("rejects %s", (_name, encoded, expected) => {
-    expect(() => hexToPage(DYNAMIC, encoded as Hex)).toThrow(expected);
+    expect(() => streamToPage(DYNAMIC, encoded as Hex)).toThrow(expected);
   });
 
   it("accepts a lone death at index 0", () => {
-    expect(hexToPage(STATIC, stream(word(tag(0))))).toEqual({ results: [], skipped: [], died: 0, gas: flatGas(0) });
+    expect(streamToPage(STATIC, stream(word(tag(0))))).toEqual({ results: [], skipped: [], died: 0, gas: flatGas(0) });
   });
 
   const telemetry = (gas: Partial<PageGas>, ...records: string[]) =>
@@ -346,18 +346,18 @@ describe("hexToPage", () => {
     ["a sum of squares above the sum times the maximum", telemetry({ sumSquares: 2_000_001n }, word(0), word(1))],
     ["cost charged to a lone death", telemetry(flatGas(1), word(tag(0)))],
   ])("rejects %s", (_name, encoded) => {
-    expect(() => hexToPage(STATIC, encoded)).toThrow(/telemetry is inconsistent/);
+    expect(() => streamToPage(STATIC, encoded)).toThrow(/telemetry is inconsistent/);
   });
 
   it("accepts a sum above the budget: the last attempt admitted may spend into the reserve", () => {
     const gas = { ...flatGas(1), budget: 999n };
-    expect(hexToPage(STATIC, telemetry(gas, word(0))).gas).toEqual(gas);
+    expect(streamToPage(STATIC, telemetry(gas, word(0))).gas).toEqual(gas);
   });
 });
 
-describe("pageToWire", () => {
+describe("pageToStream", () => {
   it("emits nA, the telemetry, then one record per attempt", () => {
-    const wire = pageToWire({ results: [wordHex(7)], skipped: [1], died: 2, gas: flatGas(2) });
+    const wire = pageToStream({ results: [wordHex(7)], skipped: [1], died: 2, gas: flatGas(2) });
     expect(wire).toBe(stream(success(wordHex(7)), word(1), word(tag(2))));
   });
 
@@ -367,14 +367,14 @@ describe("pageToWire", () => {
     ["a skip at the death", { results: [], skipped: [1], died: 1 }, /did not attempt/],
     ["a death that is not last", { results: [wordHex(7)], skipped: [], died: 0 }, /not its last record/],
   ])("rejects a page with %s", (_name, page, expected) => {
-    expect(() => pageToWire({ gas: flatGas(0), ...page } as Page)).toThrow(expected);
+    expect(() => pageToStream({ gas: flatGas(0), ...page } as Page)).toThrow(expected);
   });
 });
 
-describe("pageToHex", () => {
+describe("pageToAbi", () => {
   it("matches viem for an entirely empty page", () => {
     const page: Pick<Page, "results" | "skipped"> = { results: [], skipped: [] };
-    expect(pageToHex(DYNAMIC, page)).toBe(encodePage("string[]", [], []));
-    expect(pageToHex(STATIC, page)).toBe(encodePage("uint256[]", [], []));
+    expect(pageToAbi(DYNAMIC, page)).toBe(encodePage("string[]", [], []));
+    expect(pageToAbi(STATIC, page)).toBe(encodePage("uint256[]", [], []));
   });
 });
