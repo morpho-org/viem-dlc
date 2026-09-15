@@ -1,5 +1,6 @@
 import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
+import { chainDefinition } from "../../chains/index.js";
 import { createFacetId, observe } from "../../observability.js";
 import type { EIP1193Parameters, Store } from "../../types.js";
 import { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
@@ -125,6 +126,7 @@ export function cache(
       throw new Error("You must pass a chain to the cache transport.");
     }
     const chainId = params.chain.id;
+    const chain = chainDefinition(chainId);
 
     const { coalesce } = createCoalescingMutex();
     const transport = logsDivider(baseTransportFn, [{ ...logsDividerConfig, alignTo: binSize }, ...otherConfigs])(
@@ -137,6 +139,7 @@ export function cache(
       invalidationStrategy,
       gasLimit,
       chainId,
+      chain,
       requestFn: transport.request,
       coalesce,
       facetId,

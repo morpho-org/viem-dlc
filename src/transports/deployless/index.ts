@@ -1,5 +1,6 @@
 import { createTransport, type EIP1193RequestFn, type Hex, type PublicRpcSchema, type Transport } from "viem";
 
+import { type ChainDefinition, chainDefinition } from "../../chains/index.js";
 import { createFacetId, type FacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 import { factorisedFactoryCall } from "../../utils/deployless/call.js";
@@ -13,9 +14,13 @@ export const deploylessTransportKey = "viem-dlc-deployless" as const;
 
 export type DeploylessConfig = {
   /**
-   * The provider's `eth_call` gas cap. Read only with `policy().batch.gas`, to size the opening
-   * wave; every later chunk is sized from what the pages report, so a wrong value costs a round
-   * trip, never a result. `gas_limit_observed` on the wide event is the value a provider granted.
+   * The provider's `eth_call` gas cap. It bounds the opening wave's bytes, and with
+   * `policy().batch.gas` its elements; every later chunk is sized from what the pages report, so a
+   * value too low costs a round trip, never a result. On a chain whose nodes give an unspecified
+   * `gas` a fixed default below the cap (see `chains`), it is also sent as every chunk's `gas`, and
+   * there a value above the cap is rejected by the node (Monad: `gas limit too high`) and fails the
+   * request — state the cap the provider documents. Elsewhere nothing is sent and
+   * `gas_limit_observed` on the wide event is the cap the provider granted.
    */
   gasLimit?: number;
 };
@@ -23,7 +28,8 @@ export type DeploylessConfig = {
 /**
  * Creates a thin transport wrapper that chunks marked deployless `eth_call`s under the wire byte
  * budget and aggregates the pages. The lens adapts to whatever frame each node grants;
- * {@link DeploylessConfig.gasLimit} only lets the opening wave anticipate it.
+ * {@link DeploylessConfig.gasLimit} lets the opening wave anticipate it, and is sent to nodes that
+ * would otherwise run the call in a smaller default frame.
  *
  * Requests are only intercepted when they carry the `policy(...)` sentinel in `stateOverride`.
  * All other requests are forwarded unchanged.
@@ -36,13 +42,19 @@ export function deployless<T extends Base>(
 
   return (params) => {
     const requestFn = baseTransportFn(params).request;
+    const chain = chainDefinition(params.chain?.id);
 
     const request = (args: EIP1193Parameters<T>) => {
       if (args.method !== "eth_call") {
         return requestFn(args);
       }
 
-      return handleEthCall(requestFn, args as EIP1193Parameters<PublicRpcSchema, "eth_call">, gasLimit, facetId);
+      return handleEthCall(
+        requestFn,
+        args as EIP1193Parameters<PublicRpcSchema, "eth_call">,
+        { gasLimit, chain },
+        facetId,
+      );
     };
 
     return createTransport(
@@ -61,7 +73,7 @@ export function deployless<T extends Base>(
 async function handleEthCall(
   requestFn: EIP1193RequestFn<Base>,
   req: EIP1193Parameters<PublicRpcSchema, "eth_call">,
-  gasLimit: number | undefined,
+  { gasLimit, chain }: { gasLimit: number | undefined; chain: ChainDefinition },
   facetId: FacetId,
 ) {
   const extracted = extractEthCallPolicy(req.params[2]);
@@ -108,6 +120,7 @@ async function handleEthCall(
     solidity,
     batch: extracted.policy.batch,
     gasLimit,
+    chain,
     restOfEthCallParams,
     facet,
   });

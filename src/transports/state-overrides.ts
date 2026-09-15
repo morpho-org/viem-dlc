@@ -2,6 +2,7 @@ import type { AbiFunction, Address, RpcStateOverride } from "viem";
 import { fromHex, getAddress, keccak256, toHex } from "viem";
 
 import type { ContinuationMode, LensGas } from "../utils/deployless/call.js";
+import type { EnvelopeDelivery } from "../utils/deployless/codec.envelope.js";
 import { omit } from "../utils/omit.js";
 
 export const ETH_CALL_POLICY_ADDRESS: Address = getAddress(`0x${keccak256(toHex("viem-dlc-policy")).slice(26)}`);
@@ -16,6 +17,7 @@ export type EthCallPolicy = {
     compress?: boolean;
     gas?: LensGas;
     continuations?: ContinuationMode;
+    envelope?: EnvelopeDelivery;
   };
   cache?: {
     blobKey: string;

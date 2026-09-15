@@ -2,6 +2,7 @@
 pragma solidity ^0.8.25;
 
 interface Vm {
+    function etch(address, bytes calldata) external;
     function ffi(string[] calldata) external returns (bytes memory);
     function readFile(string calldata) external view returns (string memory);
     function writeFile(string calldata, string calldata) external;
@@ -15,6 +16,9 @@ library Env {
     bytes4 constant OK = 0xa55835c3;
     /// Sentinel, nA and the five telemetry words.
     uint256 constant HEADER = 4 + 32 + 160;
+    /// `CREATE` from the zero account at nonce 0: where the envelope already runs in creation
+    /// delivery, and where an override places it.
+    address constant ENVELOPE_ADDRESS = 0xBd770416a3345F91E4B34576cb804a576fa48EB1;
 
     struct Page {
         uint256 nA;
@@ -124,12 +128,20 @@ library Env {
         return abi.encodePacked(n, bodyLen, stream);
     }
 
-    /// `envelope || abi.encode(target, targetData, factory, factoryData, config)`, as the TS codec wraps.
-    function wrap(bytes memory envelope, address factory, bytes memory initcode, bytes memory targetData, uint256 cfg)
+    /// `abi.encode(target, targetData, factory, factoryData, config)`: the arguments, which trail
+    /// the code as initcode and are the calldata by override.
+    function args(address factory, bytes memory initcode, bytes memory targetData, uint256 cfg)
         internal pure returns (bytes memory)
     {
         address target = address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), factory, SALT, keccak256(initcode))))));
-        return abi.encodePacked(envelope, abi.encode(target, targetData, factory, abi.encodePacked(SALT, initcode), cfg));
+        return abi.encode(target, targetData, factory, abi.encodePacked(SALT, initcode), cfg);
+    }
+
+    /// `envelope || args`, as the TS codec wraps.
+    function wrap(bytes memory envelope, address factory, bytes memory initcode, bytes memory targetData, uint256 cfg)
+        internal pure returns (bytes memory)
+    {
+        return abi.encodePacked(envelope, args(factory, initcode, targetData, cfg));
     }
 
     /// Decodes an outcome stream, requiring every record to be bound to its ordinal.
@@ -197,6 +209,20 @@ library Env {
     }
 }
 
+/// A factory that only the envelope may call, whichever delivery placed it there.
+contract StrictFactory {
+    fallback() external {
+        require(msg.sender == Env.ENVELOPE_ADDRESS, "sender");
+        assembly {
+            calldatacopy(0, 32, sub(calldatasize(), 32))
+            let a := create2(0, 0, sub(calldatasize(), 32), calldataload(0))
+            if iszero(a) { revert(0, 0) }
+            mstore(0, a)
+            return(0, 32)
+        }
+    }
+}
+
 /// Salted CREATE2 factory: calldata is `salt || initcode`.
 contract Factory {
     fallback() external {
@@ -241,6 +267,26 @@ contract Runner {
             mstore(0x40, add(add(ret, 0x20), returndatasize()))
         }
     }
+
+    /// The override-delivered eth_call: the same bytecode placed at `ENVELOPE_ADDRESS`, called with
+    /// the arguments as calldata.
+    function execOverride(bytes memory code, bytes memory args) external returns (bytes memory ret) {
+        (, ret) = execOverrideMeasured(code, args);
+    }
+
+    function execOverrideMeasured(bytes memory code, bytes memory args) public returns (uint256 used, bytes memory ret) {
+        Env.VM.etch(Env.ENVELOPE_ADDRESS, code);
+        address to = Env.ENVELOPE_ADDRESS;
+        assembly {
+            let g := gas()
+            if call(gas(), to, 0, add(args, 0x20), mload(args), 0, 0) { revert(0, 0) }
+            used := sub(g, gas())
+            ret := mload(0x40)
+            mstore(ret, returndatasize())
+            returndatacopy(add(ret, 0x20), 0, returndatasize())
+            mstore(0x40, add(add(ret, 0x20), returndatasize()))
+        }
+    }
 }
 
 contract StaticLens {
@@ -262,6 +308,23 @@ contract StaticLens {
             return(0, 0x20)
         }
         return x.a * 2;
+    }
+}
+
+/// Constructor state read back per item: an immutable in the deployed code, a word in storage.
+contract ImmLens {
+    struct In { uint256 a; uint256 mode; }
+
+    uint256 immutable born;
+    uint256 written;
+
+    constructor() {
+        born = 7;
+        written = 11;
+    }
+
+    function item(In calldata x) external view returns (uint256) {
+        return x.a * born + written;
     }
 }
 
