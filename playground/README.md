@@ -31,6 +31,16 @@ cannot rot against `src/`) while staying directly evaluable: `evaluateTab` strip
 and rebinds those names as function parameters against a small registry in `src/tab.ts`. A
 specifier that is not in the registry fails loudly rather than yielding `undefined`.
 
+## Editors
+
+CodeMirror 6, with `@replit/codemirror-lang-solidity` for the lens and `@codemirror/lang-javascript`
+for the script. Token colours are CSS variables (`--syn-*`), so both palettes live in `style.css`
+beside the rest of the theme rather than in the editor config.
+
+The Solidity grammar tags value types (`uint256`, `address`) as keywords and leaves user identifiers
+untagged, so that pane is deliberately flatter than the JavaScript one. Separating types would mean
+decorating them ourselves.
+
 ## Notes
 
 - **No server.** Calls go from the browser straight to the RPC endpoint, which works because the

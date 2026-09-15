@@ -2,6 +2,7 @@ import initcodeScript from "../tabs/initcode.js?raw";
 import overrideScript from "../tabs/override.js?raw";
 import pristineSolidity from "../tabs/positions.sol?raw";
 
+import { createEditor } from "./editor.js";
 import { run, type Settings } from "./run.js";
 
 /** Facets that answer "did this change anything" — shown first, and never hidden. */
@@ -61,11 +62,11 @@ app.innerHTML = `
   <div class="split">
     <div class="panel">
       <h2>Lens <span class="hint" id="sol-state"></span> <button class="reset" id="reset-sol">reset</button></h2>
-      <textarea id="solidity" spellcheck="false"></textarea>
+      <div id="solidity"></div>
     </div>
     <div class="panel">
       <h2>Script <button class="reset" id="reset-js">reset</button></h2>
-      <textarea id="script" spellcheck="false"></textarea>
+      <div id="script"></div>
     </div>
   </div>
 
@@ -76,14 +77,19 @@ const el = <T extends HTMLElement>(id: string) => document.querySelector<T>(`#${
 const status = el("status");
 const out = el("out");
 const button = el<HTMLButtonElement>("go");
-const solidityBox = el<HTMLTextAreaElement>("solidity");
-const scriptBox = el<HTMLTextAreaElement>("script");
 const solState = el("sol-state");
+const solidityBox = createEditor(el("solidity"), solidity, "solidity");
+const scriptBox = createEditor(el("script"), scripts.get(active)!, "javascript");
+
+function paintState() {
+  solState.textContent =
+    solidityBox.value().trim() === pristineSolidity.trim() ? "prebuilt" : "edited — compiles in-browser";
+}
 
 function paint() {
-  solidityBox.value = solidity;
-  scriptBox.value = scripts.get(active)!;
-  solState.textContent = solidity.trim() === pristineSolidity.trim() ? "prebuilt" : "edited — compiles in-browser";
+  solidityBox.set(solidity);
+  scriptBox.set(scripts.get(active)!);
+  paintState();
   for (const tab of document.querySelectorAll<HTMLElement>(".tab")) {
     tab.classList.toggle("active", tab.dataset.tab === active);
   }
@@ -94,16 +100,14 @@ paint();
 el("tabs").addEventListener("click", (event) => {
   const id = (event.target as HTMLElement).dataset.tab;
   if (!id) return;
-  scripts.set(active, scriptBox.value);
+  scripts.set(active, scriptBox.value());
+  solidity = solidityBox.value();
   active = id;
   paint();
 });
 
-solidityBox.addEventListener("input", () => {
-  solidity = solidityBox.value;
-  solState.textContent = solidity.trim() === pristineSolidity.trim() ? "prebuilt" : "edited — compiles in-browser";
-});
-scriptBox.addEventListener("input", () => scripts.set(active, scriptBox.value));
+// CodeMirror has no `input` event; the state label is refreshed on the interactions that matter.
+el("solidity").addEventListener("keyup", paintState);
 
 el("reset-sol").addEventListener("click", () => {
   solidity = pristineSolidity;
@@ -140,7 +144,8 @@ button.addEventListener("click", async () => {
   settings.rpcUrl = el<HTMLInputElement>("rpc").value.trim();
   settings.elements = Number(el<HTMLInputElement>("elements").value);
   settings.gasLimit = Number(el<HTMLInputElement>("gas").value);
-  scripts.set(active, scriptBox.value);
+  scripts.set(active, scriptBox.value());
+  solidity = solidityBox.value();
 
   button.disabled = true;
   status.className = "status";
@@ -151,7 +156,7 @@ button.addEventListener("click", async () => {
   };
 
   try {
-    const result = await run({ ...settings, script: scriptBox.value, solidity, pristineSolidity }, log);
+    const result = await run({ ...settings, script: scriptBox.value(), solidity, pristineSolidity }, log);
     const event = result.events.find((e) => Object.keys(e.fields).some((k) => k.includes("elements_requested")));
 
     out.innerHTML = `<div class="summary">

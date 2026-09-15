@@ -6,6 +6,16 @@
   --muted: #6b6b66;
   --line: #e3e3df;
   --accent: #2f6f4f;
+  --selection: #cfe6d9;
+  --syn-keyword: #8a3fa0;
+  --syn-type: #1f6f6f;
+  --syn-function: #2b5fa8;
+  --syn-string: #2f6f4f;
+  --syn-number: #9a5b1e;
+  --syn-comment: #8a8a84;
+  --syn-property: #1b1b19;
+  --syn-punctuation: #6b6b66;
+  --syn-definition: #2b5fa8;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
@@ -17,6 +27,16 @@
     --muted: #9a9a94;
     --line: #32323a;
     --accent: #7fc9a0;
+    --selection: #2f4a3d;
+    --syn-keyword: #c792ea;
+    --syn-type: #7fd4c1;
+    --syn-function: #82aaff;
+    --syn-string: #7fc9a0;
+    --syn-number: #f0a05a;
+    --syn-comment: #7a7a74;
+    --syn-property: #eceae4;
+    --syn-punctuation: #9a9a94;
+    --syn-definition: #82aaff;
   }
 }
 
@@ -236,17 +256,9 @@ tr.highlight td:first-child {
   color: var(--muted);
 }
 
-textarea {
-  width: 100%;
+.cm-editor {
   min-height: 340px;
-  resize: vertical;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--ink);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  tab-size: 2;
+}
+.cm-editor .cm-content {
+  min-height: 320px;
 }
