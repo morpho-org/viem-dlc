@@ -1,141 +1,32 @@
+/*
+Layout and syntax colours only. The reset, typography, and every `--theme-*` / `--ansi-*` token come
+from SRCL's `global.css`, imported ahead of this file.
+*/
+
 :root {
-  color-scheme: light dark;
-  --bg: #fbfbfa;
-  --panel: #ffffff;
-  --ink: #1b1b19;
-  --muted: #6b6b66;
-  --line: #e3e3df;
-  --accent: #2f6f4f;
-  --selection: #cfe6d9;
-  --syn-keyword: #8a3fa0;
-  --syn-type: #1f6f6f;
-  --syn-function: #2b5fa8;
-  --syn-string: #2f6f4f;
-  --syn-number: #9a5b1e;
-  --syn-comment: #8a8a84;
-  --syn-property: #1b1b19;
-  --syn-punctuation: #6b6b66;
-  --syn-definition: #2b5fa8;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #17171a;
-    --panel: #1f1f23;
-    --ink: #eceae4;
-    --muted: #9a9a94;
-    --line: #32323a;
-    --accent: #7fc9a0;
-    --selection: #2f4a3d;
-    --syn-keyword: #c792ea;
-    --syn-type: #7fd4c1;
-    --syn-function: #82aaff;
-    --syn-string: #7fc9a0;
-    --syn-number: #f0a05a;
-    --syn-comment: #7a7a74;
-    --syn-property: #eceae4;
-    --syn-punctuation: #9a9a94;
-    --syn-definition: #82aaff;
-  }
-}
-
-* {
-  box-sizing: border-box;
+  --syn-keyword: var(--ansi-13-fuchsia);
+  --syn-type: var(--ansi-14-aqua);
+  --syn-function: var(--ansi-12-blue);
+  --syn-string: var(--ansi-10-lime);
+  --syn-number: var(--ansi-11-yellow);
+  --syn-comment: var(--theme-border-subdued);
+  --syn-property: var(--theme-text);
+  --syn-punctuation: var(--theme-border);
+  --syn-definition: var(--ansi-14-aqua);
 }
 
 body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--ink);
+  background: var(--theme-background);
+  color: var(--theme-text);
 }
 
-main {
+.page {
   max-width: 1180px;
   margin: 0 auto;
-  padding: 32px 24px 64px;
-}
-
-h1 {
-  font-size: 20px;
-  margin: 0 0 4px;
-  letter-spacing: -0.01em;
-}
-
-.lede {
-  color: var(--muted);
-  font-size: 14px;
-  margin: 0 0 24px;
-  max-width: 70ch;
-  line-height: 1.55;
-}
-
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 16px;
-  margin-bottom: 16px;
-}
-
-.controls {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 14px;
-}
-
-label {
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  margin-bottom: 5px;
-}
-
-input[type="text"],
-input[type="number"],
-select {
-  width: 100%;
-  padding: 7px 9px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--ink);
-  font: inherit;
-  font-size: 13px;
-}
-
-.toggles {
+  padding: 24px 16px 64px;
   display: flex;
-  gap: 18px;
-  flex-wrap: wrap;
-  margin-top: 14px;
-}
-.toggles label {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13px;
-  color: var(--ink);
-  font-weight: 400;
-  margin: 0;
-}
-
-button {
-  margin-top: 16px;
-  padding: 9px 20px;
-  border: 0;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
-  font: inherit;
-  font-weight: 600;
-  font-size: 14px;
-  cursor: pointer;
-}
-button:disabled {
-  opacity: 0.5;
-  cursor: progress;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .split {
@@ -144,121 +35,47 @@ button:disabled {
   gap: 16px;
   align-items: start;
 }
-@media (max-width: 860px) {
+
+@media (max-width: 960px) {
   .split {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
-h2 {
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  margin: 0 0 10px;
+.tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-pre {
-  margin: 0;
-  overflow-x: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-td {
-  padding: 4px 0;
-  border-bottom: 1px solid var(--line);
-}
-td:last-child {
-  text-align: right;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-tr.highlight td {
-  font-weight: 600;
-}
-tr.highlight td:first-child {
-  color: var(--accent);
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .status {
-  font-size: 13px;
-  color: var(--muted);
-  margin-top: 12px;
-  min-height: 18px;
+  color: var(--theme-border-subdued);
 }
-.error {
-  color: #c2402f;
+.status.failed {
+  color: var(--ansi-9-red);
 }
+
 .summary {
   display: flex;
-  gap: 22px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 14px;
-  font-size: 13px;
-}
-.summary b {
-  display: block;
-  font-size: 18px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-weight: 600;
-}
-.summary span {
-  color: var(--muted);
 }
 
-.tabs {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 12px;
+.facet.highlight {
+  color: var(--ansi-10-lime);
+}
+.value {
+  text-align: right;
 }
 
-.tab {
-  margin: 0;
-  padding: 7px 16px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--muted);
-  font-weight: 500;
-  font-size: 13px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-.tab.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-  font-weight: 600;
-}
-
-.reset {
-  float: right;
-  margin: -2px 0 0;
-  padding: 2px 9px;
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 500;
-  text-transform: none;
-  letter-spacing: 0;
-}
-
-.hint {
-  text-transform: none;
-  letter-spacing: 0;
-  font-weight: 400;
-  color: var(--muted);
-}
-
+/* CodeMirror draws its own scroller; the card supplies the frame. */
 .cm-editor {
-  min-height: 340px;
-}
-.cm-editor .cm-content {
   min-height: 320px;
 }

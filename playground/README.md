@@ -31,15 +31,30 @@ cannot rot against `src/`) while staying directly evaluable: `evaluateTab` strip
 and rebinds those names as function parameters against a small registry in `src/tab.ts`. A
 specifier that is not in the registry fails loudly rather than yielding `undefined`.
 
-## Editors
+## Interface
 
-CodeMirror 6, with `@replit/codemirror-lang-solidity` for the lens and `@codemirror/lang-javascript`
-for the script. Token colours are CSS variables (`--syn-*`), so both palettes live in `style.css`
-beside the rest of the theme rather than in the editor config.
+[SRCL](https://www.sacred.computer/) supplies the components — a terminal-aesthetic React library
+from Internet Development Studio Company, MIT licensed. It has no npm package, so the components it
+needs are vendored under `vendor/srcl/` by `scripts/vendor-srcl.mjs`, which pins the upstream commit
+in each file's header. Re-sync with:
 
-The Solidity grammar tags value types (`uint256`, `address`) as keywords and leaves user identifiers
-untagged, so that pane is deliberately flatter than the JavaScript one. Separating types would mean
-decorating them ourselves.
+```sh
+node playground/scripts/vendor-srcl.mjs
+```
+
+Vendored files are generated — edit the script, never the output. They carry `@ts-nocheck` because
+SRCL's own tsconfig is looser than this repo's, and are excluded from Biome for the same reason.
+Vite aliases `@components/*` and `@common/*` to the vendored tree so the sources stay byte-for-byte
+upstream.
+
+SRCL scopes its palette to `body.theme-light` / `body.theme-dark` and sets neither by default;
+`main.tsx` applies one from `prefers-color-scheme`. Its `--font-family-mono` names FiraCode, whose
+font files are not vendored, so it falls back to the platform monospace.
+
+Editors are CodeMirror 6 — `@replit/codemirror-lang-solidity` for the lens,
+`@codemirror/lang-javascript` for the script — with token colours mapped onto SRCL's `--ansi-*`
+primitives in `style.css`. The Solidity grammar tags value types (`uint256`, `address`) as keywords
+and leaves user identifiers untagged, so that pane is deliberately flatter than the JavaScript one.
 
 ## Notes
 

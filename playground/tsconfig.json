@@ -6,15 +6,18 @@
     "checkJs": true,
     "rootDir": "..",
     "types": ["vite/client"],
+    "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "paths": {
       "@morpho-org/viem-dlc": ["../src/index.ts"],
-      "@morpho-org/viem-dlc/*": ["../src/*/index.ts"]
+      "@morpho-org/viem-dlc/*": ["../src/*/index.ts"],
+      "@components/*": ["./vendor/srcl/components/*"],
+      "@common/*": ["./vendor/srcl/common/*"]
     },
     "plugins": [{ "name": "soltag/plugin" }]
   },
-  "include": ["./**/*.ts", "./**/*.js", "./.soltag/types.d.ts"],
+  "include": ["./**/*.ts", "./**/*.tsx", "./**/*.js", "./.soltag/types.d.ts"],
   "exclude": ["dist", "public", "node_modules"]
 }

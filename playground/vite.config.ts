@@ -5,10 +5,13 @@ import { defineConfig } from "vite";
 
 const src = fileURLToPath(new URL("../src/", import.meta.url));
 const asyncHooks = fileURLToPath(new URL("./src/shim/async-hooks.ts", import.meta.url));
+const srcl = fileURLToPath(new URL("./vendor/srcl/", import.meta.url));
 
 export default defineConfig({
   // GitHub Pages serves a project site under /<repo>/.
   base: "/viem-dlc/",
+  // esbuild transforms JSX directly; @vitejs/plugin-react would only add Fast Refresh.
+  esbuild: { jsx: "automatic", jsxImportSource: "react" },
   build: {
     rollupOptions: {
       input: {
@@ -21,6 +24,9 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: /^node:async_hooks$/, replacement: asyncHooks },
+      // SRCL is vendored unmodified; its own import aliases are honoured rather than rewritten.
+      { find: /^@components\/(.+)$/, replacement: `${srcl}components/$1` },
+      { find: /^@common\/(.+)$/, replacement: `${srcl}common/$1` },
       { find: /^@morpho-org\/viem-dlc$/, replacement: `${src}index.ts` },
       { find: /^@morpho-org\/viem-dlc\/(.+)$/, replacement: `${src}$1/index.ts` },
     ],
