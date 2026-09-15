@@ -242,6 +242,12 @@ describe("classifyBlockRangeError", () => {
       expect(classifyBlockRangeError(error)).toBe("range");
     });
 
+    it("detects viem's ResponseBodyTooLargeError", () => {
+      const error = new Error("HTTP response body exceeded the size limit.");
+      error.name = "ResponseBodyTooLargeError";
+      expect(classifyBlockRangeError(error)).toBe("range");
+    });
+
     it("detects -32000 errors", () => {
       const error = createRpcError(-32000, "Server error");
       expect(classifyBlockRangeError(error)).toBe("range");

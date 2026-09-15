@@ -215,4 +215,5 @@ const BLOCK_RANGE_ERROR_PATTERNS: { code?: number; message?: RegExp }[] = [
   { message: /blocks/i },
   { message: /returned more than/i },
   { message: /response size/i },
+  { message: /response body exceeded/i },
 ];
