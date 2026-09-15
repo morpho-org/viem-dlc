@@ -26,8 +26,11 @@ type FactorisedFactoryCallParams = {
   batch?: {
     batchSize?: number;
     compress?: boolean;
-    pageSizeHint?: number;
+    gas?: LensGas;
+    continuations?: ContinuationMode;
   };
+  /** The provider's `eth_call` gas cap; with `batch.gas`, sizes the opening wave. */
+  gasLimit?: number;
   restOfEthCallParams: RestOfEthCallParams;
   /**
    * Invoked with each freshly fetched element as its chunk lands, before siblings finish, and
@@ -36,6 +39,20 @@ type FactorisedFactoryCallParams = {
   onResolved?: (entries: readonly ResolvedElement[]) => void | Promise<void>;
   facet?: Facet;
 };
+
+/**
+ * A lens's cost as the caller states it, in the units the wide event reports: `fixed` is what a
+ * frame spends before its first attempt (`fixed_gas`), `item` the per-attempt mean and deviation
+ * (`item_gas_avg`, `item_gas_stddev`). Both are properties of the lens, not of any provider.
+ */
+export type LensGas = { fixed: number; item: { avg: number; stddev?: number } };
+
+/**
+ * When the tails pages leave behind are sent. `fill` sends a tail once enough of them are pending
+ * to fill a page, and the remainder once no earlier chunk that could add to it is in flight;
+ * `eager` sends every tail as soon as its page lands. Anything else reads as `fill`.
+ */
+export type ContinuationMode = "fill" | "eager";
 
 /** An input element's index paired with the raw output bytes fetched for it. */
 export type ResolvedElement = { index: number; output: Hex };
@@ -53,75 +70,143 @@ export type FactorisedFactoryCallResult = {
 
 /**
  * Packs `elements` into deployless-factory `eth_call` chunks under the wire budget
- * (`batch.batchSize`, at most EIP-3860's initcode cap) and, for the opening wave, `batch.pageSizeHint`
- * elements; fetches them in parallel; returns per-element outputs aligned to `elements`. Every
- * page reports how far it got and what its attempts cost, so the waves after the first are packed
- * by {@link predictItems} and an element gas could not resolve is retried once alone.
+ * (`batch.batchSize`, at most EIP-3860's initcode cap) and the gas each chunk is predicted to
+ * need; fetches them in parallel; returns per-element outputs aligned to `elements`. The prediction
+ * runs on the stated `gasLimit` and `batch.gas` until the first page lands and on the pages' own
+ * telemetry after, so the stated figures size the opening wave and, until an attempt has been
+ * costed, the item cost, and nothing else. The tails pages
+ * leave behind are pooled and re-packed together, sent as {@link ContinuationMode} says; an element
+ * gas could not resolve is retried once alone.
  */
 export async function factorisedFactoryCall(
   requestFn: EIP1193RequestFn<PublicRpcSchema>,
-  { target, elements, solidity, batch, restOfEthCallParams, onResolved, facet }: FactorisedFactoryCallParams,
+  { target, elements, solidity, batch, gasLimit, restOfEthCallParams, onResolved, facet }: FactorisedFactoryCallParams,
 ): Promise<FactorisedFactoryCallResult> {
   const compress = batch?.compress ?? false;
   const missing: number[] = [];
   const unresolved: number[] = [];
   const oversize: number[] = [];
   const config = envelopeConfig(solidity, compress);
-  const wrap = (start: number, end: number): Hex =>
+  const wrap = (indices: Chunk): Hex =>
     wrapDeploylessFactoryCall(
-      { target, targetData: arrayToWire(solidity.inputLayout, elements.slice(start, end)) },
+      {
+        target,
+        targetData: arrayToWire(
+          solidity.inputLayout,
+          indices.map((i) => elements[i]!),
+        ),
+      },
       { compress, config },
     );
 
   let referenceWrapped: Hex | undefined;
   const getReferenceWrapped = () => {
-    if (!referenceWrapped) referenceWrapped = wrap(0, elements.length);
+    if (!referenceWrapped) referenceWrapped = wrap(everything);
     return referenceWrapped;
   };
 
   // Static layouts contribute `layout.size` per element; dynamic ones a length word plus their
   // padded bytes. Both are multiples of 32, so the wrapper's own padding is a per-batch constant.
-  const prefixBytes = [0];
+  const everything: number[] = [];
+  const bytesOf: number[] = [];
+  const zerosOf: number[] = [];
+  const layout = solidity.inputLayout;
+  let totalBytes = 0;
+  let totalZeros = 0;
   for (let pos = 0; pos < elements.length; pos++) {
-    const bytes =
-      solidity.inputLayout.mode === "static" ? solidity.inputLayout.size : 32 + hexByteLength(elements[pos]!);
-    prefixBytes.push(prefixBytes[pos]! + bytes);
+    const element = elements[pos]!;
+    const bytes = layout.mode === "static" ? layout.size : 32 + hexByteLength(element);
+    const zeros = zeroBytes(element) + (layout.mode === "static" ? 0 : 32 - nonzeroBytesOf(hexByteLength(element)));
+    everything.push(pos);
+    bytesOf.push(bytes);
+    zerosOf.push(zeros);
+    totalBytes += bytes;
+    totalZeros += zeros;
   }
-  let overheadBytes: number | undefined;
-  const measureWireBytes = compress
-    ? (start: number, end: number) =>
-        hexByteLength(start === 0 && end === elements.length ? getReferenceWrapped() : wrap(start, end))
-    : (start: number, end: number) => {
-        overheadBytes ??= hexByteLength(getReferenceWrapped()) - prefixBytes[elements.length]!;
-        return overheadBytes + prefixBytes[end]! - prefixBytes[start]!;
+  let overhead: WireSize | undefined;
+  /** Sizes the sub-lists `[start, end)` of `indices` as the wire would carry them. */
+  const measurer = (indices: Chunk): ((start: number, end: number) => WireSize) => {
+    if (compress) {
+      return (start, end) =>
+        wireSize(
+          start === 0 && end === indices.length && end === elements.length
+            ? getReferenceWrapped()
+            : wrap(indices.slice(start, end)),
+        );
+    }
+    if (overhead === undefined) {
+      const whole = wireSize(getReferenceWrapped());
+      overhead = {
+        bytes: whole.bytes - totalBytes,
+        zeros: whole.zeros - totalZeros - countingWordZeros(elements.length, totalBytes),
       };
+    }
+    const constant = overhead;
+    const prefixBytes = [0];
+    const prefixZeros = [0];
+    for (let pos = 0; pos < indices.length; pos++) {
+      prefixBytes.push(prefixBytes[pos]! + bytesOf[indices[pos]!]!);
+      prefixZeros.push(prefixZeros[pos]! + zerosOf[indices[pos]!]!);
+    }
+    return (start, end) => {
+      const body = prefixBytes[end]! - prefixBytes[start]!;
+      return {
+        bytes: constant.bytes + body,
+        zeros: constant.zeros + prefixZeros[end]! - prefixZeros[start]! + countingWordZeros(end - start, body),
+      };
+    };
+  };
 
   const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
-  const fits = (start: number, end: number) => wireCap === Infinity || measureWireBytes(start, end) <= wireCap;
-  const hint = batch?.pageSizeHint;
-  const pageSizeHint = hint !== undefined && Number.isSafeInteger(hint) && hint > 0 ? hint : Infinity;
+  const stated = statedGas(gasLimit, batch?.gas);
+  let gas: GasStats | undefined;
+  /** The stated figures until a page has landed, the pooled observations after. */
+  const gasParams = (): GasParams | undefined => {
+    if (gas === undefined) return stated;
+    const item = gas.served === 0n ? stated : moments(gas);
+    if (item === undefined) return undefined;
+    return { cap: Number(gas.cap), fixed: Number(gas.fixed), avg: item.avg, stddev: item.stddev };
+  };
 
-  const packed = packBatches({ count: elements.length, maxItems: pageSizeHint, fits });
-  oversize.push(...packed.oversize);
-  missing.push(...oversize);
-  const ranges = packed.ranges;
+  /** Chunks `indices` under the wire cap and the gas prediction; an element that fits neither alone is declined as oversize. */
+  const pack = (indices: Chunk): Chunk[] => {
+    const params = gasParams();
+    if (indices.length === 0) return [];
+    if (wireCap === Infinity && params === undefined) return [indices];
+    const measure = measurer(indices);
+    const fits = (start: number, end: number) => {
+      const size = measure(start, end);
+      if (size.bytes > wireCap) return false;
+      return params === undefined || fitsGas(size, end - start, params);
+    };
+    const packed = packBatches(indices, fits);
+    for (const index of packed.oversize) {
+      oversize.push(index);
+      missing.push(index);
+    }
+    return packed.chunks;
+  };
+
+  const chunks = pack(everything);
   const outputs = new Array<Hex>(elements.length);
 
   facet?.set({
     elements_requested: elements.length,
-    nominal_batches: ranges.length,
-    ...(pageSizeHint === Infinity ? {} : { page_size_hint: pageSizeHint }),
+    nominal_batches: chunks.length,
+    ...(stated === undefined ? {} : { gas_limit: stated.cap }),
   });
   // Sizes of the *initial* packing, to compare realized utilization against the wire budget.
   // Halved children and continuations are not resampled. Guarded rather than
   // `facet?.stat(...)` so unobserved calls skip re-measuring.
-  if (facet) for (const [start, end] of ranges) facet.stat("batch_bytes", measureWireBytes(start, end));
+  if (facet) for (const chunk of chunks) facet.stat("batch_bytes", measurer(chunk)(0, chunk.length).bytes);
   let fetched = 0;
   const splits = { count: 0, size: 0, timeout: 0, maxDepth: 0 };
   // A lens stopping early is a continuation, a mid-page gas death an escalation; neither is a
   // split, which means only "the provider refused the request's size or timed out".
-  const pages = { continued: 0, waves: 0, escalated: 0, unresolvedAttempts: 0, allSkipped: 0 };
-  let gas: GasStats | undefined;
+  const pages = { continued: 0, escalated: 0, unresolvedAttempts: 0, allSkipped: 0 };
+  const continuations: ContinuationMode = batch?.continuations === "eager" ? "eager" : "fill";
+  const flushes = { full: 0, drain: 0, eager: 0 };
+  let generationMax = 0;
 
   const commit = async (entries: readonly ResolvedElement[]) => {
     for (const { index, output } of entries) outputs[index] = output;
@@ -129,24 +214,17 @@ export async function factorisedFactoryCall(
     if (entries.length > 0) await onResolved?.(entries);
   };
 
-  /** Re-packs `[from, to)` under the wire budget and an item cap. */
-  const packRange = (from: number, to: number, maxItems: number): BatchRange[] =>
-    packBatches({
-      count: to - from,
-      maxItems,
-      fits: (s, e) => fits(from + s, from + e),
-    }).ranges.map(([s, e]) => [from + s, from + e] as const);
-
+  /** `generation` counts the continuations behind a chunk: 0 for the opening wave, one more per tail. */
   const fetchRecursive = async (
-    [start, end]: BatchRange,
-    nextWave: Deferred,
+    indices: Chunk,
+    generation: number,
     precomputed?: Hex,
     timeoutSplitsRemaining = 1,
     depth = 0,
   ): Promise<void> => {
     if (depth > splits.maxDepth) splits.maxDepth = depth;
-    const count = end - start;
-    const wrapped = precomputed ?? wrap(start, end);
+    const count = indices.length;
+    const wrapped = precomputed ?? wrap(indices);
 
     let returndata: Hex;
     try {
@@ -177,11 +255,9 @@ export async function factorisedFactoryCall(
         );
       }
       const halve = (nextBudget = timeoutSplitsRemaining) => {
-        const mid = start + Math.floor(count / 2);
-        return settleAll([
-          fetchRecursive([start, mid], nextWave, undefined, nextBudget, depth + 1),
-          fetchRecursive([mid, end], nextWave, undefined, nextBudget, depth + 1),
-        ]);
+        const mid = Math.floor(count / 2);
+        dispatch(indices.slice(0, mid), generation, undefined, nextBudget, depth + 1);
+        dispatch(indices.slice(mid), generation, undefined, nextBudget, depth + 1);
       };
       const cause = classifyChunkError(e);
       if (cause === "size" && count > 1) {
@@ -199,7 +275,7 @@ export async function factorisedFactoryCall(
 
     const page = hexToPage(solidity.outputLayout, returndata);
     const attempted = validatePage(page, count);
-    gas = pool(gas, page.gas, attempted - (page.died === undefined ? 0 : 1));
+    gas = pool(gas, page.gas, attempted - (page.died === undefined ? 0 : 1), intrinsicGas(wireSize(wrapped)));
     facet?.stat("page_adjudicated", attempted);
     if (page.died === undefined && page.results.length === 0 && page.skipped.length > 0) pages.allSkipped += 1;
 
@@ -207,17 +283,17 @@ export async function factorisedFactoryCall(
     const entries: ResolvedElement[] = [];
     for (let i = 0, served = 0; i < attempted; i++) {
       if (i === page.died) continue;
-      if (declined.has(i)) missing.push(start + i);
-      else entries.push({ index: start + i, output: page.results[served++]! });
+      if (declined.has(i)) missing.push(indices[i]!);
+      else entries.push({ index: indices[i]!, output: page.results[served++]! });
     }
     await commit(entries);
 
     if (page.died !== undefined) {
       pages.unresolvedAttempts += 1;
-      const pos = start + page.died;
+      const pos = indices[page.died]!;
       if (count > 1) {
         pages.escalated += 1;
-        nextWave.singletons.push([pos, pos + 1]);
+        dispatch([pos], generation);
       } else {
         missing.push(pos);
         unresolved.push(pos);
@@ -226,23 +302,88 @@ export async function factorisedFactoryCall(
 
     if (attempted < count) {
       pages.continued += 1;
-      nextWave.tails.push([start + attempted, end]);
+      for (let i = attempted; i < count; i++) pending.push(indices[i]!);
+      if (generation + 1 > pendingGeneration) pendingGeneration = generation + 1;
     }
   };
 
-  let wave: BatchRange[] = ranges;
-  try {
-    while (wave.length > 0) {
-      pages.waves += 1;
-      const nextWave: Deferred = { tails: [], singletons: [] };
-      const isWholeInput = wave.length === 1 && wave[0]![0] === 0 && wave[0]![1] === elements.length;
-      await settleAll(
-        wave.map((range) => fetchRecursive(range, nextWave, isWholeInput ? getReferenceWrapped() : undefined)),
-      );
-      // Tails are packed only once the whole wave has reported, so every one sees the same pool.
-      const cap = gas === undefined ? Infinity : predictItems(gas);
-      wave = [...nextWave.singletons, ...nextWave.tails.flatMap(([from, to]) => packRange(from, to, cap))];
+  // Tails wait in `pending` and every chunk settling runs the pump, which re-packs them from the
+  // pool as it stands and sends what the mode allows. Halves and singleton escalations are chunks
+  // like any other. Nothing is dispatched after a failure; what is in flight settles first, its
+  // results committed, and then the failure surfaces.
+  let pending: number[] = [];
+  let pendingGeneration = 0;
+  let inFlight = 0;
+  // Chunks in flight that could still leave a tail, by generation; a singleton adjudicates its whole input.
+  const openBy: number[] = [];
+  const openBefore = (generation: number) => openBy.slice(0, generation).reduce((n, c) => n + c, 0);
+  let failure: { reason: unknown } | undefined;
+  let settle!: { resolve: () => void; reject: (reason: unknown) => void };
+  const done = new Promise<void>((resolve, reject) => {
+    settle = { resolve, reject };
+  });
+
+  const dispatch = (indices: Chunk, generation: number, precomputed?: Hex, timeoutSplits?: number, depth?: number) => {
+    if (failure !== undefined) return;
+    inFlight += 1;
+    const open = indices.length > 1 ? 1 : 0;
+    openBy[generation] = (openBy[generation] ?? 0) + open;
+    if (generation > generationMax) generationMax = generation;
+    fetchRecursive(indices, generation, precomputed, timeoutSplits, depth)
+      .then(undefined, (reason) => {
+        failure ??= { reason };
+      })
+      .then(() => {
+        inFlight -= 1;
+        openBy[generation]! -= open;
+        pump();
+      });
+  };
+
+  /**
+   * Every chunk but the last the packer builds from `pending` is full: the next element did not fit
+   * it. The last waits only for chunks of an earlier generation, the ones whose tails could still join it.
+   */
+  const flush = () => {
+    const generation = pendingGeneration;
+    const chunks = pack(pending.sort((a, b) => a - b));
+    const remainder = chunks.pop();
+    for (const chunk of chunks) dispatch(chunk, generation);
+    flushes.full += chunks.length;
+    pending = [];
+    pendingGeneration = 0;
+    if (remainder === undefined) return;
+    const release = openBefore(generation) === 0 ? "drain" : continuations === "eager" ? "eager" : undefined;
+    if (release === undefined) {
+      pending = [...remainder];
+      pendingGeneration = generation;
+      return;
     }
+    flushes[release] += 1;
+    dispatch(remainder, generation);
+  };
+
+  const pump = () => {
+    if (failure === undefined && pending.length > 0) {
+      try {
+        flush();
+      } catch (reason) {
+        failure = { reason };
+      }
+    }
+    if (failure !== undefined) {
+      pending = [];
+      if (inFlight === 0) settle.reject(failure.reason);
+      return;
+    }
+    if (inFlight === 0) settle.resolve();
+  };
+
+  try {
+    const isWholeInput = chunks.length === 1 && chunks[0]!.length === elements.length;
+    for (const chunk of chunks) dispatch(chunk, 0, isWholeInput ? getReferenceWrapped() : undefined);
+    pump();
+    await done;
   } finally {
     if (gas !== undefined) facet?.set(gasFields(gas));
     facet?.set({
@@ -255,7 +396,12 @@ export async function factorisedFactoryCall(
       pages_escalated: pages.escalated,
       pages_all_skipped: pages.allSkipped,
       pages_continued: pages.continued,
-      pages_waves: pages.waves,
+      continuations,
+      continuation_depth_max: generationMax,
+      flushes: flushes.full + flushes.drain + flushes.eager,
+      flushes_full: flushes.full,
+      flushes_drain: flushes.drain,
+      flushes_eager: flushes.eager,
       elements_declined_oversize: oversize.length,
       elements_missing: missing.length,
       elements_unresolved: unresolved.length,
@@ -270,75 +416,130 @@ export async function factorisedFactoryCall(
   };
 }
 
-/** The gas telemetry of every page a request has seen, pooled; `budget` is the smallest frame's. */
-type GasStats = { budget: bigint; served: bigint; sum: bigint; sumSquares: bigint; max: bigint };
+/** Ascending indices into `elements`, sent as one request. */
+type Chunk = readonly number[];
 
-function pool(stats: GasStats | undefined, page: PageGas, served: number): GasStats {
-  if (stats === undefined) return { ...page, served: BigInt(served) };
+/**
+ * The gas telemetry of every page a request has seen, pooled: `budget` is the smallest frame's,
+ * `fixed` the largest prologue, `cap` the smallest gas limit a page's frame implies.
+ */
+type GasStats = PageGas & { served: bigint; cap: bigint };
+
+/** `intrinsic` is what the node deducted for the chunk's calldata before the frame began. */
+function pool(stats: GasStats | undefined, page: PageGas, served: number, intrinsic: number): GasStats {
+  const cap = BigInt(intrinsic) + page.fixed + page.budget;
+  if (stats === undefined) return { ...page, served: BigInt(served), cap };
   return {
     budget: page.budget < stats.budget ? page.budget : stats.budget,
+    fixed: page.fixed > stats.fixed ? page.fixed : stats.fixed,
     served: stats.served + BigInt(served),
     sum: stats.sum + page.sum,
     sumSquares: stats.sumSquares + page.sumSquares,
     max: page.max > stats.max ? page.max : stats.max,
+    cap: cap < stats.cap ? cap : stats.cap,
   };
+}
+
+/** What {@link fitsGas} needs: a provider's cap, and a lens's prologue and per-attempt cost. */
+type GasParams = { cap: number; fixed: number; avg: number; stddev: number };
+
+/**
+ * Whether a chunk of `k` elements over `size` bytes is predicted to fit the cap after its own
+ * intrinsic gas, the prologue and its attempts with headroom. A lone element always fits: the
+ * estimate may shorten a chunk but never withhold an element, so the envelope decides what is served.
+ */
+function fitsGas(size: WireSize, k: number, { cap, fixed, avg, stddev }: GasParams): boolean {
+  return k === 1 || intrinsicGas(size) + fixed + chunkCost(k, avg, stddev) <= cap;
+}
+
+/** `gasLimit` and `batch.gas` as the prediction uses them, or nothing when either is missing or unusable. */
+function statedGas(gasLimit: number | undefined, gas: LensGas | undefined): GasParams | undefined {
+  if (gasLimit === undefined || typeof gas !== "object" || gas === null) return undefined;
+  const item = typeof gas.item === "object" && gas.item !== null ? gas.item : undefined;
+  if (item === undefined) return undefined;
+  const { fixed } = gas;
+  const { avg } = item;
+  const stddev = item.stddev ?? 0;
+  const usable =
+    Number.isSafeInteger(gasLimit) &&
+    gasLimit > 0 &&
+    Number.isFinite(fixed) &&
+    fixed >= 0 &&
+    Number.isFinite(avg) &&
+    avg > 0 &&
+    Number.isFinite(stddev) &&
+    stddev >= 0;
+  return usable ? { cap: gasLimit, fixed, avg, stddev } : undefined;
+}
+
+type WireSize = { bytes: number; zeros: number };
+
+function wireSize(hex: Hex): WireSize {
+  return { bytes: hexByteLength(hex), zeros: zeroBytes(hex) };
+}
+
+/**
+ * What a node deducts from its cap before the envelope's first `gas()` returns: the transaction and
+ * creation base, calldata by byte (EIP-2028), initcode by word (EIP-3860) and that opcode's own 2.
+ * Ethereum's schedule; a chain that prices differently shifts `gas_limit_observed` by the difference.
+ */
+function intrinsicGas({ bytes, zeros }: WireSize): number {
+  return 21_000 + 32_000 + 4 * zeros + 16 * (bytes - zeros) + 2 * Math.ceil(bytes / 32) + 2;
+}
+
+/**
+ * Zero bytes in the four words of a clear chunk's wrapper that count its `k` elements and `body`
+ * bytes: the wire's `n` and `bodyLen`, the ABI length of the wire (`64 + body`) and the offset of
+ * `factoryData` behind it (`256 + body`). Everything else in the wrapper is the same for every chunk.
+ */
+function countingWordZeros(k: number, body: number): number {
+  return 128 - nonzeroBytesOf(k) - nonzeroBytesOf(body) - nonzeroBytesOf(64 + body) - nonzeroBytesOf(256 + body);
+}
+
+function zeroBytes(hex: Hex): number {
+  let zeros = 0;
+  for (let i = 2; i < hex.length; i += 2) if (hex.charCodeAt(i) === 48 && hex.charCodeAt(i + 1) === 48) zeros++;
+  return zeros;
+}
+
+/** Non-zero bytes in the 32-byte big-endian encoding of `n`. */
+function nonzeroBytesOf(n: number): number {
+  let count = 0;
+  for (let rest = n; rest > 0; rest = Math.floor(rest / 256)) if (rest % 256 !== 0) count++;
+  return count;
 }
 
 /**
  * Deviations of headroom a predicted chunk keeps below the budget. A target, not a bound: attempt
- * costs are correlated, so Cantelli's `1 / (1 + z²)` does not hold (see the page-telemetry TIB).
+ * costs are correlated, so Cantelli's `1 / (1 + z²)` does not hold (see docs/000016-tib-paginated-lenses.md).
  * An overshoot costs one continuation, packed from more data.
  */
 const PACKING_SIGMAS = 2;
 
-/**
- * The largest chunk whose cost, `k·μ + z·σ·√k` for the pooled mean and deviation of one attempt,
- * fits the budget. `Infinity` before any attempt has been costed.
- */
-function predictItems(gas: GasStats): number {
-  if (gas.served === 0n) return Infinity;
-  const { mean, sigma, budget } = moments(gas);
-  const z = PACKING_SIGMAS;
-  const fits = (k: number) => k * mean + z * sigma * Math.sqrt(k) <= budget;
-  const root = (-z * sigma + Math.sqrt(z * z * sigma * sigma + 4 * mean * budget)) / (2 * mean);
-  let k = Math.floor(root * root);
-  if (fits(k + 1)) k += 1;
-  while (k > 1 && !fits(k)) k -= 1;
-  return Math.max(1, k);
+/** The cost of a chunk of `k` attempts at mean `mean` and deviation `sigma` each, with headroom for the spread. */
+function chunkCost(k: number, mean: number, sigma: number): number {
+  return k * mean + PACKING_SIGMAS * sigma * Math.sqrt(k);
 }
 
 /** Mean and population deviation of one attempt's cost; the variance's numerator stays exact in bigint. */
-function moments({ budget, served, sum, sumSquares }: GasStats) {
+function moments({ served, sum, sumSquares }: GasStats) {
   const n = Number(served);
   return {
-    budget: Number(budget),
-    mean: Number(sum) / n,
-    sigma: Math.sqrt(Number(served * sumSquares - sum * sum)) / n,
+    avg: Number(sum) / n,
+    stddev: Math.sqrt(Number(served * sumSquares - sum * sum)) / n,
   };
 }
 
 function gasFields(gas: GasStats): Record<string, number> {
-  if (gas.served === 0n) return { frame_gas: Number(gas.budget) };
-  const { budget, mean, sigma } = moments(gas);
-  return {
-    frame_gas: budget,
-    item_gas_avg: mean,
-    item_gas_stddev: sigma,
-    item_gas_max: Number(gas.max),
-    page_size_suggested: predictItems(gas),
-  };
-}
-
-/** `Promise.all`, but every branch settles before the first failure surfaces. */
-async function settleAll(promises: readonly Promise<void>[]): Promise<void> {
-  const settled = await Promise.allSettled(promises);
-  const failure = settled.find((s) => s.status === "rejected");
-  if (failure) throw (failure as PromiseRejectedResult).reason;
+  const frame = { frame_gas: Number(gas.budget), fixed_gas: Number(gas.fixed), gas_limit_observed: Number(gas.cap) };
+  if (gas.served === 0n) return frame;
+  const { avg, stddev } = moments(gas);
+  return { ...frame, item_gas_avg: avg, item_gas_stddev: stddev, item_gas_max: Number(gas.max) };
 }
 
 /**
  * Returns the number of elements the page adjudicated, in `1..count`. The floor is what keeps every
- * wave making progress; the decoder has already bound each record to its ordinal.
+ * chunk making progress; the decoder has already bound each record to its ordinal.
  */
 function validatePage({ results, skipped, died }: Page, count: number): number {
   const attempted = results.length + skipped.length + (died === undefined ? 0 : 1);
@@ -359,46 +560,34 @@ async function fetchChunk(requestFn: EIP1193RequestFn<PublicRpcSchema>, data: He
   throw new Error("revert-mode wrapper returned without reverting");
 }
 
-type BatchRange = readonly [start: number, end: number];
-
-/** What a wave hands the next one: continuation tails, packed once the wave has settled, and singleton escalations. */
-type Deferred = { tails: BatchRange[]; singletons: BatchRange[] };
-
-type PackBatchesArgs = {
-  count: number;
-  maxItems: number;
-  /** Whether `[start, end)` fits every budget. Must be monotonic in `end` for a fixed `start`. */
-  fits: (start: number, end: number) => boolean;
-};
-
 /**
- * Greedy packer: each batch takes the longest prefix of the remainder that `fits`, at most
- * `maxItems` long, found by binary search with a defensive linear shrink for measures that are
- * not perfectly monotonic. An element that does not fit alone is reported in `oversize` and
- * left out rather than sent.
+ * Greedy packer over positions in `indices`: each chunk takes the longest prefix of the remainder
+ * that `fits`, found by binary search with a defensive linear shrink for measures that are not
+ * perfectly monotone. An element that does not fit alone is reported in `oversize` and left out
+ * rather than sent.
  */
-function packBatches({ count, maxItems, fits }: PackBatchesArgs): { ranges: BatchRange[]; oversize: number[] } {
-  const ranges: BatchRange[] = [];
+function packBatches(
+  indices: Chunk,
+  fits: (start: number, end: number) => boolean,
+): { chunks: Chunk[]; oversize: number[] } {
+  const chunks: Chunk[] = [];
   const oversize: number[] = [];
-  const itemCap = maxItems > 0 ? maxItems : Infinity;
+  const count = indices.length;
 
   let start = 0;
   while (start < count) {
-    const itemCappedEnd = Math.min(count, start + itemCap);
-
-    if (fits(start, itemCappedEnd)) {
-      ranges.push([start, itemCappedEnd]);
-      start = itemCappedEnd;
-      continue;
+    if (fits(start, count)) {
+      chunks.push(indices.slice(start));
+      break;
     }
     if (!fits(start, start + 1)) {
-      oversize.push(start);
+      oversize.push(indices[start]!);
       start += 1;
       continue;
     }
 
     let end = start + 1;
-    let hi = itemCappedEnd;
+    let hi = count;
     while (end < hi) {
       const mid = Math.floor((end + hi + 1) / 2);
       if (fits(start, mid)) {
@@ -411,10 +600,10 @@ function packBatches({ count, maxItems, fits }: PackBatchesArgs): { ranges: Batc
       end--;
     }
 
-    ranges.push([start, end]);
+    chunks.push(indices.slice(start, end));
     start = end;
   }
-  return { ranges, oversize };
+  return { chunks, oversize };
 }
 
 function hexByteLength(hex: Hex): number {

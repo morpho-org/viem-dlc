@@ -189,6 +189,18 @@ contract EnvelopeTest {
         require(consistent(z, 3) && z.sum > clear.sum, "compressed costs more");
     }
 
+    /// `fixed` is what reaching the loop cost: at least the lens's code deposit, the same for any
+    /// `n`, and with `budget` never more than the frame received.
+    function test_telemetry_fixedIsTheProloguesCost() public {
+        (, bytes memory small) = execWithGas(staticIc(values(3), modes(3)), 3_000_000);
+        Env.Page memory p3 = Env.page(small);
+        Env.Page memory p110 = Env.page(staticPage(values(110), modes(110)));
+        require(p3.prologue > 200 * type(StaticLens).runtimeCode.length, "covers the code deposit");
+        require(p3.prologue + p3.budget < 3_000_000, "under the grant");
+        uint256 diff = p3.prologue > p110.prologue ? p3.prologue - p110.prologue : p110.prologue - p3.prologue;
+        require(diff * 100 < p3.prologue, "independent of n");
+    }
+
     function test_malformedStatic() public {
         uint256[] memory m = modes(2);
         m[1] = 4;

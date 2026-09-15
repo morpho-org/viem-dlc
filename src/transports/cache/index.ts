@@ -110,14 +110,14 @@ export function createSimpleInvalidation(
  */
 export function cache(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  [{ binSize, store, invalidationStrategy }, logsDividerConfig, ...otherConfigs]: [
+  [{ binSize, store, invalidationStrategy, gasLimit }, logsDividerConfig, ...otherConfigs]: [
     CacheConfig,
     Omit<LogsDividerConfig, "alignTo">,
     LogsEnricherConfig,
     LogsSieveConfig,
     RateLimiterConfig,
   ],
-): Transport<typeof cacheTransportKey, { store: Store }, EIP1193RequestFn<CacheSchema>> {
+): Transport<typeof cacheTransportKey, { store: Store; gasLimit?: number }, EIP1193RequestFn<CacheSchema>> {
   const facetId = createFacetId(cacheTransportKey);
 
   return (params) => {
@@ -135,6 +135,7 @@ export function cache(
       store,
       binSize,
       invalidationStrategy,
+      gasLimit,
       chainId,
       requestFn: transport.request,
       coalesce,
@@ -164,11 +165,11 @@ export function cache(
       {
         key: cacheTransportKey,
         name: "[viem-dlc] cache",
-        request: observe(request, facetId) as EIP1193RequestFn,
+        request: observe(request, facetId, params.chain?.id) as EIP1193RequestFn,
         retryCount: 0,
         type: cacheTransportKey,
       },
-      { store },
+      { store, gasLimit },
     );
   };
 }

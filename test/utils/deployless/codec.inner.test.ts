@@ -38,8 +38,9 @@ const wordHex = (n: number | bigint) => `0x${word(n)}` as Hex;
 
 /** A success record: `(1 << 255) | L` then the `L` raw bytes. */
 const success = (element: Hex) => word((1n << 255n) | BigInt((element.length - 2) / 2)) + element.slice(2);
-/** The four telemetry words as they sit on the wire. */
-const header = ({ budget, sum, sumSquares, max }: PageGas) => word(budget) + word(sum) + word(sumSquares) + word(max);
+/** The five telemetry words as they sit on the wire. */
+const header = ({ budget, fixed, sum, sumSquares, max }: PageGas) =>
+  word(budget) + word(fixed) + word(sum) + word(sumSquares) + word(max);
 /** An outcome stream: `nA`, flat telemetry for every record but a death, then the records verbatim. */
 const stream = (...records: string[]) => {
   const served = records.filter((r) => !r.startsWith("ffff")).length;
@@ -299,7 +300,7 @@ describe("hexToPage", () => {
   });
 
   it.each([
-    ["a payload shorter than its header", `0x${word(1)}${word(0).repeat(3)}`, /shorter than its header/],
+    ["a payload shorter than its header", `0x${word(1)}${word(0).repeat(4)}`, /shorter than its header/],
     ["a page that adjudicated nothing", stream(), /adjudicated no elements/],
     ["more records than the payload can hold", `0x${word(2)}${word(0).repeat(5)}`, /claims 2 records in 192 bytes/],
     ["a decline bound to another ordinal", stream(word(1), word(1)), /record 0 declines element 1/],

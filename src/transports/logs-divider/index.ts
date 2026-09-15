@@ -88,7 +88,7 @@ export function logsDivider(
     return createTransport({
       key: logsDividerTransportKey,
       name: "[viem-dlc] logs-divider",
-      request: observe(request, facetId) as EIP1193RequestFn,
+      request: observe(request, facetId, params.chain?.id) as EIP1193RequestFn,
       retryCount: 0,
       type: logsDividerTransportKey,
     });

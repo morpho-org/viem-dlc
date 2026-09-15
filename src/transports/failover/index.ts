@@ -92,7 +92,7 @@ export function failover<S extends RpcSchema>(
       }
     };
 
-    const observed = observe(request, facetId) as EIP1193RequestFn;
+    const observed = observe(request, facetId, params.chain?.id) as EIP1193RequestFn;
 
     // Bypass `createTransport` so we don't add a redundant `buildRequest` layer.
     // Failover doesn't classify errors, retry, or dedupe — wrapping here would only

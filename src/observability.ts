@@ -280,8 +280,9 @@ function finalizeFields(root: RootState): Record<string, unknown> {
  * Every crossing (outermost included) increments `id`'s `crossings` field, so the
  * event records which transports this call traversed and how many times each.
  * Running on boundary entry also pins `id`'s label before any handler writes.
+ * `chainId`, when the transport's client has a chain, is stamped as `chain_id`.
  */
-export function observe<F extends (req: never) => Promise<unknown>>(fn: F, id: FacetId): F {
+export function observe<F extends (req: never) => Promise<unknown>>(fn: F, id: FacetId, chainId?: number): F {
   const countCrossing = (root: RootState) => {
     const fk = `${resolvePrefix(root, id)}.crossings`;
     root.fields[fk] = ((root.fields[fk] as number) ?? 0) + 1;
@@ -299,6 +300,7 @@ export function observe<F extends (req: never) => Promise<unknown>>(fn: F, id: F
       // Seeded context first, so the canonical fields below can't be overwritten.
       ...scope.context,
       library: "viem-dlc",
+      ...(chainId === undefined ? {} : { chain_id: chainId }),
       // Trimmed so a large calldata or filter payload can't dominate the event.
       req: deepTransform(req, {
         transformLeaf: <T>(v: T) => (typeof v === "string" && v.length > 100 ? v.slice(0, 97).concat("...") : v) as T,

@@ -146,6 +146,8 @@ export function hexToArray(layout: ElementLayout, encoded: Hex): readonly Hex[] 
 export type PageGas = {
   /** What the loop could spend on attempts: the frame's gas at the loop's start, less the reserve every admission keeps. */
   budget: bigint;
+  /** What the frame spent before the loop: prologue, deploy and the reserve. `fixed + budget` is the gas it arrived with. */
+  fixed: bigint;
   /** Over the per-attempt gas of every record but a death: the sum, the sum of squares, the maximum. */
   sum: bigint;
   sumSquares: bigint;
@@ -166,13 +168,13 @@ export type Page = {
   gas: PageGas;
 };
 
-/** `nA` and the four {@link PageGas} words. */
-const PAGE_HEADER_BYTES = 160;
+/** `nA` and the five {@link PageGas} words. */
+const PAGE_HEADER_BYTES = 192;
 const UINT256_MAX = (1n << 256n) - 1n;
 const SUCCESS_BIT = 1n << 255n;
 
 /**
- * Decodes the envelope's outcome stream: `nA`, the four gas words, then one record per adjudicated
+ * Decodes the envelope's outcome stream: `nA`, the five gas words, then one record per adjudicated
  * element in attempt order — success `(1 << 255) | L ‖ L bytes of raw U`, decline `i`, death `~i`
  * (last only). Every record is bound to its ordinal, the payload must be consumed exactly, and the
  * gas words must be consistent with each other, so anything this accepts is a well-formed page; it
@@ -188,9 +190,10 @@ export function hexToPage(layout: ElementLayout, encoded: Hex): Page {
   }
   const gas: PageGas = {
     budget: readWord(encoded, 32),
-    sum: readWord(encoded, 64),
-    sumSquares: readWord(encoded, 96),
-    max: readWord(encoded, 128),
+    fixed: readWord(encoded, 64),
+    sum: readWord(encoded, 96),
+    sumSquares: readWord(encoded, 128),
+    max: readWord(encoded, 160),
   };
   const results: Hex[] = [];
   const skipped: number[] = [];
@@ -254,6 +257,7 @@ export function pageToWire({ results, skipped, died, gas }: Page): Hex {
   let out =
     writeUint256(attempted) +
     writeWord(gas.budget) +
+    writeWord(gas.fixed) +
     writeWord(gas.sum) +
     writeWord(gas.sumSquares) +
     writeWord(gas.max);
