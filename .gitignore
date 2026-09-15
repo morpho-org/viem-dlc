@@ -54,3 +54,6 @@ probes/
 .soltag/
 test/bench/fixtures/
 *.ignore.md
+
+# copied from node_modules/solc for the playground's in-browser compiler
+playground/public/

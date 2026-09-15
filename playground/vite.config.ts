@@ -9,6 +9,14 @@ const asyncHooks = fileURLToPath(new URL("./src/shim/async-hooks.ts", import.met
 export default defineConfig({
   // GitHub Pages serves a project site under /<repo>/.
   base: "/viem-dlc/",
+  build: {
+    rollupOptions: {
+      input: {
+        index: fileURLToPath(new URL("./index.html", import.meta.url)),
+        selftest: fileURLToPath(new URL("./selftest.html", import.meta.url)),
+      },
+    },
+  },
   plugins: [soltag({ solc: { optimizer: { enabled: true, runs: 200 } } })],
   resolve: {
     alias: [

@@ -2,7 +2,10 @@
   "extends": "../tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
     "rootDir": "..",
+    "types": ["vite/client"],
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
@@ -12,5 +15,6 @@
     },
     "plugins": [{ "name": "soltag/plugin" }]
   },
-  "include": ["./**/*.ts", "./.soltag/types.d.ts"]
+  "include": ["./**/*.ts", "./**/*.js", "./.soltag/types.d.ts"],
+  "exclude": ["dist", "public", "node_modules"]
 }
