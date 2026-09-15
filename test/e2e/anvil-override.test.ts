@@ -23,8 +23,8 @@ import { privateKeyToAccount } from "viem/accounts";
 import { foundry } from "viem/chains";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { MAX_INITCODE_SIZE } from "../../src/actions/call.js";
 import { readLens } from "../../src/actions/read-lens.js";
+import { EIP_3860_INITCODE_SIZE } from "../../src/chains/index.js";
 import { withLogging } from "../../src/observability.js";
 import { deployless } from "../../src/transports/deployless/index.js";
 import type { EnvelopeDelivery } from "../../src/utils/deployless/codec.envelope.js";
@@ -190,7 +190,7 @@ describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
 
   it("carries by override the chunk the initcode cap refuses", async () => {
     const tuple = args(ELEMENTS);
-    expect(tuple.length / 2 - 1 + FACTORY_BYTECODE_REVERT.length / 2).toBeGreaterThan(MAX_INITCODE_SIZE);
+    expect(tuple.length / 2 - 1 + FACTORY_BYTECODE_REVERT.length / 2).toBeGreaterThan(EIP_3860_INITCODE_SIZE);
 
     const refused = await rpc(deliveryParams("initcode", tuple, ["latest"], undefined)).catch((e) => e);
     expect(upstreamMessage(refused)).toMatch(/initcode/i);
@@ -281,8 +281,7 @@ describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
     const page = await readAll(transport);
 
     expect(page.results).toEqual(inputs(ELEMENTS).map((x) => x.a * 2n));
-    // With no `batchSize` the whole input goes out as one initcode chunk, which the node refuses
-    // for its size; the packer halves until the pieces fit under the cap.
+    // The chain's initcode limit binds without a `batchSize`, so the packer splits before sending.
     expect(ethCalls().length).toBeGreaterThan(1);
     for (const call of ethCalls()) {
       const [transaction] = call.params ?? [];

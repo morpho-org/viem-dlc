@@ -17,7 +17,7 @@ import {
 } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { MAX_INITCODE_SIZE } from "../../src/actions/call.js";
+import { EIP_3860_INITCODE_SIZE, monad } from "../../src/chains/index.js";
 import { withLogging } from "../../src/observability.js";
 import { type DeploylessConfig, deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
@@ -176,8 +176,9 @@ function mockPagedFn() {
   });
 }
 
-function createTransport(requestFn: ReturnType<typeof vi.fn>, config?: DeploylessConfig) {
-  return deployless(custom({ request: requestFn as never }), config)({ retryCount: 0 } as never);
+function createTransport(requestFn: ReturnType<typeof vi.fn>, config?: DeploylessConfig, chainId?: number) {
+  const chain = chainId === undefined ? undefined : { id: chainId };
+  return deployless(custom({ request: requestFn as never }), config)({ retryCount: 0, chain } as never);
 }
 
 function decodeResults(result: unknown): readonly bigint[] {
@@ -310,14 +311,38 @@ describe("deployless", () => {
       expect(capped.mock.calls.length).toBe(2);
     });
 
-    it("sends everything in one chunk when no batchSize is set", async () => {
+    it("packs under the chain's initcode limit with no batchSize stated", async () => {
       const requestFn = mockPagedFn();
       const transport = createTransport(requestFn);
 
       const result = await transport.request(createRequest(addrs(40_000)));
 
-      expect(requestFn).toHaveBeenCalledOnce();
+      // An initcode chunk's bytes are the initcode, so the chain's limit binds without being stated.
+      expect(requestFn.mock.calls.length).toBeGreaterThan(1);
+      for (const data of sentData(requestFn)) expect(byteLength(data)).toBeLessThanOrEqual(EIP_3860_INITCODE_SIZE);
       expect(decodeResults(result)).toHaveLength(40_000);
+    });
+
+    it("packs the same input into fewer chunks on a chain that raises the limit", async () => {
+      const ethereum = mockPagedFn();
+      const raised = mockPagedFn();
+
+      await createTransport(ethereum).request(createRequest(addrs(40_000)));
+      const result = await createTransport(raised, undefined, monad.id).request(createRequest(addrs(40_000)));
+
+      expect(raised.mock.calls.length).toBeLessThan(ethereum.mock.calls.length);
+      for (const data of sentData(raised)) expect(byteLength(data)).toBeLessThanOrEqual(monad.maxInitcodeSize);
+      expect(sentData(raised).some((data) => byteLength(data) > EIP_3860_INITCODE_SIZE)).toBe(true);
+      expect(decodeResults(result)).toHaveLength(40_000);
+    });
+
+    it("does not let a batchSize above the chain's initcode limit lift it", async () => {
+      const requestFn = mockPagedFn();
+      const transport = createTransport(requestFn);
+
+      await transport.request(createRequest(addrs(40_000), { batch: { batchSize: 5_000_000 } }));
+
+      for (const data of sentData(requestFn)) expect(byteLength(data)).toBeLessThanOrEqual(EIP_3860_INITCODE_SIZE);
     });
 
     it("packs a wide output stride no differently: nothing is reserved for results", async () => {
@@ -352,7 +377,7 @@ describe("deployless", () => {
       const requestFn = mockPagedFn();
       const transport = createTransport(requestFn);
       const req = createRequest(Array<Address>(40_000).fill(addrs(1)[0]!), {
-        batch: { batchSize: MAX_INITCODE_SIZE, compress: true },
+        batch: { compress: true },
       });
 
       const { logger, events } = createStubLogger();
@@ -360,7 +385,7 @@ describe("deployless", () => {
       const field = (name: string) => findDotted(events[0]!.context, "viem-dlc-deployless", `eth_call.${name}`);
 
       expect(requestFn).toHaveBeenCalledOnce();
-      expect(field("batch_bytes.max")).toBeLessThan(MAX_INITCODE_SIZE);
+      expect(field("batch_bytes.max")).toBeLessThan(EIP_3860_INITCODE_SIZE);
       expect(decodeResults(result)).toHaveLength(40_000);
     });
 

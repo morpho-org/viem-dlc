@@ -79,8 +79,9 @@ there's no creation base and no initcode words. Second, the prologue's copy of t
 is the chunk's cost, not the lens's, so it leaves `fixed` and is added back per candidate. Third,
 since Prague a frame must clear EIP-7623's floor to start at all, so a lone element above the floor
 is declined as oversize, the same way an element above the byte cap is. A stated `gasLimit` bounds
-the opening wave's bytes on its own. When neither `gasLimit` nor `batchSize` is stated, nothing is
-assumed on the caller's behalf.
+the opening wave's bytes on its own. The chain's initcode limit bounds an initcode chunk, whose bytes
+are the initcode, and reaches no override chunk; beyond those, when neither `gasLimit` nor
+`batchSize` is stated, nothing is assumed on the caller's behalf.
 
 **Choosing and falling back.** A request with the option opens by override. Every response to an
 override chunk is classified first by whether it proves the envelope ran. A page or any
@@ -139,9 +140,11 @@ APPS-1406 holds the full matrix with the probe figures.
 
 - **The provider's request size limit replaces the initcode cap.** It's discovered by halving, one
   round trip per level. A caller who sets `batchSize` to the provider's limit skips the discovery.
-- **With no `gasLimit` and no `batchSize`, the opening chunk is the whole input.** By override, it
-  can fail to start on a Prague node and halves until it does. The paginated-lenses TIB accepts the
-  same shape one cap in.
+  Nothing else bounds an override chunk's bytes: the chain's initcode limit bounds the initcode, and
+  an override chunk carries none.
+- **With no `gasLimit` and no `batchSize`, the opening override chunk is the whole input.** It can
+  fail to start on a Prague node and halves until it does. The paginated-lenses TIB accepts the same
+  shape one cap in. By initcode the chain's limit applies, so only override opens unbounded.
 - **Lifting the cap widens every per-byte schedule mismatch.** Intrinsic gas and the floor are
   Ethereum's on Monad too. Memory isn't, so the copy is priced on Ethereum's schedule as a ceiling.
   On Monad that under-packs by a percent or two and never over-packs. A chain that prices memory
@@ -186,8 +189,9 @@ APPS-1406 holds the full matrix with the probe figures.
   429 followed by a 200, would outlive the provider it described.
 - **`OOG_SENTINEL` stays terminal,** because the predicate has already paid for the bytes. Halving
   can't shrink a constructor, and it would bisect a broken lens into a response that looks complete.
-- **The fallback assumes no byte cap the caller didn't state,** so initcode delivery doesn't gain a
-  default it has nowhere else. `MAX_INITCODE_SIZE` is Ethereum's figure, and a caller passes it.
+- **The fallback packs under the initcode limit of the chain it is on,** which the chain record
+  carries, so a fallback piece is sized the way any initcode chunk is. The limit is the protocol's
+  and belongs to this package; the provider's request limit is the caller's and stays stated.
 - **The request context is derived once, at entry,** because the cache's identity is built from it
   before the packer runs.
 - **`batch.envelope` names what's delivered,** not the parameter it rides, and it lives beside the
@@ -209,8 +213,9 @@ APPS-1406 holds the full matrix with the probe figures.
 - **Reading elements straight from calldata** by override was declined. It adds a second input path
   through the one place the paginated-lenses TIB worked hardest to keep singular, for a term that the
   floor dominates eighteenfold.
-- **An opening byte cap for override delivery** (256 KiB) was declined as a default no other
-  delivery has. Letting a stated `gasLimit` admit bytes removed the common half of the case.
+- **An opening byte cap for override delivery** (256 KiB) was declined as an invented figure: the
+  initcode limit initcode delivery observes is the protocol's, while no constant describes what a
+  provider accepts. Letting a stated `gasLimit` admit bytes removed the common half of the case.
 - **Halving on `OOG_SENTINEL`** was a first draft that review caught (see Notes).
 - **A per-transport memo of non-support,** negative only and set on unambiguous evidence, was
   designed and implemented, then removed: it saved one wave per request on an unsupporting provider

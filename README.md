@@ -56,8 +56,8 @@ emit at `error` level with the error attached via `withError`, so hosts that for
 
 Thin transport wrapper for deployless `eth_call` splitting. It only intercepts calls carrying
 the `policy(...)` sentinel in `stateOverride`, re-packs the marked input array into one or more
-deployless-factory calls under a wire byte budget (`batch.batchSize`), aggregates the pages that
-come back, and forwards everything else unchanged.
+deployless-factory calls under a wire byte budget (the chain's initcode limit, and `batch.batchSize`
+where stated), aggregates the pages that come back, and forwards everything else unchanged.
 No gas figure is load-bearing: the envelope calls the lens's per-item function once per element
 in its own frame and reports how far it got, so a chunk adapts to whatever gas the node grants —
 see [Paginated lenses](#paginated-lenses). An optional `gasLimit` lets the opening wave
@@ -123,7 +123,7 @@ lens does not implement is one cause), `attempts_unresolved` (elements a frame's
 resolve, whether the per-item frame died or the envelope refused to start it), `pages_escalated`
 (singleton retries those cost), and, matching the response's
 `skipped` array: `elements_missing` in total, of which `elements_declined_oversize` could not fit
-a chunk alone under `batch.batchSize` and `elements_unresolved` were gas-terminal even alone —
+a chunk alone under the byte budget and `elements_unresolved` were gas-terminal even alone —
 the subset another provider with a higher cap might still serve.
 
 Every page also reports what its attempts cost, and the request pools it: `frame_gas` (the gas a
@@ -469,13 +469,13 @@ options; returns `{ results, skipped }`, with `results` typed from the per-item 
 type and `skipped` the indices into `args` that were not served.
 
 ```ts
-import { readLens, MAX_INITCODE_SIZE } from '@morpho-org/viem-dlc/actions'
+import { readLens } from '@morpho-org/viem-dlc/actions'
 
 const { results, skipped } = await readLens(client, {
   ...healthLens.with(MORPHO),          // abi, address, factory, factoryData
   functionName: 'healthOf',            // f(T) returns (U), one parameter, one value
   args: inputs,                        // T[]
-  batch: { batchSize: MAX_INITCODE_SIZE, compress: true },
+  batch: { compress: true },
   cache: { blobKey: 'blue-health', ttl: 60_000 },
 })
 ```
@@ -532,10 +532,12 @@ policy(opts: {
   selector the lens does not implement fails as a page that skips every element.
 - **`opts.batch`** — optional batching config. Omit to send all elements in a single upstream
   `eth_call`.
-- **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk; elements
-  are greedy-packed under it and fetched in parallel. `MAX_INITCODE_SIZE` (EIP-3860's 49 152
-  bytes) is the usual value for initcode delivery; by override the bound is the provider's request
-  size limit. The cap is not tuned per lens, chain, or provider.
+- **`opts.batch.batchSize`** — the largest request the provider accepts, in bytes of the
+  `eth_call` `data` field; elements are greedy-packed under it and fetched in parallel. State what
+  the provider documents, often a few megabytes; omit it and only the chain's limit applies. An
+  initcode-delivered chunk's bytes are the initcode, so the chain's initcode limit (EIP-3860's
+  49 152 bytes, more where a chain raised it) binds it too, without being stated, and is usually
+  far the smaller of the two. By override delivery `batchSize` is the only bound.
 - **`opts.batch.compress`** — FastLZ-compress calldata on the wire, so more elements fit per
   chunk at the cost of encoding time and decompression gas. The envelope decompresses element by
   element as it attempts them, so a highly compressible chunk pages like any other and costs

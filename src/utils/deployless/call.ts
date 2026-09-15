@@ -1,6 +1,6 @@
 import { BaseError, type EIP1193RequestFn, type Hex, type PublicRpcSchema, toHex } from "viem";
 
-import type { ChainDefinition, EthCallGas } from "../../chains/index.js";
+import { type ChainDefinition, EIP_3860_INITCODE_SIZE, type EthCallGas } from "../../chains/index.js";
 import type { Facet } from "../../observability.js";
 import { causeChain, isTimeoutLikeError } from "../errors.js";
 
@@ -41,9 +41,10 @@ type FactorisedFactoryCallParams = {
 /** `policy().batch`: how a paginated lens's elements are chunked, priced and delivered. */
 export type BatchOptions = {
   /**
-   * Maximum bytes of a chunk's `eth_call` `data`; elements are greedy-packed under it and fetched in
-   * parallel. The chain's initcode cap (`MAX_INITCODE_SIZE` on Ethereum) is the usual value for
-   * initcode delivery; by override the provider's request size limit is the bound.
+   * The largest request the provider accepts, in bytes of a chunk's `eth_call` `data`; elements are
+   * greedy-packed under it and fetched in parallel. State what the provider documents, often a few
+   * megabytes. An initcode-delivered chunk is also bound by the chain's initcode limit, which is
+   * applied without being stated and is usually far the smaller of the two.
    */
   batchSize?: number;
   /**
@@ -94,6 +95,12 @@ export type Provider = {
    * for, where the node is taken to grant its cap unasked.
    */
   gas?: Hex;
+  /**
+   * What an initcode-delivered chunk's bytes may not exceed, since they are the initcode: the
+   * chain's limit, or EIP-3860's on a chain this package has no definition for. Override-delivered
+   * chunks don't carry the envelope as initcode and aren't bound by it.
+   */
+  maxInitcodeSize: number;
 };
 
 export function providerOf(chain: ChainDefinition | undefined, gasLimit: number | undefined): Provider {
@@ -101,6 +108,7 @@ export function providerOf(chain: ChainDefinition | undefined, gasLimit: number 
   return {
     cap,
     gas: cap !== undefined && chain?.ethCall.gasWhenUnspecified === "fixedDefault" ? toHex(cap) : undefined,
+    maxInitcodeSize: chain?.maxInitcodeSize ?? EIP_3860_INITCODE_SIZE,
   };
 }
 
@@ -168,7 +176,7 @@ export async function factorisedFactoryCall(
     elements,
     lens,
     batch,
-    provider: { cap, gas: sentGas },
+    provider: { cap, gas: sentGas, maxInitcodeSize },
     restOfEthCallParams,
     onResolved,
     facet,
@@ -253,7 +261,12 @@ export async function factorisedFactoryCall(
     };
   };
 
-  const wireCap = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
+  const stated = batch?.batchSize && batch.batchSize > 0 ? batch.batchSize : Infinity;
+  /** What a chunk's bytes may not exceed, per delivery: the provider's limit, and the chain's initcode limit. */
+  const wireCap: Record<EnvelopeDelivery, number> = {
+    initcode: Math.min(stated, maxInitcodeSize),
+    override: stated,
+  };
   const cost = costModel(cap, batch?.gas, compress);
 
   /**
@@ -262,11 +275,11 @@ export async function factorisedFactoryCall(
    */
   const pack = (indices: Chunk, delivery: EnvelopeDelivery) => {
     if (indices.length === 0) return [];
-    if (wireCap === Infinity && !cost.known) return [indices];
+    if (wireCap[delivery] === Infinity && !cost.known) return [indices];
     const measure = measurer(indices);
     const fits = (start: number, end: number) => {
       const tuple = measure(start, end);
-      return sentSize(tuple, delivery).bytes <= wireCap && cost.fits(tuple, end - start, delivery);
+      return sentSize(tuple, delivery).bytes <= wireCap[delivery] && cost.fits(tuple, end - start, delivery);
     };
     const packed = packBatches(indices, fits, compress);
     for (const index of packed.oversize) decline(index, "preflight");

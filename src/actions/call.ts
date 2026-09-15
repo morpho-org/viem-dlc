@@ -5,13 +5,6 @@ import { ETH_CALL_POLICY_ADDRESS, type EthCallPolicy } from "../transports/state
 import type { BatchOptions } from "../utils/deployless/call.js";
 
 /**
- * Ethereum's EIP-3860 initcode cap. Deployless calldata rides inside initcode unless
- * `batch.envelope` is `override`, so on a chain that keeps Ethereum's figure this is the natural
- * `batch.batchSize` for initcode delivery; a chain that raises it takes its own (Monad: 262,144).
- */
-export const MAX_INITCODE_SIZE = 49_152;
-
-/**
  * Returns a StateOverride entry encoding the `eth_call` policy. Pass it in the `stateOverride`
  * array; `readLens` does so for you.
  *

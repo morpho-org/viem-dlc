@@ -16,6 +16,12 @@ export type EthCallGas = {
 };
 
 /**
+ * EIP-3860's initcode limit, which a chain keeps unless it names its own. An initcode-delivered
+ * chunk's bytes are the initcode, so this is what bounds one.
+ */
+export const EIP_3860_INITCODE_SIZE = 49_152;
+
+/**
  * What this package knows about a chain beyond what viem's own definition carries. Internal for now:
  * the record's shape is expected to change as more facts are added, so it is not exported.
  */
@@ -23,18 +29,25 @@ export type ChainDefinition = {
   id: number;
   name: string;
   ethCall: EthCallGas;
+  /** The largest initcode the chain's nodes accept ({@link EIP_3860_INITCODE_SIZE} unless raised). */
+  maxInitcodeSize: number;
 };
 
-const gethEthCall: EthCallGas = { gasWhenUnspecified: "providerCap", gasAboveCap: "clamped" };
+/** Ethereum's rules, which every chain here but Monad follows: geth's `eth_call` frame and EIP-3860. */
+const ethereumRules: Pick<ChainDefinition, "ethCall" | "maxInitcodeSize"> = {
+  ethCall: { gasWhenUnspecified: "providerCap", gasAboveCap: "clamped" },
+  maxInitcodeSize: EIP_3860_INITCODE_SIZE,
+};
 
-export const mainnet: ChainDefinition = { id: 1, name: "Ethereum", ethCall: gethEthCall };
-export const base: ChainDefinition = { id: 8453, name: "Base", ethCall: gethEthCall };
-export const arbitrum: ChainDefinition = { id: 42_161, name: "Arbitrum One", ethCall: gethEthCall };
-export const robinhood: ChainDefinition = { id: 4663, name: "Robinhood Chain", ethCall: gethEthCall };
+export const mainnet: ChainDefinition = { id: 1, name: "Ethereum", ...ethereumRules };
+export const base: ChainDefinition = { id: 8453, name: "Base", ...ethereumRules };
+export const arbitrum: ChainDefinition = { id: 42_161, name: "Arbitrum One", ...ethereumRules };
+export const robinhood: ChainDefinition = { id: 4663, name: "Robinhood Chain", ...ethereumRules };
 export const monad: ChainDefinition = {
   id: 143,
   name: "Monad",
   ethCall: { gasWhenUnspecified: "fixedDefault", gasAboveCap: "rejected" },
+  maxInitcodeSize: 262_144,
 };
 
 export const chains: readonly ChainDefinition[] = [mainnet, base, arbitrum, robinhood, monad];

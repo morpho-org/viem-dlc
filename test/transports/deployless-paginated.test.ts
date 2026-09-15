@@ -18,6 +18,7 @@ import { readContract } from "viem/actions";
 import { describe, expect, it, vi } from "vitest";
 
 import { policy } from "../../src/actions/call.js";
+import { EIP_3860_INITCODE_SIZE } from "../../src/chains/index.js";
 import { withLogging } from "../../src/observability.js";
 import { type DeploylessConfig, deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
@@ -1574,7 +1575,7 @@ describe("override delivery", () => {
     }
   });
 
-  it("packs a fallback with no stated batchSize as one chunk that halves on the initcode cap", async () => {
+  it("packs a fallback with no stated batchSize as one chunk that halves on the node's refusal", async () => {
     const lens = mockPagedLens();
     const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
       if (isOverrideShaped(args.params)) return "0x";
@@ -1593,6 +1594,18 @@ describe("override delivery", () => {
     ]);
     expect(deliveries(requestFn)).toEqual(["override", "initcode", "initcode", "initcode"]);
     expect(field("splits_size")).toBe(1);
+  });
+
+  it("carries by override a chunk the chain's initcode limit would refuse", async () => {
+    const requestFn = mockPagedLens();
+    const many = Array.from({ length: 2_000 }, (_, i) => addr(i + 1));
+
+    const { result } = await withFacet(() => createTransport(requestFn).request(createRequest(many, OVERRIDE)));
+
+    // The initcode limit bounds the initcode, which an override-delivered chunk does not carry.
+    expect(requestFn).toHaveBeenCalledOnce();
+    expect(byteLength(paramsOf(requestFn)[0].data as Hex)).toBeGreaterThan(EIP_3860_INITCODE_SIZE);
+    expect(decodeResults(result)).toHaveLength(2_000);
   });
 
   describe("the predicate's byte lines", () => {

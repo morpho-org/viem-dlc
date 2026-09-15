@@ -439,7 +439,7 @@ const { results, skipped } = await readLens(client, {
   ...healthLens.with(MORPHO),          // abi, address, factory, factoryData
   functionName: "healthOf",            // narrowed against the lens's real ABI
   args: inputs,
-  batch: { batchSize: MAX_INITCODE_SIZE, compress: true },
+  batch: { compress: true },
 });
 ```
 
@@ -460,10 +460,12 @@ sum may exceed the budget: the last attempt admitted may spend into the reserve.
 decoder accepts is a well-formed page. The death is consumed inside the request and never reaches
 the caller's array.
 
-**Packing and flushes.** Chunks honour the wire cap — `batch.batchSize`, for which EIP-3860's
-`MAX_INITCODE_SIZE` is the natural value; without one, chunks are bounded only by what the provider
-accepts — and a gas prediction. An element that alone exceeds the wire cap is declined client-side
-with no request made. The greedy packer takes the longest prefix that fits, by binary search with a
+**Packing and flushes.** Chunks honour the wire cap and a gas prediction. Two figures set that cap,
+for two different reasons. The chain's initcode limit bounds an initcode-delivered chunk, whose bytes
+are the initcode; it is a protocol constant this package records per chain and applies without being
+asked. `batch.batchSize` is the largest request the provider accepts, which only the caller knows; it
+bounds either delivery, and is the only bound by override. An element that alone exceeds the wire cap
+is declined client-side with no request made. The greedy packer takes the longest prefix that fits, by binary search with a
 linear shrink for measures that are not perfectly monotone (the compressed byte measure is one). A
 chunk is a list of indices into the caller's array, ascending but not necessarily contiguous.
 
@@ -617,7 +619,7 @@ Behind `failover`, each branch states its own.
 - `src/transports/deployless/index.ts`, `src/transports/cache/{index,types}.ts`,
   `src/transports/cache/eth-call/handler.ts`, `src/transports/state-overrides.ts`: the transports,
   `gasLimit`, the policy type, the handler's dedup and restamping.
-- `src/actions/call.ts` (`policy`, `MAX_INITCODE_SIZE`), `src/actions/read-lens.ts`.
+- `src/actions/call.ts` (`policy`), `src/actions/read-lens.ts`, `src/chains/index.ts`.
 - `test/forge`: `Fixtures.sol` (the lenses, the wire builders, the page decoder, `Env.build` with
   its drift guard), `Envelope.t.sol`, `Gas.t.sol` and `.gas-snapshot`; `flz-compress.ts` compresses
   fixtures via ffi.
@@ -793,6 +795,14 @@ were all unused and to import a library the client already had all the informati
 in the envelope costs one call per element either way, a few KB of initcode against a 48 KB cap,
 and buys a lens that is one function and a "compliant by construction" guarantee that deletes the
 devolved case.
+
+**Why the initcode limit is the chain's and the request limit the caller's.** They bound the same
+bytes in initcode delivery, which is why one option carried both for a while, but they are facts of
+different things. EIP-3860's limit is a protocol constant, identical for every caller on a chain and
+knowable here, so making each call site pass it in was asking the caller to repeat what the package
+already knows, and it left `batch.batchSize` meaning two things at once. What the provider accepts is
+not knowable here and not the same for two callers on one chain, so it stays stated. Recording the
+limit on the chain record also makes a chain that raises it an entry rather than a special case.
 
 **Why two fragments, and why the policy keeps the array-shaped one.** The caller's calldata has to
 be encoded against something viem can type, and the transport has to slice an array out of it; the

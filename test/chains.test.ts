@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { chainDefinition, chains, mainnet, monad } from "../src/chains/index.js";
+import { chainDefinition, chains, EIP_3860_INITCODE_SIZE, mainnet, monad } from "../src/chains/index.js";
 
 describe("chains", () => {
   it("looks a definition up by id and defaults an unknown chain to geth's behaviour", () => {
@@ -12,5 +12,11 @@ describe("chains", () => {
 
   it("has one entry per id", () => {
     expect(new Set(chains.map((c) => c.id)).size).toBe(chains.length);
+  });
+
+  it("carries an initcode limit for every chain, EIP-3860's unless the chain raised it", () => {
+    expect(mainnet.maxInitcodeSize).toBe(EIP_3860_INITCODE_SIZE);
+    expect(monad.maxInitcodeSize).toBeGreaterThan(EIP_3860_INITCODE_SIZE);
+    for (const chain of chains) expect(chain.maxInitcodeSize).toBeGreaterThanOrEqual(EIP_3860_INITCODE_SIZE);
   });
 });
