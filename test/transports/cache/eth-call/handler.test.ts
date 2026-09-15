@@ -15,7 +15,6 @@ import {
 } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { chainDefinition } from "../../../../src/chains/index.js";
 import { LazyNdjsonMap } from "../../../../src/internal/index.js";
 import { createFacetId, observe, withLogging } from "../../../../src/observability.js";
 import { MemoryStore } from "../../../../src/stores/memory.js";
@@ -28,7 +27,7 @@ import type { HandlerContext } from "../../../../src/transports/cache/types.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../../../src/transports/state-overrides.js";
 import type { EIP1193Parameters } from "../../../../src/types.js";
 import { createCoalescingMutex } from "../../../../src/utils/coalescing-mutex.js";
-import { providerOf } from "../../../../src/utils/deployless/call.js";
+import { type ProviderLimits, providerOf } from "../../../../src/utils/deployless/call.js";
 import {
   ENVELOPE_ADDRESS,
   envelopeConfig,
@@ -45,6 +44,7 @@ import {
 } from "../../../../src/utils/deployless/codec.inner.js";
 import type { LensGas } from "../../../../src/utils/deployless/sizing.js";
 import { parse, stringify } from "../../../../src/utils/json.js";
+import { ethereumChain } from "../../../helpers/chains.js";
 import { wrapDeploylessFactoryCall } from "../../../helpers/envelope.js";
 import { createStubLogger, findDotted } from "../../../helpers/logger.js";
 import { flatGas } from "../../../helpers/page.js";
@@ -109,7 +109,7 @@ function wireBytesFor(count: number): number {
 }
 
 type PolicyOpts = {
-  batch?: { batchSize?: number; compress?: boolean; gas?: LensGas };
+  batch?: { compress?: boolean; gas?: LensGas };
 };
 
 function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
@@ -140,13 +140,17 @@ function createRequest(accounts: readonly Address[], opts: RequestOpts = {}): Et
   };
 }
 
-function ctx(requestFn: HandlerContext["requestFn"], store = new MemoryStore()): HandlerContext {
+function ctx(
+  requestFn: HandlerContext["requestFn"],
+  store = new MemoryStore(),
+  limits: ProviderLimits = {},
+): HandlerContext {
   return {
     store,
     coalesce: createCoalescingMutex().coalesce,
     requestFn,
     chainId,
-    provider: providerOf(chainDefinition(chainId), undefined),
+    provider: providerOf(ethereumChain(chainId), limits),
     binSize: 10_000,
     invalidationStrategy: () => 0,
     facetId: createFacetId(cacheTransportKey),
@@ -443,18 +447,18 @@ describe("handleEthCall", () => {
   });
 
   describe("batching", () => {
-    it("batchSize splits misses, never exceeding the byte budget", async () => {
-      const batchSize = wireBytesFor(3);
+    it("maxRequestSize splits misses, never exceeding the byte budget", async () => {
+      const maxRequestSize = wireBytesFor(3);
       const requestFn = mockPagedFn();
       const accounts = addrs(5);
-      const req = createRequest(accounts, { batch: { batchSize } });
+      const req = createRequest(accounts);
 
-      const result = await handleEthCall(ctx(requestFn), req);
+      const result = await handleEthCall(ctx(requestFn, undefined, { maxRequestSize }), req);
 
       expect(requestFn.mock.calls.length).toBe(2);
       for (const [arg] of requestFn.mock.calls) {
         const data = (arg.params[0] as { data: Hex }).data;
-        expect((data.length - 2) / 2).toBeLessThanOrEqual(batchSize);
+        expect((data.length - 2) / 2).toBeLessThanOrEqual(maxRequestSize);
       }
 
       expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
@@ -466,7 +470,7 @@ describe("handleEthCall", () => {
       const gas = { fixed: 0, item: { avg: 1_000_000 } };
 
       const result = await handleEthCall(
-        { ...ctx(requestFn), provider: providerOf(chainDefinition(chainId), 2_500_000) },
+        { ...ctx(requestFn), provider: providerOf(ethereumChain(chainId), { gasLimit: 2_500_000 }) },
         createRequest(accounts, { batch: { gas } }),
       );
 
@@ -479,7 +483,7 @@ describe("handleEthCall", () => {
     it("round-trips addresses correctly", async () => {
       const accounts = addrs(3);
       const requestFn = mockPagedFn();
-      const req = createRequest(accounts, { batch: { batchSize: 8192, compress: true } });
+      const req = createRequest(accounts, { batch: { compress: true } });
 
       const result = await handleEthCall(ctx(requestFn), req);
 
@@ -542,7 +546,7 @@ describe("handleEthCall", () => {
           [],
         );
       });
-      const req = createRequest(accounts, { batch: { batchSize: 8192 } });
+      const req = createRequest(accounts);
 
       const result = await handleEthCall(ctx(requestFn), req);
 
@@ -554,7 +558,7 @@ describe("handleEthCall", () => {
       const requestFn = vi
         .fn()
         .mockRejectedValue(Object.assign(new Error("request body too large"), { data: "0x" as Hex }));
-      const req = createRequest([addr(1)], { batch: { batchSize: 8192 } });
+      const req = createRequest([addr(1)]);
 
       await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow("request body too large");
       expect(requestFn).toHaveBeenCalledTimes(1);
@@ -562,7 +566,7 @@ describe("handleEthCall", () => {
 
     it("does not retry on unrecognized errors", async () => {
       const requestFn = vi.fn().mockRejectedValue(new Error("nonce too low"));
-      const req = createRequest([addr(1), addr(2)], { batch: { batchSize: 8192 } });
+      const req = createRequest([addr(1), addr(2)]);
 
       await expect(handleEthCall(ctx(requestFn), req)).rejects.toThrow("nonce too low");
       expect(requestFn).toHaveBeenCalledTimes(1);
@@ -626,7 +630,7 @@ describe("handleEthCall", () => {
       const store = new MemoryStore();
       const accounts = addrs(4);
       // Two chunks of two. The first rejects at once; the second resolves a few ticks later.
-      const req = createRequest(accounts, { batch: { batchSize: wireBytesFor(2) } });
+      const req = createRequest(accounts);
       const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
         const sent = decodeSentAddresses((args.params[0] as { data: Hex }).data);
         if (sent[0] === addr(1)) throw new Error("upstream exploded");
@@ -638,7 +642,9 @@ describe("handleEthCall", () => {
         );
       });
 
-      const error = await handleEthCall(ctx(requestFn, store), req).catch((e) => e);
+      const error = await handleEthCall(ctx(requestFn, store, { maxRequestSize: wireBytesFor(2) }), req).catch(
+        (e) => e,
+      );
 
       // The transport error wins over any partial state, but the slow chunk's work is kept.
       expect(error.message).toMatch(/upstream exploded/);
@@ -732,7 +738,7 @@ describe("handleEthCall", () => {
     it("handles dynamic result element types (string[])", async () => {
       const expectedNames = ["one", "two", "three"];
       const requestFn = vi.fn().mockRejectedValue(pageRevert("string[]", expectedNames, []));
-      const req = createRequest(addrs(3), { abi: namesAbi, batch: { batchSize: 8192 } });
+      const req = createRequest(addrs(3), { abi: namesAbi });
 
       const result = await handleEthCall(ctx(requestFn), req);
 
@@ -759,8 +765,10 @@ describe("handleEthCall", () => {
       const requestFn = lengthsLens();
 
       const { result, field } = await withFacet(
-        ctx(requestFn as unknown as HandlerContext["requestFn"]),
-        stringRequest(["alpha", big, "bee", big], { batch: { batchSize: wireBytesForStrings(["alpha", "bee"]) } }),
+        ctx(requestFn as unknown as HandlerContext["requestFn"], undefined, {
+          maxRequestSize: wireBytesForStrings(["alpha", "bee"]),
+        }),
+        stringRequest(["alpha", big, "bee", big]),
       );
 
       // The oversize element splits its neighbours into two chunks; it is never sent itself.

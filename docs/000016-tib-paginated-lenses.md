@@ -462,9 +462,10 @@ the caller's array.
 
 **Packing and flushes.** Chunks honour the wire cap and a gas prediction. Two figures set that cap,
 for two different reasons. The chain's initcode limit bounds an initcode-delivered chunk, whose bytes
-are the initcode; it is a protocol constant this package records per chain and applies without being
-asked. `batch.batchSize` is the largest request the provider accepts, which only the caller knows; it
-bounds either delivery, and is the only bound by override. An element that alone exceeds the wire cap
+are the initcode; it is a protocol constant, so the chain the client was built with states it and a
+chain stating none is an error when a chunk needs sizing. The transport's `maxRequestSize` is the
+largest request the provider accepts, which only the caller knows; it bounds either delivery, and is
+the only bound by override. An element that alone exceeds the wire cap
 is declined client-side with no request made. The greedy packer takes the longest prefix that fits, by binary search with a
 linear shrink for measures that are not perfectly monotone (the compressed byte measure is one). A
 chunk is a list of indices into the caller's array, ascending but not necessarily contiguous.
@@ -757,9 +758,9 @@ element accounted for and no corpse.
   granted 150M and refused 199M as `gas limit too high`. On geth an unspecified `gas` is the cap and
   a higher one is clamped, so sending would gain nothing and would hide the cap from
   `gas_limit_observed` whenever the stated value is below it. Both are facts of the chain, so they
-  live in `src/chains` (`ethCall.gasWhenUnspecified`: `providerCap` | `fixedDefault`;
-  `ethCall.gasAboveCap`: `clamped` | `rejected`), keyed by the client's chain id with geth's
-  behaviour as the default, and `gasLimit` rides as `gas` only on a `fixedDefault` chain. There a
+  ride on the chain the client was built with (`ethCall.gasWhenUnspecified`: `providerCap` |
+  `fixedDefault`; `ethCall.gasAboveCap`: `clamped` | `rejected`), and `gasLimit` rides as `gas` only
+  on a `fixedDefault` chain. Nothing is assumed of a chain that states neither. There a
   value above the cap is rejected and propagates as any other error, and `gas_limit_observed` reads
   the stated value by construction.
 - **Route.** `budget` varies by provider; the pool takes the minimum over the request, so a request
@@ -801,8 +802,11 @@ bytes in initcode delivery, which is why one option carried both for a while, bu
 different things. EIP-3860's limit is a protocol constant, identical for every caller on a chain and
 knowable here, so making each call site pass it in was asking the caller to repeat what the package
 already knows, and it left `batch.batchSize` meaning two things at once. What the provider accepts is
-not knowable here and not the same for two callers on one chain, so it stays stated. Recording the
-limit on the chain record also makes a chain that raises it an entry rather than a special case.
+not knowable here and not the same for two callers on one chain, so it stays stated, beside the gas
+cap on the transport that chose the provider. The limit rides on the chain itself rather than an
+internal table, so a chain this package has never seen is the caller's to describe, not a pull
+request against it; nothing is defaulted, because a silently assumed limit is a wrong answer on the
+chains that raised it.
 
 **Why two fragments, and why the policy keeps the array-shaped one.** The caller's calldata has to
 be encoded against something viem can type, and the transport has to slice an array out of it; the

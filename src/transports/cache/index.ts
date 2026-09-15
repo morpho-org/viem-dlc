@@ -1,6 +1,5 @@
 import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
-import { chainDefinition } from "../../chains/index.js";
 import { createFacetId, observe } from "../../observability.js";
 import type { EIP1193Parameters, Store } from "../../types.js";
 import { createCoalescingMutex } from "../../utils/coalescing-mutex.js";
@@ -112,22 +111,26 @@ export function createSimpleInvalidation(
  */
 export function cache(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<PublicRpcSchema>>,
-  [{ binSize, store, invalidationStrategy, gasLimit }, logsDividerConfig, ...otherConfigs]: [
+  [{ binSize, store, invalidationStrategy, gasLimit, maxRequestSize }, logsDividerConfig, ...otherConfigs]: [
     CacheConfig,
     Omit<LogsDividerConfig, "alignTo">,
     LogsEnricherConfig,
     LogsSieveConfig,
     RateLimiterConfig,
   ],
-): Transport<typeof cacheTransportKey, { store: Store; gasLimit?: number }, EIP1193RequestFn<CacheSchema>> {
+): Transport<
+  typeof cacheTransportKey,
+  { store: Store; gasLimit?: number; maxRequestSize?: number },
+  EIP1193RequestFn<CacheSchema>
+> {
   const facetId = createFacetId(cacheTransportKey);
 
   return (params) => {
     if (params.chain === undefined) {
-      throw new Error("You must pass a chain to the cache transport.");
+      throw new Error("[viem-dlc] the cache transport needs the client's chain, which names its cache entries.");
     }
     const chainId = params.chain.id;
-    const provider = providerOf(chainDefinition(chainId), gasLimit);
+    const provider = providerOf(params.chain, { gasLimit, maxRequestSize });
 
     const { coalesce } = createCoalescingMutex();
     const transport = logsDivider(baseTransportFn, [{ ...logsDividerConfig, alignTo: binSize }, ...otherConfigs])(
@@ -172,7 +175,7 @@ export function cache(
         retryCount: 0,
         type: cacheTransportKey,
       },
-      { store, gasLimit },
+      { store, gasLimit, maxRequestSize },
     );
   };
 }

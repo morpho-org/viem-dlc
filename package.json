@@ -30,6 +30,11 @@
       "import": "./dist/actions/index.js",
       "default": "./dist/actions/index.js"
     },
+    "./chains": {
+      "types": "./dist/chains/index.d.ts",
+      "import": "./dist/chains/index.js",
+      "default": "./dist/chains/index.js"
+    },
     "./stores": {
       "types": "./dist/stores/index.d.ts",
       "import": "./dist/stores/index.js",
@@ -79,7 +84,7 @@
   "peerDependencies": {
     "@upstash/redis": "^1.0.0",
     "@vercel/blob": "^2.3.0",
-    "viem": "^2.0.0"
+    "viem": "^2.43.0"
   },
   "peerDependenciesMeta": {
     "@upstash/redis": {

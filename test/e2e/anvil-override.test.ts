@@ -12,6 +12,7 @@ import {
   createPublicClient,
   createWalletClient,
   custom,
+  defineChain,
   encodeAbiParameters,
   getContractAddress,
   http,
@@ -24,7 +25,7 @@ import { foundry } from "viem/chains";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { readLens } from "../../src/actions/read-lens.js";
-import { EIP_3860_INITCODE_SIZE } from "../../src/chains/index.js";
+import { chainConfig, EIP_3860_INITCODE_SIZE, ethereumFacts } from "../../src/chains/index.js";
 import { withLogging } from "../../src/observability.js";
 import { deployless } from "../../src/transports/deployless/index.js";
 import type { EnvelopeDelivery } from "../../src/utils/deployless/codec.envelope.js";
@@ -143,6 +144,9 @@ function recordingHttp(url: string) {
   return { transport, requests, ethCalls: () => requests.filter((r) => r.method === "eth_call") };
 }
 
+/** anvil runs geth's rules, which the packer has to be told rather than assume. */
+const anvilChain = defineChain({ ...foundry, ...chainConfig }).extend({ viemDlc: ethereumFacts });
+
 describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
   let anvil: ChildProcess;
   let url: string;
@@ -242,7 +246,7 @@ describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
 
   /** Every element through a fresh deployless client on `transport`, the lens still counterfactual. */
   const readAll = (transport: Parameters<typeof deployless>[0], batch?: { envelope: EnvelopeDelivery }) =>
-    readLens(createPublicClient({ transport: deployless(transport, { gasLimit: GAS_LIMIT }) }), {
+    readLens(createPublicClient({ chain: anvilChain, transport: deployless(transport, { gasLimit: GAS_LIMIT }) }), {
       abi: lensAbi,
       functionName: "item",
       address: target,
@@ -281,7 +285,7 @@ describe.skipIf(!hasAnvil)("override-delivered envelope, against anvil", () => {
     const page = await readAll(transport);
 
     expect(page.results).toEqual(inputs(ELEMENTS).map((x) => x.a * 2n));
-    // The chain's initcode limit binds without a `batchSize`, so the packer splits before sending.
+    // The chain's initcode limit binds without a stated request size, so the packer splits before sending.
     expect(ethCalls().length).toBeGreaterThan(1);
     for (const call of ethCalls()) {
       const [transaction] = call.params ?? [];

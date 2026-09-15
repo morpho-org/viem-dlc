@@ -81,7 +81,7 @@ since Prague a frame must clear EIP-7623's floor to start at all, so a lone elem
 is declined as oversize, the same way an element above the byte cap is. A stated `gasLimit` bounds
 the opening wave's bytes on its own. The chain's initcode limit bounds an initcode chunk, whose bytes
 are the initcode, and reaches no override chunk; beyond those, when neither `gasLimit` nor
-`batchSize` is stated, nothing is assumed on the caller's behalf.
+`maxRequestSize` is stated, nothing is assumed on the caller's behalf.
 
 **Choosing and falling back.** A request with the option opens by override. Every response to an
 override chunk is classified first by whether it proves the envelope ran. A page or any
@@ -95,9 +95,10 @@ and the wide event tells the caller when to pull it.
 
 **Chain definitions.** Whether a node needs to be told the frame is a fact of the chain, not of the
 transport. geth grants an unspecified `eth_call` the provider's cap, and Monad grants a fixed
-default. An internal `src/chains` table records such facts by name, and the packer sends the stated
-`gasLimit` as `gas` only where the chain needs it. The table stays internal until its shape settles
-(APPS-1398).
+default. Facts like it ride on the chain the client was built with, through viem's `extendSchema`,
+and the packer sends the stated `gasLimit` as `gas` only where the chain says it is needed. The
+schema and the two probed records are exported, so a chain this package has never seen is the
+caller's to describe.
 
 **Observability.** The packer's facet reports the chunks sent in each delivery and the fallbacks by
 reason. `fixed_gas` becomes the lens's
@@ -139,10 +140,10 @@ APPS-1406 holds the full matrix with the probe figures.
 ## Open risks
 
 - **The provider's request size limit replaces the initcode cap.** It's discovered by halving, one
-  round trip per level. A caller who sets `batchSize` to the provider's limit skips the discovery.
+  round trip per level. A caller who sets the transport's `maxRequestSize` skips the discovery.
   Nothing else bounds an override chunk's bytes: the chain's initcode limit bounds the initcode, and
   an override chunk carries none.
-- **With no `gasLimit` and no `batchSize`, the opening override chunk is the whole input.** It can
+- **With no `gasLimit` and no `maxRequestSize`, the opening override chunk is the whole input.** It can
   fail to start on a Prague node and halves until it does. The paginated-lenses TIB accepts the same
   shape one cap in. By initcode the chain's limit applies, so only override opens unbounded.
 - **Lifting the cap widens every per-byte schedule mismatch.** Intrinsic gas and the floor are
@@ -226,11 +227,12 @@ APPS-1406 holds the full matrix with the probe figures.
 - **The copy term's extent** was corrected twice in review, to the point where the budget is
   sampled. **"A lone element always fits" applied to the floor** was caught too: the singleton rule
   is about the gas prediction, and the floor is a protocol bound.
-- **A per-chain memory schedule** was declined for now and filed as APPS-1398, together with the
-  export of the chains module and the initcode-limit question.
+- **A per-chain memory schedule** was declined for now and filed as APPS-1398. The two questions
+  filed with it, exporting the chains module and where the initcode limit belongs, are since
+  answered: both ride on the caller's chain.
 - **A dedicated support probe, two envelope constants, and remembering the discovered request size
   cap** were each declined. The opening wave is the probe, one bytecode serves, and the caller owns
-  `batchSize`.
+  `maxRequestSize`.
 - **`keccak256("viem-dlc-envelope")[12:]`** was the override address in the first draft. Review
   noted that it changes the factory's `msg.sender`, and the creation address dissolves the
   difference.
