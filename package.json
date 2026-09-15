@@ -75,7 +75,10 @@
     "typecheck:examples": "soltag -p examples && tsc -p examples/tsconfig.json",
     "example": "vite-node -c examples/vite.config.ts",
     "bench": "vitest bench --run",
-    "bench:memory": "BENCH=1 vitest run test/bench/get-logs.memory.test.ts"
+    "bench:memory": "BENCH=1 vitest run test/bench/get-logs.memory.test.ts",
+    "playground": "vite --config playground/vite.config.ts playground",
+    "playground:build": "soltag -p playground && vite build --config playground/vite.config.ts playground",
+    "typecheck:playground": "soltag -p playground && tsc -p playground/tsconfig.json"
   },
   "dependencies": {
     "valibot": "^1.4.2"

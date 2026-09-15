@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "paths": {
+      "@morpho-org/viem-dlc": ["../src/index.ts"],
+      "@morpho-org/viem-dlc/*": ["../src/*/index.ts"]
+    },
+    "plugins": [{ "name": "soltag/plugin" }]
+  },
+  "include": ["./**/*.ts", "./.soltag/types.d.ts"]
+}

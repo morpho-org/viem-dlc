@@ -32,6 +32,8 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+      - name: Typecheck playground
+        run: pnpm typecheck:playground
 
       - name: Typecheck examples
         run: pnpm typecheck:examples
