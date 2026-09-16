@@ -1,4 +1,4 @@
-import type { Address, Hex } from "viem";
+import type { Address, Chain, Hex } from "viem";
 import {
   type AbiFunction,
   concat,
@@ -18,6 +18,7 @@ import { readContract } from "viem/actions";
 import { describe, expect, it, vi } from "vitest";
 
 import { policy } from "../../src/actions/call.js";
+import { EIP_3860_INITCODE_SIZE } from "../../src/chains/index.js";
 import { withLogging } from "../../src/observability.js";
 import { type DeploylessConfig, deployless } from "../../src/transports/deployless/index.js";
 import { ETH_CALL_POLICY_ADDRESS } from "../../src/transports/state-overrides.js";
@@ -33,6 +34,7 @@ import {
 } from "../../src/utils/deployless/codec.envelope.js";
 import { type PageGas, pageToStream, wireToArray } from "../../src/utils/deployless/codec.inner.js";
 import { copyGas, floorGas, wireSize } from "../../src/utils/deployless/sizing.js";
+import { ethereumChain, factlessChain, monadChain } from "../helpers/chains.js";
 import { createStubLogger, findDotted } from "../helpers/logger.js";
 import { flatGas, gasOf } from "../helpers/page.js";
 
@@ -199,8 +201,8 @@ function mockPagedLens({
   });
 }
 
-function createTransport(requestFn: ReturnType<typeof vi.fn>, config?: DeploylessConfig) {
-  return deployless(custom({ request: requestFn as never }), config)({ retryCount: 0 } as never);
+function createTransport(requestFn: ReturnType<typeof vi.fn>, config?: DeploylessConfig, chain = ethereumChain()) {
+  return deployless(custom({ request: requestFn as never }), config)({ retryCount: 0, chain } as never);
 }
 
 /**
@@ -1056,7 +1058,7 @@ describe("continuations", () => {
     const requestFn = mockPagedLens();
 
     const { result, field } = await withFacet(() =>
-      createTransport(requestFn).request(createRequest([1, 2].map(addr), { batchSize: 100 })),
+      createTransport(requestFn, { batchSize: 100 }).request(createRequest([1, 2].map(addr))),
     );
 
     expect(requestFn).not.toHaveBeenCalled();
@@ -1197,7 +1199,10 @@ describe("continuations", () => {
 describe("viem interop", () => {
   it("is readable through readContract, which decodes against the lens abi", async () => {
     const requestFn = mockPagedLens({ decline: [2] });
-    const client = createPublicClient({ transport: deployless(custom({ request: requestFn as never })) });
+    const client = createPublicClient({
+      chain: ethereumChain(),
+      transport: deployless(custom({ request: requestFn as never })),
+    });
 
     const [results, skipped] = await readContract(client, {
       abi: [pageAbi],
@@ -1215,14 +1220,14 @@ describe("viem interop", () => {
 });
 
 describe("stated cap on the wire", () => {
-  const onChain = (id: number, requestFn: ReturnType<typeof vi.fn>, config?: DeploylessConfig) =>
-    deployless(custom({ request: requestFn as never }), config)({ retryCount: 0, chain: { id } } as never);
+  const onChain = (chain: Chain, requestFn: ReturnType<typeof vi.fn>, config?: DeploylessConfig) =>
+    deployless(custom({ request: requestFn as never }), config)({ retryCount: 0, chain } as never);
 
   it("sends gasLimit as every chunk's gas on a chain whose nodes give an unspecified gas a fixed default", async () => {
     const requestFn = mockPagedLens();
     const { gasLimit, batch } = openAt(2);
 
-    await onChain(143, requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4].map(addr), batch));
+    await onChain(monadChain(), requestFn, { gasLimit }).request(createRequest([1, 2, 3, 4].map(addr), batch));
 
     expect(requestFn).toHaveBeenCalledTimes(2);
     for (const call of requestFn.mock.calls) {
@@ -1230,20 +1235,23 @@ describe("stated cap on the wire", () => {
     }
   });
 
-  it("sends no gas where an unspecified gas is the cap, on an unknown chain, or without a gasLimit", async () => {
+  it("sends no gas where an unspecified gas is the cap, or without a gasLimit", async () => {
     const { gasLimit, batch } = openAt(2);
     const txnOf = (requestFn: ReturnType<typeof vi.fn>) =>
       (requestFn.mock.calls[0]![0] as { params: readonly unknown[] }).params[0] as Record<string, unknown>;
 
-    const mainnet = mockPagedLens();
-    await onChain(1, mainnet, { gasLimit }).request(createRequest([1, 2].map(addr), batch));
-    const unknown = mockPagedLens();
-    await onChain(999_999, unknown, { gasLimit }).request(createRequest([1, 2].map(addr), batch));
+    const capped = mockPagedLens();
+    await onChain(ethereumChain(), capped, { gasLimit }).request(createRequest([1, 2].map(addr), batch));
     const unstated = mockPagedLens();
-    await onChain(143, unstated).request(createRequest([1, 2].map(addr)));
+    await onChain(monadChain(), unstated).request(createRequest([1, 2].map(addr)));
 
-    for (const requestFn of [mainnet, unknown, unstated])
-      expect(txnOf(requestFn)).toEqual({ data: txnOf(requestFn).data });
+    for (const requestFn of [capped, unstated]) expect(txnOf(requestFn)).toEqual({ data: txnOf(requestFn).data });
+  });
+
+  it("refuses a stated gasLimit on a chain carrying no facts, when the client is built", () => {
+    expect(() => onChain(factlessChain(), mockPagedLens(), { gasLimit: 30_000_000 })).toThrow(
+      /states no `viemDlc` facts/,
+    );
   });
 });
 
@@ -1462,7 +1470,7 @@ describe("override delivery", () => {
     });
 
     const { result, field } = await withFacet(() =>
-      createTransport(requestFn).request(createRequest(four, { ...OVERRIDE, batchSize })),
+      createTransport(requestFn, { batchSize }).request(createRequest(four, OVERRIDE)),
     );
 
     // Neither the fallback's pieces nor the refused chunk's halves can be sent as initcode under the cap.
@@ -1486,7 +1494,7 @@ describe("override delivery", () => {
     );
 
     const { result, field } = await withFacet(() =>
-      createTransport(requestFn).request(createRequest(four, { ...OVERRIDE, batchSize })),
+      createTransport(requestFn, { batchSize }).request(createRequest(four, OVERRIDE)),
     );
 
     // The death's singleton would open as initcode, which the cap does not admit: declined, not sent.
@@ -1550,7 +1558,7 @@ describe("override delivery", () => {
     expect(field("override_fallbacks")).toBe(0);
   });
 
-  it("packs a fallback under the caller's batchSize", async () => {
+  it("packs a fallback under the provider's request size", async () => {
     const probe = mockPagedLens();
     await createTransport(probe).request(createRequest([1, 2, 3].map(addr)));
     const batchSize = byteLength(paramsOf(probe)[0].data as Hex);
@@ -1558,7 +1566,7 @@ describe("override delivery", () => {
     const eight = [1, 2, 3, 4, 5, 6, 7, 8].map(addr);
 
     const { result } = await withFacet(() =>
-      createTransport(requestFn).request(createRequest(eight, { ...OVERRIDE, batchSize })),
+      createTransport(requestFn, { batchSize }).request(createRequest(eight, OVERRIDE)),
     );
 
     // The override chunk carries all eight; the pieces it falls back to carry the envelope too.
@@ -1574,7 +1582,7 @@ describe("override delivery", () => {
     }
   });
 
-  it("packs a fallback with no stated batchSize as one chunk that halves on the initcode cap", async () => {
+  it("packs a fallback with no stated request size as one chunk that halves on the node's refusal", async () => {
     const lens = mockPagedLens();
     const requestFn = vi.fn().mockImplementation(async (args: { params: readonly unknown[] }) => {
       if (isOverrideShaped(args.params)) return "0x";
@@ -1593,6 +1601,30 @@ describe("override delivery", () => {
     ]);
     expect(deliveries(requestFn)).toEqual(["override", "initcode", "initcode", "initcode"]);
     expect(field("splits_size")).toBe(1);
+  });
+
+  it("serves an override-delivered read on a chain carrying no facts", async () => {
+    // Override delivery carries no initcode, so nothing needs the chain's limit and nothing throws.
+    const requestFn = mockPagedLens();
+
+    const { result } = await withFacet(() =>
+      createTransport(requestFn, undefined, factlessChain()).request(createRequest(four, OVERRIDE)),
+    );
+
+    expect(deliveries(requestFn)).toEqual(["override"]);
+    expect(decodeResults(result)).toEqual([1n, 2n, 3n, 4n]);
+  });
+
+  it("carries by override a chunk the chain's initcode limit would refuse", async () => {
+    const requestFn = mockPagedLens();
+    const many = Array.from({ length: 2_000 }, (_, i) => addr(i + 1));
+
+    const { result } = await withFacet(() => createTransport(requestFn).request(createRequest(many, OVERRIDE)));
+
+    // The initcode limit bounds the initcode, which an override-delivered chunk does not carry.
+    expect(requestFn).toHaveBeenCalledOnce();
+    expect(byteLength(paramsOf(requestFn)[0].data as Hex)).toBeGreaterThan(EIP_3860_INITCODE_SIZE);
+    expect(decodeResults(result)).toHaveLength(2_000);
   });
 
   describe("the predicate's byte lines", () => {

@@ -56,22 +56,25 @@ emit at `error` level with the error attached via `withError`, so hosts that for
 
 Thin transport wrapper for deployless `eth_call` splitting. It only intercepts calls carrying
 the `policy(...)` sentinel in `stateOverride`, re-packs the marked input array into one or more
-deployless-factory calls under a wire byte budget (`batch.batchSize`), aggregates the pages that
-come back, and forwards everything else unchanged.
+deployless-factory calls under a wire byte budget (the chain's initcode limit, and the transport's
+`batchSize` where stated), aggregates the pages that come back, and forwards everything else
+unchanged.
 No gas figure is load-bearing: the envelope calls the lens's per-item function once per element
 in its own frame and reports how far it got, so a chunk adapts to whatever gas the node grants —
 see [Paginated lenses](#paginated-lenses). An optional `gasLimit` lets the opening wave
 anticipate the grant, and rides as each chunk's `gas` on chains that need it (see
 [Chains](#chains)). A chunk's elements ride inside the envelope's initcode by default, so the
-chain's initcode cap bounds it; with `batch.envelope: 'override'` the envelope is placed by state
-override instead and only the frame's gas and the provider's request size limit bound a chunk. Most
+chain's initcode limit bounds it; with `batch.envelope: 'override'` the envelope is placed by state
+override instead and only the frame's gas and the provider's request size bound a chunk. Most
 callers reach it through [`readLens`](#readlens) rather than building the call by hand.
 
 ```ts
-import { createPublicClient, encodeFunctionData, http, parseAbiItem } from 'viem'
+import { createPublicClient, defineChain, encodeFunctionData, http, parseAbiItem } from 'viem'
+import { mainnet } from 'viem/chains'
 import { call } from 'viem/actions'
 import { deployless } from '@morpho-org/viem-dlc/transports'
 import { arrayifiedAbi, policy } from '@morpho-org/viem-dlc/actions'
+import { chainConfig, ethereumFacts } from '@morpho-org/viem-dlc/chains'
 
 // The lens implements `positionOf((bytes32,address)) view returns ((uint256,uint128,uint128))`;
 // the array-shaped fragment the wire carries is derived from it.
@@ -79,32 +82,35 @@ const positionsAbi = arrayifiedAbi(
   parseAbiItem('function positionOf((bytes32 id, address user) input) view returns ((uint256,uint128,uint128))')
 )
 
-const client = createPublicClient({
-  transport: deployless(http(rpcUrl)),
-})
+// The chunk rides as initcode, which the chain's limit bounds — see [Chains](#chains).
+const chain = defineChain({ ...mainnet, ...chainConfig }).extend({ viemDlc: ethereumFacts })
+
+const client = createPublicClient({ chain, transport: deployless(http(rpcUrl)) })
 
 const result = await call(client, {
   factory,
   factoryData,
   to,
   data: encodeFunctionData({ abi: [positionsAbi], functionName: 'positionOf', args: [inputs] }),
-  stateOverride: [policy({ abi: positionsAbi, batch: { batchSize: 1 << 15 } })],
+  stateOverride: [policy({ abi: positionsAbi, batch: { compress: true } })],
 })
 ```
 
 If `policy.cache` is present, `deployless(...)` ignores it and still behaves as split-only mode.
 Use `cache(...)` when you want the same marked calls to populate and read from a backing store.
 
-Both transports take an optional `gasLimit`, the provider's `eth_call` gas cap:
+Both transports take two optional figures about the provider they were pointed at. `gasLimit` is its
+`eth_call` gas cap:
 `deployless(http(rpcUrl), { gasLimit: 50_000_000 })`, or `gasLimit` beside `binSize` in the
 `cache` config. Together with the policy's `batch.gas` it sizes the opening wave; every later chunk
 is sized from what the pages report, so a value too low costs a round trip, never a result. On a
 chain whose nodes give an `eth_call` with `gas` unspecified a fixed default below the cap — Monad
 grants 8.1M and promotes only on out-of-gas, which a paging envelope never is — the transports also
 send it as every chunk's `gas`, and there a value above the provider's cap is rejected by the node
-and fails the request, so state the cap the provider documents; which chains those are is what
-[Chains](#chains) records. Behind `failover`, each
-branch states its own.
+and fails the request, so state the cap the provider documents; whether a chain is one of those is
+a fact the chain carries, see [Chains](#chains). `batchSize` is the largest request the provider
+accepts, in bytes of a chunk's `eth_call` `data`; state what the provider documents, often a few
+megabytes. Behind `failover`, each branch states its own.
 
 With observability enabled, batching reports `elements_requested` / `elements_fetched`,
 `nominal_batches` and `batch_bytes` (sizes of the initial packing against the wire budget;
@@ -123,7 +129,7 @@ lens does not implement is one cause), `attempts_unresolved` (elements a frame's
 resolve, whether the per-item frame died or the envelope refused to start it), `pages_escalated`
 (singleton retries those cost), and, matching the response's
 `skipped` array: `elements_missing` in total, of which `elements_declined_oversize` could not fit
-a chunk alone under `batch.batchSize` and `elements_unresolved` were gas-terminal even alone —
+a chunk alone under the byte budget and `elements_unresolved` were gas-terminal even alone —
 the subset another provider with a higher cap might still serve.
 
 Every page also reports what its attempts cost, and the request pools it: `frame_gas` (the gas a
@@ -357,21 +363,40 @@ await client.request({
 
 ## Chains
 
-The `deployless` and `cache` transports look the client's chain up in a small internal table of what
-this package knows about a chain beyond viem's own definition. Today that is how the chain's nodes
-run an `eth_call`, as far as gas goes:
+Two things this package needs are facts of the chain rather than of the caller, so the chain the
+client is built with carries them, on viem's `extendSchema`:
 
-- the frame a request that leaves `gas` unspecified runs in — the provider's whole cap (geth), or a
-  fixed default below it (Monad: 8.1M, promoted to a larger pool only when the call runs out of gas,
-  which a paging envelope never does);
-- what the node does with a `gas` above the provider's cap — clamped (geth) or rejected (Monad,
-  `gas limit too high`).
+- **`ethCall.gasWhenUnspecified`** — the frame a request that leaves `gas` unspecified runs in:
+  the provider's whole cap (`providerCap`, geth), or a fixed default below it (`fixedDefault`;
+  Monad grants 8.1M and promotes only on out-of-gas, which a paging envelope never is). The
+  transports send `gasLimit` as each chunk's `gas` on a `fixedDefault` chain and nothing elsewhere,
+  so `gas_limit_observed` reads the true cap wherever a node would reveal it.
+- **`ethCall.gasAboveCap`** — what the node does with a `gas` above the provider's cap: `clamped`
+  (geth) or `rejected` (Monad, `gas limit too high`).
+- **`maxInitcodeSize`** — the largest initcode the chain's nodes accept. An initcode-delivered
+  chunk's bytes *are* the initcode, so this bounds one; EIP-3860's 49 152 nearly everywhere, 262 144
+  on Monad.
 
-The transports send `gasLimit` as each chunk's `gas` on a fixed-default chain and nothing elsewhere,
-so `gas_limit_observed` reads the true cap wherever a node would reveal it. A chain without an entry
-is taken to behave like geth. Entries: Ethereum, Base, Arbitrum One, Robinhood Chain, Monad. The
-table is not part of the public API yet; a chain that prices or frames differently belongs in it
-rather than in a transport option.
+Nothing is assumed. `ethereumFacts` and `monadFacts` are the two this package has probed; attach one
+of them, or state your own for a chain neither describes, and nothing needs upstreaming here:
+
+```ts
+import { defineChain } from 'viem'
+import { monad } from 'viem/chains'
+import { chainConfig, monadFacts } from '@morpho-org/viem-dlc/chains'
+
+const chain = defineChain({ ...monad, ...chainConfig }).extend({ viemDlc: monadFacts })
+
+const client = createPublicClient({ chain, transport: deployless(http(rpcUrl)) })
+```
+
+A fact that is missing when it is needed throws, naming the chain: stating a `gasLimit` needs the
+`eth_call` behaviour and fails when the client is built, and packing a chunk as initcode needs the
+initcode limit and fails on the first read. An override-delivered read with no `gasLimit` needs
+neither, so it works on a chain carrying nothing — which means a provider that stops honouring state
+overrides can surface the error later than the code that caused it.
+
+This needs viem 2.43 or newer, where `extendSchema` arrives.
 
 ## Stores
 
@@ -469,13 +494,13 @@ options; returns `{ results, skipped }`, with `results` typed from the per-item 
 type and `skipped` the indices into `args` that were not served.
 
 ```ts
-import { readLens, MAX_INITCODE_SIZE } from '@morpho-org/viem-dlc/actions'
+import { readLens } from '@morpho-org/viem-dlc/actions'
 
 const { results, skipped } = await readLens(client, {
   ...healthLens.with(MORPHO),          // abi, address, factory, factoryData
   functionName: 'healthOf',            // f(T) returns (U), one parameter, one value
   args: inputs,                        // T[]
-  batch: { batchSize: MAX_INITCODE_SIZE, compress: true },
+  batch: { compress: true },
   cache: { blobKey: 'blue-health', ttl: 60_000 },
 })
 ```
@@ -497,7 +522,6 @@ untouched, so tuples, nested arrays, and other complex element types are support
 policy(opts: {
   abi: AbiFunction              // arrayifiedAbi(itemFragment)
   batch?: {
-    batchSize?: number
     compress?: boolean
     gas?: { fixed: number; item: { avg: number; stddev?: number } }
     continuations?: 'fill' | 'eager'
@@ -514,12 +538,8 @@ policy(opts: {
 - **`opts.abi`** — the array-shaped fragment from `arrayifiedAbi`. Build it from the per-item
   fragment in the contract's real ABI: the transport derives the per-item selector from it, and a
   selector the lens does not implement fails as a page that skips every element.
-- **`opts.batch`** — optional batching config. Omit to send all elements in a single upstream
-  `eth_call`.
-- **`opts.batch.batchSize`** — maximum bytes of the `eth_call` `data` field per chunk; elements
-  are greedy-packed under it and fetched in parallel. `MAX_INITCODE_SIZE` (EIP-3860's 49 152
-  bytes) is the usual value for initcode delivery; by override the bound is the provider's request
-  size limit. The cap is not tuned per lens, chain, or provider.
+- **`opts.batch`** — optional batching config. What bounds a chunk's bytes is not here: the chain
+  states its initcode limit and the transport states the provider's `batchSize`.
 - **`opts.batch.compress`** — FastLZ-compress calldata on the wire, so more elements fit per
   chunk at the cost of encoding time and decompression gas. The envelope decompresses element by
   element as it attempts them, so a highly compressible chunk pages like any other and costs
@@ -666,3 +686,18 @@ Exported from `@morpho-org/viem-dlc/utils`:
 - `stringify` / `parse` / `estimateUtf8Bytes` — JSON serialization with bigint support
 - `pick` / `omit` — object helpers
 - `measureUtf8Bytes` / `shardString` — string utilities
+
+The envelope's codecs are exported separately, from `@morpho-org/viem-dlc/utils/deployless`, for
+building fixtures and mocks: everything needed to read a chunk off a request the transports sent and
+to answer it the way a node running the envelope would.
+
+- `unwrapDeploylessFactoryCall` / `encodeEnvelopeArgs` / `envelopeConfig` / `deliveryParams` — the
+  outbound request, both deliveries
+- `decodeEnvelopeRevert`, `FACTORY_BYTECODE_REVERT`, `ENVELOPE_ADDRESS`, `OK_SENTINEL` and the other
+  sentinels — what the envelope reverts with, and what identifies it
+- `arrayifiedAbi` / `resolveArrayFunction` / `abiToArray` / `arrayToAbi` — the caller's array
+- `arrayToWire` / `wireToArray` / `streamToPage` / `pageToStream` / `pageToAbi` — the envelope's wire
+  and the page it reverts
+
+The packer, the cost model and the FastLZ codec stay internal: their shapes follow the
+implementation rather than the wire.
