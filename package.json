@@ -6,7 +6,9 @@
   "keywords": [
     "viem",
     "cache",
-    "eth_getLogs"
+    "eth_getLogs",
+    "deployless",
+    "lens"
   ],
   "author": "Morpho Association <contact@morpho.org>",
   "contributors": [
