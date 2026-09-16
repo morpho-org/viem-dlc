@@ -509,21 +509,6 @@ A partial result is a **successful response**: `skipped` merges elements the len
 (its per-item call reverted), elements declined client-side for size, and elements
 that ran out of gas even when retried alone. Check it if you need every element.
 
-`cache` is typed away on a client built with the `deployless` transport, which cannot serve it.
-Wrappers pass that constraint on to their own callers by spreading
-`ReadLensClientParameters<client>` into their parameters:
-
-```ts
-import type { ReadLensClientParameters } from '@morpho-org/viem-dlc/actions'
-
-async function healthOf<client extends Client>(
-  client: client,
-  parameters: { users: Address[] } & ReadLensClientParameters<client>,
-) {
-  return readLens(client, { ...healthLens.with(MORPHO), functionName: 'healthOf', args: parameters.users, cache: parameters.cache })
-}
-```
-
 ### `eth_call` `policy`
 
 The lower-level marker `readLens` attaches for you: a `stateOverride` entry that tells the
