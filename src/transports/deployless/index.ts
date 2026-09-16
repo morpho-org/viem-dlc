@@ -1,6 +1,5 @@
 import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
 
-import { chainDefinition } from "../../chains/index.js";
 import { createFacetId, type FacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 import { factorisedFactoryCall, type Provider, providerOf } from "../../utils/deployless/call.js";
@@ -23,8 +22,19 @@ export type DeploylessConfig = {
    * sent. Monad's run it in a fixed default instead (see `chains`), so there the value is sent as
    * every chunk's `gas`, and one above the provider's cap fails the request with
    * `gas limit too high`: state the cap the provider documents.
+   *
+   * Stating it requires the client's chain to carry `viemDlc` facts, since whether the value is sent
+   * as each chunk's `gas` is a fact of the chain; a chain carrying none throws when the client is
+   * built.
    */
   gasLimit?: number;
+  /**
+   * The largest request the provider accepts, in bytes of a chunk's `eth_call` `data`; elements are
+   * greedy-packed under it and fetched in parallel. State what the provider documents, often a few
+   * megabytes. An initcode-delivered chunk is also bound by the chain's initcode limit, which the
+   * chain states and which is usually far the smaller of the two.
+   */
+  batchSize?: number;
 };
 
 /**
@@ -38,13 +48,13 @@ export type DeploylessConfig = {
  */
 export function deployless<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
-  { gasLimit }: DeploylessConfig = {},
+  { gasLimit, batchSize }: DeploylessConfig = {},
 ): Transport<typeof deploylessTransportKey, DeploylessConfig, EIP1193RequestFn<T>> {
   const facetId = createFacetId(deploylessTransportKey);
 
   return (params) => {
     const requestFn = baseTransportFn(params).request;
-    const provider = providerOf(chainDefinition(params.chain?.id), gasLimit);
+    const provider = providerOf(params.chain, { gasLimit, batchSize });
 
     const request = (args: EIP1193Parameters<T>) => {
       if (args.method !== "eth_call") {
@@ -62,7 +72,7 @@ export function deployless<T extends Base>(
         retryCount: 0,
         type: deploylessTransportKey,
       },
-      { gasLimit },
+      { gasLimit, batchSize },
     );
   };
 }

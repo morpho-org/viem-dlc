@@ -37,13 +37,24 @@ export interface CacheConfig {
    * sent. Monad's run it in a fixed default instead (see `chains`), so there the value is sent as
    * every chunk's `gas`, and one above the provider's cap fails the request with
    * `gas limit too high`: state the cap the provider documents.
+   *
+   * Stating it requires the client's chain to carry `viemDlc` facts, since whether the value is sent
+   * as each chunk's `gas` is a fact of the chain; a chain carrying none throws when the client is
+   * built.
    */
   gasLimit?: number;
+  /**
+   * The largest request the provider accepts, in bytes of a chunk's `eth_call` `data`; elements are
+   * greedy-packed under it and fetched in parallel. State what the provider documents, often a few
+   * megabytes. An initcode-delivered chunk is also bound by the chain's initcode limit, which the
+   * chain states and which is usually far the smaller of the two.
+   */
+  batchSize?: number;
 }
 
-export type HandlerContext = Omit<CacheConfig, "gasLimit"> & {
+export type HandlerContext = Omit<CacheConfig, "gasLimit" | "batchSize"> & {
   chainId: number;
-  /** The node this transport instance talks to, with {@link CacheConfig.gasLimit} resolved. */
+  /** The node this transport instance talks to, with {@link CacheConfig.gasLimit} and the request limit resolved. */
   provider: Provider;
   requestFn: EIP1193RequestFn<LogsDividerSchema>;
   coalesce: ReturnType<typeof createCoalescingMutex>["coalesce"];
