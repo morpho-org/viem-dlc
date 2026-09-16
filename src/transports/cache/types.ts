@@ -48,10 +48,10 @@ export interface CacheConfig {
    * megabytes. An initcode-delivered chunk is also bound by the chain's initcode limit, which the
    * chain states and which is usually far the smaller of the two.
    */
-  maxRequestSize?: number;
+  batchSize?: number;
 }
 
-export type HandlerContext = Omit<CacheConfig, "gasLimit" | "maxRequestSize"> & {
+export type HandlerContext = Omit<CacheConfig, "gasLimit" | "batchSize"> & {
   chainId: number;
   /** The node this transport instance talks to, with {@link CacheConfig.gasLimit} and the request limit resolved. */
   provider: Provider;

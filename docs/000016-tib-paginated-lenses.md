@@ -463,7 +463,7 @@ the caller's array.
 **Packing and flushes.** Chunks honour the wire cap and a gas prediction. Two figures set that cap,
 for two different reasons. The chain's initcode limit bounds an initcode-delivered chunk, whose bytes
 are the initcode; it is a protocol constant, so the chain the client was built with states it and a
-chain stating none is an error when a chunk needs sizing. The transport's `maxRequestSize` is the
+chain stating none is an error when a chunk needs sizing. The transport's `batchSize` is the
 largest request the provider accepts, which only the caller knows; it bounds either delivery, and is
 the only bound by override. An element that alone exceeds the wire cap
 is declined client-side with no request made. The greedy packer takes the longest prefix that fits, by binary search with a

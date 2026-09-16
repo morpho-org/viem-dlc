@@ -1058,7 +1058,7 @@ describe("continuations", () => {
     const requestFn = mockPagedLens();
 
     const { result, field } = await withFacet(() =>
-      createTransport(requestFn, { maxRequestSize: 100 }).request(createRequest([1, 2].map(addr))),
+      createTransport(requestFn, { batchSize: 100 }).request(createRequest([1, 2].map(addr))),
     );
 
     expect(requestFn).not.toHaveBeenCalled();
@@ -1250,7 +1250,7 @@ describe("stated cap on the wire", () => {
 
   it("refuses a stated gasLimit on a chain carrying no facts, when the client is built", () => {
     expect(() => onChain(factlessChain(), mockPagedLens(), { gasLimit: 30_000_000 })).toThrow(
-      /carries no `viemDlc` facts/,
+      /states no `viemDlc` facts/,
     );
   });
 });
@@ -1461,7 +1461,7 @@ describe("override delivery", () => {
     // A byte cap two override elements fit under, which no initcode request does.
     const probe = mockPagedLens();
     await createTransport(probe).request(createRequest([1, 2].map(addr), OVERRIDE));
-    const maxRequestSize = byteLength(paramsOf(probe)[0].data as Hex);
+    const batchSize = byteLength(paramsOf(probe)[0].data as Hex);
     const requestFn = withOverride(async (_serve, params) => {
       const sent = sentAddresses(params);
       if (sent.map(addrValue).includes(1)) return "0x";
@@ -1470,7 +1470,7 @@ describe("override delivery", () => {
     });
 
     const { result, field } = await withFacet(() =>
-      createTransport(requestFn, { maxRequestSize }).request(createRequest(four, OVERRIDE)),
+      createTransport(requestFn, { batchSize }).request(createRequest(four, OVERRIDE)),
     );
 
     // Neither the fallback's pieces nor the refused chunk's halves can be sent as initcode under the cap.
@@ -1483,7 +1483,7 @@ describe("override delivery", () => {
   it("admits an escalation that switches to initcode after the proof, and counts only what it sends", async () => {
     const probe = mockPagedLens();
     await createTransport(probe).request(createRequest([1, 2].map(addr), OVERRIDE));
-    const maxRequestSize = byteLength(paramsOf(probe)[0].data as Hex);
+    const batchSize = byteLength(paramsOf(probe)[0].data as Hex);
     const requestFn = withOverride(
       async (serve, params) => {
         if (sentAddresses(params).map(addrValue).includes(1)) return "0x";
@@ -1494,7 +1494,7 @@ describe("override delivery", () => {
     );
 
     const { result, field } = await withFacet(() =>
-      createTransport(requestFn, { maxRequestSize }).request(createRequest(four, OVERRIDE)),
+      createTransport(requestFn, { batchSize }).request(createRequest(four, OVERRIDE)),
     );
 
     // The death's singleton would open as initcode, which the cap does not admit: declined, not sent.
@@ -1561,12 +1561,12 @@ describe("override delivery", () => {
   it("packs a fallback under the provider's request size", async () => {
     const probe = mockPagedLens();
     await createTransport(probe).request(createRequest([1, 2, 3].map(addr)));
-    const maxRequestSize = byteLength(paramsOf(probe)[0].data as Hex);
+    const batchSize = byteLength(paramsOf(probe)[0].data as Hex);
     const requestFn = ignoresOverrides();
     const eight = [1, 2, 3, 4, 5, 6, 7, 8].map(addr);
 
     const { result } = await withFacet(() =>
-      createTransport(requestFn, { maxRequestSize }).request(createRequest(eight, OVERRIDE)),
+      createTransport(requestFn, { batchSize }).request(createRequest(eight, OVERRIDE)),
     );
 
     // The override chunk carries all eight; the pieces it falls back to carry the envelope too.
@@ -1578,7 +1578,7 @@ describe("override delivery", () => {
       [7, 8],
     ]);
     for (const call of requestFn.mock.calls.slice(1)) {
-      expect(byteLength((call[0] as EthCallRequest).params[0].data as Hex)).toBeLessThanOrEqual(maxRequestSize);
+      expect(byteLength((call[0] as EthCallRequest).params[0].data as Hex)).toBeLessThanOrEqual(batchSize);
     }
   });
 

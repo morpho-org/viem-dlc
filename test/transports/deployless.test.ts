@@ -220,22 +220,22 @@ describe("deployless", () => {
   });
 
   describe("batching", () => {
-    it("maxRequestSize splits marked deployless calls without exceeding the byte budget", async () => {
+    it("batchSize splits marked deployless calls without exceeding the byte budget", async () => {
       // Room for three 32-byte elements beside the envelope, so 5 elements need two chunks.
-      const maxRequestSize = wireBytesFor(3);
+      const batchSize = wireBytesFor(3);
       const requestFn = mockPagedFn();
-      const transport = createTransport(requestFn, { maxRequestSize });
+      const transport = createTransport(requestFn, { batchSize });
 
       const result = await transport.request(createRequest(addrs(5)));
 
       expect(requestFn.mock.calls.length).toBe(2);
-      for (const data of sentData(requestFn)) expect(byteLength(data)).toBeLessThanOrEqual(maxRequestSize);
+      for (const data of sentData(requestFn)) expect(byteLength(data)).toBeLessThanOrEqual(batchSize);
       expect(decodeResults(result)).toEqual(addrs(5).map((a) => BigInt(a)));
     });
 
     it("wraps each chunk in the 5-arg REVERT constructor carrying the envelope config word", async () => {
       const requestFn = mockPagedFn();
-      const transport = createTransport(requestFn, { maxRequestSize: wireBytesFor(3) });
+      const transport = createTransport(requestFn, { batchSize: wireBytesFor(3) });
 
       await transport.request(createRequest(addrs(5)));
 
@@ -262,9 +262,9 @@ describe("deployless", () => {
     });
 
     it("stamps input_elements, nominal_batches, and splits onto the wide event", async () => {
-      const maxRequestSize = wireBytesFor(3);
+      const batchSize = wireBytesFor(3);
       const requestFn = mockPagedFn();
-      const transport = createTransport(requestFn, { maxRequestSize });
+      const transport = createTransport(requestFn, { batchSize });
       const req = createRequest(addrs(5));
 
       const { logger, events } = createStubLogger();
@@ -291,19 +291,19 @@ describe("deployless", () => {
 
       // One sample per batch, none exceeding the budget it was packed under.
       expect(field("batch_bytes.count")).toBe(field("nominal_batches"));
-      expect(field("batch_bytes.max")).toBeLessThanOrEqual(maxRequestSize);
+      expect(field("batch_bytes.max")).toBeLessThanOrEqual(batchSize);
     });
 
-    it("lets the smaller of the gas prediction and maxRequestSize bind the opening wave", async () => {
-      const maxRequestSize = wireBytesFor(3);
+    it("lets the smaller of the gas prediction and batchSize bind the opening wave", async () => {
+      const batchSize = wireBytesFor(3);
       const gas = { fixed: 0, item: { avg: 1_000_000 } };
       const predicted = mockPagedFn();
       const capped = mockPagedFn();
 
-      await createTransport(predicted, { gasLimit: 2_500_000, maxRequestSize }).request(
+      await createTransport(predicted, { gasLimit: 2_500_000, batchSize }).request(
         createRequest(addrs(5), { batch: { gas } }),
       );
-      await createTransport(capped, { gasLimit: 4_500_000, maxRequestSize }).request(
+      await createTransport(capped, { gasLimit: 4_500_000, batchSize }).request(
         createRequest(addrs(5), { batch: { gas } }),
       );
 
@@ -327,7 +327,7 @@ describe("deployless", () => {
       const requestFn = mockPagedFn();
       const transport = createTransport(requestFn, undefined, factlessChain());
 
-      await expect(transport.request(createRequest(addrs(2)))).rejects.toThrow(/carries no `viemDlc` facts/);
+      await expect(transport.request(createRequest(addrs(2)))).rejects.toThrow(/states no `viemDlc` facts/);
       expect(requestFn).not.toHaveBeenCalled();
     });
 
@@ -344,9 +344,9 @@ describe("deployless", () => {
       expect(decodeResults(result)).toHaveLength(40_000);
     });
 
-    it("does not let a maxRequestSize above the chain's initcode limit lift it", async () => {
+    it("does not let a batchSize above the chain's initcode limit lift it", async () => {
       const requestFn = mockPagedFn();
-      const transport = createTransport(requestFn, { maxRequestSize: 5_000_000 });
+      const transport = createTransport(requestFn, { batchSize: 5_000_000 });
 
       await transport.request(createRequest(addrs(40_000)));
 
@@ -508,7 +508,7 @@ describe("deployless", () => {
     const accounts = addrs(5);
     const requestFnWithoutCache = mockPagedFn();
     const requestFnWithCache = mockPagedFn();
-    const config = { maxRequestSize: wireBytesFor(2) };
+    const config = { batchSize: wireBytesFor(2) };
 
     const withoutCache = await createTransport(requestFnWithoutCache, config).request(createRequest(accounts));
     const withCache = await createTransport(requestFnWithCache, config).request(
@@ -613,14 +613,14 @@ describe("deployless", () => {
 
     it("keeps compressed chunks within the actual wrapped byte budget", async () => {
       const accounts = Array.from({ length: 60 }, () => addr(1));
-      const maxRequestSize = wireBytesFor(1, true) + 8;
+      const batchSize = wireBytesFor(1, true) + 8;
       const requestFn = mockPagedFn();
-      const transport = createTransport(requestFn, { maxRequestSize });
+      const transport = createTransport(requestFn, { batchSize });
 
       const result = await transport.request(createRequest(accounts, { batch: { compress: true } }));
 
       expect(requestFn.mock.calls.length).toBeGreaterThan(1);
-      for (const data of sentData(requestFn)) expect(byteLength(data)).toBeLessThanOrEqual(maxRequestSize);
+      for (const data of sentData(requestFn)) expect(byteLength(data)).toBeLessThanOrEqual(batchSize);
       expect(decodeResults(result)).toHaveLength(accounts.length);
     });
   });

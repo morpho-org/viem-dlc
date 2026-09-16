@@ -81,7 +81,7 @@ since Prague a frame must clear EIP-7623's floor to start at all, so a lone elem
 is declined as oversize, the same way an element above the byte cap is. A stated `gasLimit` bounds
 the opening wave's bytes on its own. The chain's initcode limit bounds an initcode chunk, whose bytes
 are the initcode, and reaches no override chunk; beyond those, when neither `gasLimit` nor
-`maxRequestSize` is stated, nothing is assumed on the caller's behalf.
+`batchSize` is stated, nothing is assumed on the caller's behalf.
 
 **Choosing and falling back.** A request with the option opens by override. Every response to an
 override chunk is classified first by whether it proves the envelope ran. A page or any
@@ -140,10 +140,10 @@ APPS-1406 holds the full matrix with the probe figures.
 ## Open risks
 
 - **The provider's request size limit replaces the initcode cap.** It's discovered by halving, one
-  round trip per level. A caller who sets the transport's `maxRequestSize` skips the discovery.
+  round trip per level. A caller who sets the transport's `batchSize` skips the discovery.
   Nothing else bounds an override chunk's bytes: the chain's initcode limit bounds the initcode, and
   an override chunk carries none.
-- **With no `gasLimit` and no `maxRequestSize`, the opening override chunk is the whole input.** It can
+- **With no `gasLimit` and no `batchSize`, the opening override chunk is the whole input.** It can
   fail to start on a Prague node and halves until it does. The paginated-lenses TIB accepts the same
   shape one cap in. By initcode the chain's limit applies, so only override opens unbounded.
 - **Lifting the cap widens every per-byte schedule mismatch.** Intrinsic gas and the floor are
@@ -232,7 +232,7 @@ APPS-1406 holds the full matrix with the probe figures.
   answered: both ride on the caller's chain.
 - **A dedicated support probe, two envelope constants, and remembering the discovered request size
   cap** were each declined. The opening wave is the probe, one bytecode serves, and the caller owns
-  `maxRequestSize`.
+  `batchSize`.
 - **`keccak256("viem-dlc-envelope")[12:]`** was the override address in the first draft. Review
   noted that it changes the factory's `msg.sender`, and the creation address dissolves the
   difference.

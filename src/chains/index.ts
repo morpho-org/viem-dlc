@@ -75,7 +75,7 @@ export function chainFacts(chain: Chain | undefined): ChainFacts | undefined {
   const carried: unknown = chain[FACTS_KEY];
   if (carried === undefined) return undefined;
 
-  const bad = (why: string) => new Error(`[viem-dlc] ${describe(chain)} carries a malformed \`${FACTS_KEY}\`: ${why}`);
+  const bad = (why: string) => new Error(`[viem-dlc] chain ${chain.id} carries a malformed \`${FACTS_KEY}\`: ${why}`);
   if (typeof carried !== "object" || carried === null) throw bad("not an object");
   const { ethCall, maxInitcodeSize } = carried as Partial<ChainFacts>;
   if (typeof ethCall !== "object" || ethCall === null) throw bad("no `ethCall`");
@@ -91,16 +91,7 @@ export function chainFacts(chain: Chain | undefined): ChainFacts | undefined {
   return { ethCall, maxInitcodeSize: maxInitcodeSize as number };
 }
 
-/** The error a chain carrying no facts raises, at the point one of them is needed. */
-export function missingChainFacts(chain: Chain | undefined, needed: string): Error {
-  return new Error(
-    `[viem-dlc] ${describe(chain)} carries no \`${FACTS_KEY}\` facts, and ${needed}. Attach them to the ` +
-      "chain: `defineChain({ ...chain, ...chainConfig }).extend({ viemDlc: ethereumFacts })`, from " +
-      "`@morpho-org/viem-dlc/chains`.",
-  );
-}
-
-function describe(chain: Chain | undefined): string {
-  if (chain === undefined) return "the client's chain is unset, which";
-  return `chain ${chain.id}${chain.name ? ` (${chain.name})` : ""}`;
-}
+/** How a chain that carries none is told to: the tail of every error a missing fact raises. */
+export const ATTACH_FACTS =
+  "attach them with `defineChain({ ...chain, ...chainConfig }).extend({ viemDlc: ethereumFacts })`, " +
+  "from `@morpho-org/viem-dlc/chains`";

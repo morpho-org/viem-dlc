@@ -1,6 +1,6 @@
 import { BaseError, type Chain, type EIP1193RequestFn, type Hex, type PublicRpcSchema, toHex } from "viem";
 
-import { chainFacts, type EthCallGas, missingChainFacts } from "../../chains/index.js";
+import { ATTACH_FACTS, chainFacts, type EthCallGas } from "../../chains/index.js";
 import type { Facet } from "../../observability.js";
 import { causeChain, isTimeoutLikeError } from "../errors.js";
 
@@ -88,7 +88,7 @@ export type Provider = {
    */
   gas?: Hex;
   /** The largest request the provider accepts, when stated: what a chunk's bytes may not exceed. */
-  maxRequestSize?: number;
+  batchSize?: number;
   /**
    * What an initcode-delivered chunk's bytes may not exceed, since they are the initcode. Throws on
    * a chain carrying no facts, which is why it is read only where an initcode chunk is packed:
@@ -100,33 +100,31 @@ export type Provider = {
 /** What the caller knows about the node, as opposed to what {@link ChainFacts} says about the chain. */
 export type ProviderLimits = {
   gasLimit?: number;
-  maxRequestSize?: number;
+  batchSize?: number;
 };
 
-export function providerOf(chain: Chain | undefined, { gasLimit, maxRequestSize }: ProviderLimits = {}): Provider {
+export function providerOf(chain: Chain | undefined, { gasLimit, batchSize }: ProviderLimits = {}): Provider {
   const facts = chainFacts(chain);
-  const cap = positive(gasLimit);
+  const usable = (n: number | undefined) => (n !== undefined && Number.isSafeInteger(n) && n > 0 ? n : undefined);
+  const cap = usable(gasLimit);
+  const on = `chain ${chain?.id} states no \`viemDlc\` facts`;
   if (cap !== undefined && facts === undefined) {
-    throw missingChainFacts(chain, "a stated `gasLimit` is sent as `gas` only where the chain needs it");
+    throw new Error(
+      `[deployless] ${on}, and a stated \`gasLimit\` rides as \`gas\` only where one says to: ${ATTACH_FACTS}.`,
+    );
   }
   return {
     cap,
     gas: cap !== undefined && facts?.ethCall.gasWhenUnspecified === "fixedDefault" ? toHex(cap) : undefined,
-    maxRequestSize: positive(maxRequestSize),
+    batchSize: usable(batchSize),
     initcodeLimit: () => {
       if (facts === undefined) {
-        throw missingChainFacts(
-          chain,
-          "the chain's initcode limit bounds a chunk delivered as initcode — the default delivery, and " +
-            "where override delivery falls back",
-        );
+        throw new Error(`[deployless] ${on}, and one bounds every chunk delivered as initcode: ${ATTACH_FACTS}.`);
       }
       return facts.maxInitcodeSize;
     },
   };
 }
-
-const positive = (n: number | undefined) => (n !== undefined && Number.isSafeInteger(n) && n > 0 ? n : undefined);
 
 /**
  * When the tails pages leave behind are sent. `fill` sends a tail once enough of them are pending
@@ -174,7 +172,7 @@ type FallbackReason = "unsupported" | "unproven" | "exhausted";
 
 /**
  * Packs `elements` into deployless `eth_call` chunks under the wire budget (the provider's
- * `maxRequestSize` and, by initcode delivery, the chain's initcode limit) and the gas each chunk is
+ * `batchSize` and, by initcode delivery, the chain's initcode limit) and the gas each chunk is
  * predicted to need; fetches them in parallel; returns
  * per-element outputs aligned to `elements`. The prediction runs on the stated `gasLimit` and
  * `batch.gas` until the first page lands and on the pages' own telemetry after, so the stated
@@ -193,7 +191,7 @@ export async function factorisedFactoryCall(
     elements,
     lens,
     batch,
-    provider: { cap, gas: sentGas, maxRequestSize, initcodeLimit },
+    provider: { cap, gas: sentGas, batchSize, initcodeLimit },
     restOfEthCallParams,
     onResolved,
     facet,
@@ -278,7 +276,7 @@ export async function factorisedFactoryCall(
     };
   };
 
-  const stated = maxRequestSize ?? Infinity;
+  const stated = batchSize ?? Infinity;
   /**
    * What a chunk's bytes may not exceed: the provider's request limit, and for initcode delivery the
    * chain's initcode limit, which is the chunk's own bytes. Read per pack, so a request that never

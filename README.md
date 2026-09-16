@@ -57,7 +57,7 @@ emit at `error` level with the error attached via `withError`, so hosts that for
 Thin transport wrapper for deployless `eth_call` splitting. It only intercepts calls carrying
 the `policy(...)` sentinel in `stateOverride`, re-packs the marked input array into one or more
 deployless-factory calls under a wire byte budget (the chain's initcode limit, and the transport's
-`maxRequestSize` where stated), aggregates the pages that come back, and forwards everything else
+`batchSize` where stated), aggregates the pages that come back, and forwards everything else
 unchanged.
 No gas figure is load-bearing: the envelope calls the lens's per-item function once per element
 in its own frame and reports how far it got, so a chunk adapts to whatever gas the node grants —
@@ -105,7 +105,7 @@ chain whose nodes give an `eth_call` with `gas` unspecified a fixed default belo
 grants 8.1M and promotes only on out-of-gas, which a paging envelope never is — the transports also
 send it as every chunk's `gas`, and there a value above the provider's cap is rejected by the node
 and fails the request, so state the cap the provider documents; whether a chain is one of those is
-a fact the chain carries, see [Chains](#chains). `maxRequestSize` is the largest request the provider
+a fact the chain carries, see [Chains](#chains). `batchSize` is the largest request the provider
 accepts, in bytes of a chunk's `eth_call` `data`; state what the provider documents, often a few
 megabytes. Behind `failover`, each branch states its own.
 
@@ -552,7 +552,7 @@ policy(opts: {
   fragment in the contract's real ABI: the transport derives the per-item selector from it, and a
   selector the lens does not implement fails as a page that skips every element.
 - **`opts.batch`** — optional batching config. What bounds a chunk's bytes is not here: the chain
-  states its initcode limit and the transport states the provider's `maxRequestSize`.
+  states its initcode limit and the transport states the provider's `batchSize`.
 - **`opts.batch.compress`** — FastLZ-compress calldata on the wire, so more elements fit per
   chunk at the cost of encoding time and decompression gas. The envelope decompresses element by
   element as it attempts them, so a highly compressible chunk pages like any other and costs

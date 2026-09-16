@@ -33,7 +33,7 @@ export type DeploylessConfig = {
    * megabytes. An initcode-delivered chunk is also bound by the chain's initcode limit, which the
    * chain states and which is usually far the smaller of the two.
    */
-  maxRequestSize?: number;
+  batchSize?: number;
 };
 
 /**
@@ -47,13 +47,13 @@ export type DeploylessConfig = {
  */
 export function deployless<T extends Base>(
   baseTransportFn: Transport<string, unknown, EIP1193RequestFn<T>>,
-  { gasLimit, maxRequestSize }: DeploylessConfig = {},
+  { gasLimit, batchSize }: DeploylessConfig = {},
 ): Transport<typeof deploylessTransportKey, DeploylessConfig, EIP1193RequestFn<T>> {
   const facetId = createFacetId(deploylessTransportKey);
 
   return (params) => {
     const requestFn = baseTransportFn(params).request;
-    const provider = providerOf(params.chain, { gasLimit, maxRequestSize });
+    const provider = providerOf(params.chain, { gasLimit, batchSize });
 
     const request = (args: EIP1193Parameters<T>) => {
       if (args.method !== "eth_call") {
@@ -71,7 +71,7 @@ export function deployless<T extends Base>(
         retryCount: 0,
         type: deploylessTransportKey,
       },
-      { gasLimit, maxRequestSize },
+      { gasLimit, batchSize },
     );
   };
 }

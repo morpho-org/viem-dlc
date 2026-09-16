@@ -447,18 +447,18 @@ describe("handleEthCall", () => {
   });
 
   describe("batching", () => {
-    it("maxRequestSize splits misses, never exceeding the byte budget", async () => {
-      const maxRequestSize = wireBytesFor(3);
+    it("batchSize splits misses, never exceeding the byte budget", async () => {
+      const batchSize = wireBytesFor(3);
       const requestFn = mockPagedFn();
       const accounts = addrs(5);
       const req = createRequest(accounts);
 
-      const result = await handleEthCall(ctx(requestFn, undefined, { maxRequestSize }), req);
+      const result = await handleEthCall(ctx(requestFn, undefined, { batchSize }), req);
 
       expect(requestFn.mock.calls.length).toBe(2);
       for (const [arg] of requestFn.mock.calls) {
         const data = (arg.params[0] as { data: Hex }).data;
-        expect((data.length - 2) / 2).toBeLessThanOrEqual(maxRequestSize);
+        expect((data.length - 2) / 2).toBeLessThanOrEqual(batchSize);
       }
 
       expect(decodeResults(result)).toEqual(accounts.map((a) => BigInt(a)));
@@ -642,9 +642,7 @@ describe("handleEthCall", () => {
         );
       });
 
-      const error = await handleEthCall(ctx(requestFn, store, { maxRequestSize: wireBytesFor(2) }), req).catch(
-        (e) => e,
-      );
+      const error = await handleEthCall(ctx(requestFn, store, { batchSize: wireBytesFor(2) }), req).catch((e) => e);
 
       // The transport error wins over any partial state, but the slow chunk's work is kept.
       expect(error.message).toMatch(/upstream exploded/);
@@ -766,7 +764,7 @@ describe("handleEthCall", () => {
 
       const { result, field } = await withFacet(
         ctx(requestFn as unknown as HandlerContext["requestFn"], undefined, {
-          maxRequestSize: wireBytesForStrings(["alpha", "bee"]),
+          batchSize: wireBytesForStrings(["alpha", "bee"]),
         }),
         stringRequest(["alpha", big, "bee", big]),
       );
