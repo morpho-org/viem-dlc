@@ -36,7 +36,8 @@ export interface CacheConfig {
    * Most nodes run an `eth_call` that leaves `gas` unspecified in the whole cap, and nothing is
    * sent. Monad's run it in a fixed default instead (see `chains`), so there the value is sent as
    * every chunk's `gas`, and one above the provider's cap fails the request with
-   * `gas limit too high`: state the cap the provider documents.   *
+   * `gas limit too high`: state the cap the provider documents.
+   *
    * Stating it requires the client's chain to carry `viemDlc` facts, since whether the value is sent
    * as each chunk's `gas` is a fact of the chain; a chain carrying none throws when the client is
    * built.

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { chainConfig, chainFacts, EIP_3860_INITCODE_SIZE, ethereumFacts, monadFacts } from "../src/chains/index.js";
 
-import { chainCarrying, ethereumChain, factlessChain } from "./helpers/chains.js";
+import { ethereumChain, factlessChain } from "./helpers/chains.js";
 
 describe("chain facts", () => {
   it("reads what a chain carries, and nothing from a chain carrying none", () => {
@@ -40,6 +40,6 @@ describe("chain facts", () => {
   });
 
   it("names the chain it could not read", () => {
-    expect(() => chainFacts({ ...chainCarrying(undefined, 7), viemDlc: 1 })).toThrow(/chain 7/);
+    expect(() => chainFacts({ ...factlessChain(7), viemDlc: 1 })).toThrow(/chain 7/);
   });
 });

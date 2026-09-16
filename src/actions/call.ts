@@ -22,8 +22,9 @@ import type { BatchOptions } from "../utils/deployless/call.js";
  *
  * @param opts.abi The array-shaped fragment from `arrayifiedAbi`, built from the contract's real
  *   ABI: the per-item selector the envelope calls is derived from it.
- * @param opts.batch Optional batching config, see {@link BatchOptions}. Omit to send all elements in
- *   one upstream `eth_call`.
+ * @param opts.batch Optional batching config, see {@link BatchOptions}. What bounds a chunk's bytes
+ *   isn't here: the chain states its initcode limit and the transport states the provider's
+ *   `batchSize`.
  * @param opts.cache Optional cache config. Honored by the `cache` transport only; if omitted,
  *   or when used with `deployless`, `batch` is still honored without caching.
  * @param opts.cache.blobKey Identifies the backing cache blob. Requests with the same

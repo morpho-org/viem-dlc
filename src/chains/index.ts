@@ -34,11 +34,8 @@ export type ChainFacts = {
   maxInitcodeSize: number;
 };
 
-/** The chain field this package's facts are carried on. */
-export const FACTS_KEY = "viemDlc" as const;
-
 /** The schema a chain declares so it can carry {@link ChainFacts}. */
-export type ViemDlcSchema = { [FACTS_KEY]: ChainFacts };
+export type ViemDlcSchema = { viemDlc: ChainFacts };
 
 /**
  * Spread into a chain definition so the chain can carry its {@link ChainFacts}:
@@ -61,9 +58,6 @@ export const monadFacts: ChainFacts = {
   maxInitcodeSize: 262_144,
 };
 
-const GAS_WHEN_UNSPECIFIED = ["providerCap", "fixedDefault"];
-const GAS_ABOVE_CAP = ["clamped", "rejected"];
-
 /**
  * The facts `chain` carries, or `undefined` for a chain that carries none. A `viemDlc` entry that
  * isn't a complete {@link ChainFacts} throws rather than reading as absent, so a typo surfaces.
@@ -71,19 +65,19 @@ const GAS_ABOVE_CAP = ["clamped", "rejected"];
  * viem's `Chain` is a closed type, so the field is reached by an `in` narrowing and checked here.
  */
 export function chainFacts(chain: Chain | undefined): ChainFacts | undefined {
-  if (chain === undefined || !(FACTS_KEY in chain)) return undefined;
-  const carried: unknown = chain[FACTS_KEY];
+  if (chain === undefined || !("viemDlc" in chain)) return undefined;
+  const carried: unknown = chain.viemDlc;
   if (carried === undefined) return undefined;
 
-  const bad = (why: string) => new Error(`[viem-dlc] chain ${chain.id} carries a malformed \`${FACTS_KEY}\`: ${why}`);
+  const bad = (why: string) => new Error(`[viem-dlc] chain ${chain.id} carries a malformed \`viemDlc\`: ${why}`);
   if (typeof carried !== "object" || carried === null) throw bad("not an object");
   const { ethCall, maxInitcodeSize } = carried as Partial<ChainFacts>;
   if (typeof ethCall !== "object" || ethCall === null) throw bad("no `ethCall`");
-  if (!GAS_WHEN_UNSPECIFIED.includes(ethCall.gasWhenUnspecified)) {
-    throw bad(`\`ethCall.gasWhenUnspecified\` is not one of ${GAS_WHEN_UNSPECIFIED.join(", ")}`);
+  if (ethCall.gasWhenUnspecified !== "providerCap" && ethCall.gasWhenUnspecified !== "fixedDefault") {
+    throw bad("`ethCall.gasWhenUnspecified` is not `providerCap` or `fixedDefault`");
   }
-  if (!GAS_ABOVE_CAP.includes(ethCall.gasAboveCap)) {
-    throw bad(`\`ethCall.gasAboveCap\` is not one of ${GAS_ABOVE_CAP.join(", ")}`);
+  if (ethCall.gasAboveCap !== "clamped" && ethCall.gasAboveCap !== "rejected") {
+    throw bad("`ethCall.gasAboveCap` is not `clamped` or `rejected`");
   }
   if (!Number.isSafeInteger(maxInitcodeSize) || (maxInitcodeSize as number) <= 0) {
     throw bad("`maxInitcodeSize` is not a positive integer");

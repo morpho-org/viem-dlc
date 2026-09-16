@@ -105,8 +105,9 @@ export type ProviderLimits = {
 
 export function providerOf(chain: Chain | undefined, { gasLimit, batchSize }: ProviderLimits = {}): Provider {
   const facts = chainFacts(chain);
-  const usable = (n: number | undefined) => (n !== undefined && Number.isSafeInteger(n) && n > 0 ? n : undefined);
-  const cap = usable(gasLimit);
+  const positiveInteger = (n: number | undefined) =>
+    n !== undefined && Number.isSafeInteger(n) && n > 0 ? n : undefined;
+  const cap = positiveInteger(gasLimit);
   const on = `chain ${chain?.id} states no \`viemDlc\` facts`;
   if (cap !== undefined && facts === undefined) {
     throw new Error(
@@ -116,7 +117,7 @@ export function providerOf(chain: Chain | undefined, { gasLimit, batchSize }: Pr
   return {
     cap,
     gas: cap !== undefined && facts?.ethCall.gasWhenUnspecified === "fixedDefault" ? toHex(cap) : undefined,
-    batchSize: usable(batchSize),
+    batchSize: positiveInteger(batchSize),
     initcodeLimit: () => {
       if (facts === undefined) {
         throw new Error(`[deployless] ${on}, and one bounds every chunk delivered as initcode: ${ATTACH_FACTS}.`);

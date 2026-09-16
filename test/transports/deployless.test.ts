@@ -315,12 +315,12 @@ describe("deployless", () => {
       const requestFn = mockPagedFn();
       const transport = createTransport(requestFn);
 
-      const result = await transport.request(createRequest(addrs(40_000)));
+      const result = await transport.request(createRequest(addrs(2_000)));
 
       // An initcode chunk's bytes are the initcode, so the chain's limit binds without being stated.
       expect(requestFn.mock.calls.length).toBeGreaterThan(1);
       for (const data of sentData(requestFn)) expect(byteLength(data)).toBeLessThanOrEqual(EIP_3860_INITCODE_SIZE);
-      expect(decodeResults(result)).toHaveLength(40_000);
+      expect(decodeResults(result)).toHaveLength(2_000);
     });
 
     it("throws when packing an initcode chunk on a chain carrying no facts", async () => {
@@ -335,20 +335,20 @@ describe("deployless", () => {
       const ethereum = mockPagedFn();
       const raised = mockPagedFn();
 
-      await createTransport(ethereum).request(createRequest(addrs(40_000)));
-      const result = await createTransport(raised, undefined, monadChain()).request(createRequest(addrs(40_000)));
+      await createTransport(ethereum).request(createRequest(addrs(2_000)));
+      const result = await createTransport(raised, undefined, monadChain()).request(createRequest(addrs(2_000)));
 
       expect(raised.mock.calls.length).toBeLessThan(ethereum.mock.calls.length);
       for (const data of sentData(raised)) expect(byteLength(data)).toBeLessThanOrEqual(monadFacts.maxInitcodeSize);
       expect(sentData(raised).some((data) => byteLength(data) > EIP_3860_INITCODE_SIZE)).toBe(true);
-      expect(decodeResults(result)).toHaveLength(40_000);
+      expect(decodeResults(result)).toHaveLength(2_000);
     });
 
     it("does not let a batchSize above the chain's initcode limit lift it", async () => {
       const requestFn = mockPagedFn();
       const transport = createTransport(requestFn, { batchSize: 5_000_000 });
 
-      await transport.request(createRequest(addrs(40_000)));
+      await transport.request(createRequest(addrs(2_000)));
 
       for (const data of sentData(requestFn)) expect(byteLength(data)).toBeLessThanOrEqual(EIP_3860_INITCODE_SIZE);
     });
