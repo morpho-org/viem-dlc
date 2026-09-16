@@ -46,21 +46,19 @@ type ItemInput<abi extends Abi, functionName extends LensFunctionName<abi>> =
  * any other it must be left out. A client whose transport type is not known statically allows
  * everything. Spread it into a wrapper's own parameters to pass the constraint to its callers.
  */
-export type LensClientParameters<client extends Client> = client["transport"]["type"] extends typeof cacheTransportKey
-  ? Pick<EthCallPolicy, "cache">
-  : string extends client["transport"]["type"]
+export type ReadLensClientParameters<client extends Client> =
+  client["transport"]["type"] extends typeof cacheTransportKey
     ? Pick<EthCallPolicy, "cache">
-    : {
-        /** Unavailable: this client's transport cannot cache. Read through a `cache` transport to use it. */
-        cache?: undefined;
-      };
+    : string extends client["transport"]["type"]
+      ? Pick<EthCallPolicy, "cache">
+      : { cache?: undefined };
 
 export type ReadLensParameters<
   abi extends Abi,
   functionName extends LensFunctionName<abi>,
   client extends Client = Client,
 > = Pick<EthCallPolicy, "batch"> &
-  LensClientParameters<client> & {
+  ReadLensClientParameters<client> & {
     abi: abi;
     /** The per-item function: one parameter in, one value out. */
     functionName: functionName;
