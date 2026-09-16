@@ -14,7 +14,7 @@ import type {
 import { decodeFunctionResult, encodeFunctionData } from "viem";
 import { call } from "viem/actions";
 
-import type { cacheTransportKey } from "../transports/cache/schema.js";
+import type { deploylessTransportKey } from "../transports/deployless/index.js";
 import type { EthCallPolicy } from "../transports/state-overrides.js";
 import { arrayifiedAbi } from "../utils/deployless/codec.inner.js";
 
@@ -42,16 +42,17 @@ type ItemInput<abi extends Abi, functionName extends LensFunctionName<abi>> =
     : unknown;
 
 /**
- * The call options a client's transport can honor: only a `cache` transport serves `cache`, so on
- * any other it must be left out. A client whose transport type is not known statically allows
- * everything. Spread it into a wrapper's own parameters to pass the constraint to its callers.
+ * The call options a client's transport can honor. Only the `deployless` transport is known not to
+ * cache, so only there is `cache` typed away; every other transport keeps it, including a
+ * `failover` whose branches cache and one this package doesn't recognise. The gate names the
+ * transport that can't rather than the one that can, so composing transports never costs a caller
+ * an option their client would have served. Spread it into a wrapper's own parameters to pass the
+ * constraint to its callers.
  */
 export type ReadLensClientParameters<client extends Client> =
-  client["transport"]["type"] extends typeof cacheTransportKey
-    ? Pick<EthCallPolicy, "cache">
-    : string extends client["transport"]["type"]
-      ? Pick<EthCallPolicy, "cache">
-      : { cache?: undefined };
+  client["transport"]["type"] extends typeof deploylessTransportKey
+    ? { cache?: undefined }
+    : Pick<EthCallPolicy, "cache">;
 
 export type ReadLensParameters<
   abi extends Abi,

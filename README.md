@@ -69,10 +69,12 @@ override instead and only the frame's gas and the provider's request size bound 
 callers reach it through [`readLens`](#readlens) rather than building the call by hand.
 
 ```ts
-import { createPublicClient, encodeFunctionData, http, parseAbiItem } from 'viem'
+import { createPublicClient, defineChain, encodeFunctionData, http, parseAbiItem } from 'viem'
+import { mainnet } from 'viem/chains'
 import { call } from 'viem/actions'
 import { deployless } from '@morpho-org/viem-dlc/transports'
 import { arrayifiedAbi, policy } from '@morpho-org/viem-dlc/actions'
+import { chainConfig, ethereumFacts } from '@morpho-org/viem-dlc/chains'
 
 // The lens implements `positionOf((bytes32,address)) view returns ((uint256,uint128,uint128))`;
 // the array-shaped fragment the wire carries is derived from it.
@@ -80,9 +82,10 @@ const positionsAbi = arrayifiedAbi(
   parseAbiItem('function positionOf((bytes32 id, address user) input) view returns ((uint256,uint128,uint128))')
 )
 
-const client = createPublicClient({
-  transport: deployless(http(rpcUrl)),
-})
+// The chunk rides as initcode, which the chain's limit bounds — see [Chains](#chains).
+const chain = defineChain({ ...mainnet, ...chainConfig }).extend({ viemDlc: ethereumFacts })
+
+const client = createPublicClient({ chain, transport: deployless(http(rpcUrl)) })
 
 const result = await call(client, {
   factory,
@@ -506,9 +509,9 @@ A partial result is a **successful response**: `skipped` merges elements the len
 (its per-item call reverted), elements declined client-side for size, and elements
 that ran out of gas even when retried alone. Check it if you need every element.
 
-`cache` is typed by the client's transport, so it only typechecks where one can serve it. Wrappers
-pass that constraint on to their own callers by spreading `ReadLensClientParameters<client>` into
-their parameters:
+`cache` is typed away on a client built with the `deployless` transport, which cannot serve it.
+Wrappers pass that constraint on to their own callers by spreading
+`ReadLensClientParameters<client>` into their parameters:
 
 ```ts
 import type { ReadLensClientParameters } from '@morpho-org/viem-dlc/actions'
