@@ -1,14 +1,14 @@
 import { Button, Flex, Heading, Text, Theme } from "@radix-ui/themes";
 import * as React from "react";
 
-import { EXAMPLES, exampleById } from "./examples/index.js";
 import { About } from "./pages/About.js";
-import { ExamplePage } from "./pages/ExamplePage.js";
+import { TutorialPage } from "./pages/TutorialPage.js";
 import { navigate, useRoute } from "./router.js";
+import { TUTORIALS, tutorialById } from "./tutorials/index.js";
 
 const ITEMS = [
   { id: "about", title: "about", group: "" },
-  ...EXAMPLES.map((example) => ({ id: example.id, title: example.title, group: "examples" })),
+  ...TUTORIALS.map((tutorial) => ({ id: tutorial.id, title: tutorial.title, group: "tutorials" })),
 ];
 
 function useSystemAppearance(): "light" | "dark" {
@@ -35,7 +35,7 @@ function GroupLabel({ children }: { children: React.ReactNode }) {
 export function App() {
   const appearance = useSystemAppearance();
   const route = useRoute();
-  const example = exampleById(route);
+  const tutorial = tutorialById(route);
   // The RPC endpoint is a property of the session, not of a page, so it survives navigation.
   const [rpcUrl, setRpcUrl] = React.useState("https://mainnet.base.org");
 
@@ -77,7 +77,7 @@ export function App() {
         </Flex>
 
         <main className="page">
-          {example ? <ExamplePage example={example} rpcUrl={rpcUrl} onRpcUrl={setRpcUrl} /> : <About />}
+          {tutorial ? <TutorialPage tutorial={tutorial} rpcUrl={rpcUrl} onRpcUrl={setRpcUrl} /> : <About />}
         </main>
       </div>
     </Theme>

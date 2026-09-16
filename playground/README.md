@@ -13,18 +13,27 @@ pnpm playground          # dev server
 pnpm playground:build    # static bundle into playground/dist
 ```
 
-Each page is an `Example` (`src/examples/`): controls, one or more scripts, an optional lens, and an
-optional `prepare` that runs first. Scripts are real files under `tabs/`, so a comparison like
-`initcode` vs `override` is two programs rather than a flag. They receive a **rate-limited,
-request-counting `http` transport** and compose the transport under test over it themselves — the
-composition is the thing these examples exist to show, so it stays in the editable source rather than
-in the harness.
+A page is a `Tutorial` (`src/tutorials/`): page-scoped controls, then an ordered list of sections.
+A section is prose, a runnable step, or both. Each step owns its editors, its Run button and its
+result, so two steps hold two outcomes at once and a comparison between them is a comparison of the
+transports rather than of the inputs — `prepare` runs once per page, memoized against the endpoint,
+and every step sees the same corpus.
+
+Prose lives beside the code it introduces, in `tutorials/<id>/*.md`, rendered with `marked`. Scripts
+are real files under the same directory, so a comparison like `multicall` against `readLens` is two
+programs rather than a flag. They receive a **rate-limited, request-counting `http` transport** and
+compose the transport under test over it themselves — the composition is the thing these tutorials
+exist to show, so it stays in the editable source rather than in the harness.
+
+Under the page sits a session-long event feed: every wide event the transports emit and every `log`
+a script writes, interleaved, newest last. The per-step table is the record of one run; the feed is
+the view of a run happening. Expand a row for its full field set.
 
 ## How editing works
 
-`tabs/positions.sol` is the single source for the lens. `solFile` splices it into `sol()` at build
-time for the fast path, and the same file is `?raw`-imported to seed the editor — so the Solidity a
-visitor reads is provably the Solidity that ran. Edit it and the page compiles in your browser
+`tutorials/eth-call/vault-snapshot.sol` is the single source for the lens. `solFile` splices it into
+`sol()` at build time for the fast path, and the same file is `?raw`-imported to seed the editor — so
+the Solidity a visitor reads is provably the Solidity that ran. Edit it and the page compiles in your browser
 instead, via `solc` in a worker.
 
 The compiler is `node_modules/solc/soljson.js` (8.9 MB, pinned to the version the build uses) copied
@@ -97,13 +106,15 @@ consumer and keeps the real error for the callback), `string_decoder`, `events`,
   without CORS headers fails, and the UI says so rather than surfacing a bare fetch error.
 - Public endpoints rate-limit hard, and Base's caps a single `eth_getLogs` at 2 000 blocks, answered
   as HTTP 413. The defaults are set for that; raise them against an endpoint that allows more.
-- The deployless page's default 2 000 elements shows the initcode/override contrast clearly but wants
-  a permissive endpoint; a few hundred fit in one chunk either way.
 - `getLogs2`'s three strategies are within noise over a few thousand logs, and what `reduce` and
   `search` save first is peak memory rather than time. `test/bench` is where that is asserted.
-- Elements are the discovered `(market, borrower)` pairs repeated up to the requested count. Every
-  element is a real position, so packing and gas figures are real; only input distinctness is
-  synthetic.
+- The `eth_call` tutorial reads Morpho Vault V2 on Base, fetched from `api.morpho.org` with a pinned
+  snapshot as fallback. Every vault and every gas figure is real. `grief` is the one synthetic input:
+  a loop in the lens that burns gas on one element, standing in for cost a curator controls. The page
+  says so.
+- Base's public endpoint grants 600,000,000 gas for an `eth_call` and throttles hard. The tutorial's
+  defaults are set so its numbers reproduce there; a dedicated endpoint makes the request-count
+  contrasts cleaner.
 - solc hashes the source into the trailing CBOR metadata, so even a comment-only edit changes the
   bytecode and the counterfactual CREATE2 address. Harmless for a lens that is never deployed.
 - `src/shim/async-hooks.ts` stands in for `node:async_hooks`, without which the library's

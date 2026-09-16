@@ -1,9 +1,9 @@
-import source from "../../tabs/search-reduce.js?raw";
+import source from "../../tutorials/get-logs2/strategies.js?raw";
 
 import { alignedRange } from "./shared.js";
-import type { Example } from "./types.js";
+import type { Tutorial } from "./types.js";
 
-export const searchReduceExample: Example = {
+export const searchReduceTutorial: Tutorial = {
   id: "search-reduce",
   title: "getLogs2",
   blurb:
@@ -17,6 +17,12 @@ export const searchReduceExample: Example = {
     { id: "blocks", label: "BLOCKS BACK", value: "100000", type: "number" },
     { id: "binSize", label: "BIN SIZE", value: "10000", type: "number" },
   ],
-  scripts: [{ id: "compare", title: "FILTER / REDUCE / SEARCH", source }],
+  sections: [
+    {
+      heading: "",
+      prose: "",
+      step: { id: "strategies", scripts: [{ id: "compare", title: "FILTER / REDUCE / SEARCH", source }] },
+    },
+  ],
   prepare: alignedRange,
 };

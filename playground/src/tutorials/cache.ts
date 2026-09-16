@@ -1,9 +1,9 @@
-import source from "../../tabs/cache-cold-warm.js?raw";
+import source from "../../tutorials/cache/cold-warm.js?raw";
 
 import { alignedRange } from "./shared.js";
-import type { Example } from "./types.js";
+import type { Tutorial } from "./types.js";
 
-export const cacheExample: Example = {
+export const cacheTutorial: Tutorial = {
   id: "cache",
   title: "cache",
   blurb:
@@ -14,6 +14,12 @@ export const cacheExample: Example = {
     { id: "blocks", label: "BLOCKS BACK", value: "50000", type: "number" },
     { id: "binSize", label: "BIN SIZE", value: "10000", type: "number" },
   ],
-  scripts: [{ id: "cold-warm", title: "COLD VS WARM", source }],
+  sections: [
+    {
+      heading: "",
+      prose: "",
+      step: { id: "cold-warm", scripts: [{ id: "cold-warm", title: "COLD VS WARM", source }] },
+    },
+  ],
   prepare: alignedRange,
 };

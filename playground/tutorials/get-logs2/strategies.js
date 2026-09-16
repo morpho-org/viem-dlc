@@ -20,7 +20,7 @@ const borrowEvent = parseAbiItem(
  * All three must return the same count. The gap between them is parsing, not network: the cache is
  * warm for every pass.
  *
- * @type {import("../src/examples/types.js").Tab<import("../src/examples/shared.js").RangeContext>}
+ * @type {import("../../src/tutorials/types.js").Tab<import("../../src/tutorials/shared.js").RangeContext>}
  */
 const run = async ({ transport, chain, settings, range, log }) => {
   const client = createPublicClient({

@@ -1,4 +1,4 @@
-import { getLogs2, readLens } from "@morpho-org/viem-dlc/actions";
+import { arrayifiedAbi, getLogs2, MAX_INITCODE_SIZE, policy, readLens } from "@morpho-org/viem-dlc/actions";
 import { HierarchicalStore } from "@morpho-org/viem-dlc/stores/hierarchical";
 import { LruStore } from "@morpho-org/viem-dlc/stores/lru";
 import { MemoryStore } from "@morpho-org/viem-dlc/stores/memory";
@@ -13,11 +13,23 @@ import {
   rateLimiter,
 } from "@morpho-org/viem-dlc/transports";
 import { cache, createExponentialInvalidation, createSimpleInvalidation } from "@morpho-org/viem-dlc/transports/cache";
-import { createPublicClient, encodeEventTopics, http, numberToHex, parseAbiItem, rpcSchema } from "viem";
-import { getBlockNumber, getLogs } from "viem/actions";
+import {
+  createPublicClient,
+  decodeFunctionResult,
+  encodeEventTopics,
+  encodeFunctionData,
+  getAbiItem,
+  getAddress,
+  http,
+  numberToHex,
+  parseAbi,
+  parseAbiItem,
+  rpcSchema,
+} from "viem";
+import { getBlockNumber, getLogs, multicall, readContract } from "viem/actions";
 import { base } from "viem/chains";
 
-import type { Tab } from "./examples/types.js";
+import type { Tab } from "./tutorials/types.js";
 
 /**
  * What a tab's `import` statements resolve to. Tabs are evaluated rather than bundled, so this
@@ -25,14 +37,26 @@ import type { Tab } from "./examples/types.js";
  * `undefined` at the call site.
  */
 const MODULES: Record<string, Record<string, unknown>> = {
-  "@morpho-org/viem-dlc/actions": { getLogs2, readLens },
+  "@morpho-org/viem-dlc/actions": { arrayifiedAbi, getLogs2, MAX_INITCODE_SIZE, policy, readLens },
   "@morpho-org/viem-dlc/transports": { deployless, failover, logsDivider, logsEnricher, logsSieve, rateLimiter },
   "@morpho-org/viem-dlc/transports/cache": { cache, createSimpleInvalidation, createExponentialInvalidation },
   // The stores barrel is bypassed at the alias level (it would drag `fs`/`path`/`crypto` in), but
   // scripts still read as they would in Node.
   "@morpho-org/viem-dlc/stores": { HierarchicalStore, LruStore, MemoryStore, ThrottledStore, TtlStore },
-  viem: { createPublicClient, encodeEventTopics, http, numberToHex, parseAbiItem, rpcSchema },
-  "viem/actions": { getBlockNumber, getLogs },
+  viem: {
+    createPublicClient,
+    decodeFunctionResult,
+    encodeEventTopics,
+    encodeFunctionData,
+    getAbiItem,
+    getAddress,
+    http,
+    numberToHex,
+    parseAbi,
+    parseAbiItem,
+    rpcSchema,
+  },
+  "viem/actions": { getBlockNumber, getLogs, multicall, readContract },
   "viem/chains": { base },
 };
 

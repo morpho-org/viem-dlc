@@ -4,10 +4,10 @@ import { http, type Transport } from "viem";
 import { base } from "viem/chains";
 
 import { compileLens } from "./compile.js";
-import type { Example, Settings, TabContext } from "./examples/types.js";
-import { LENS_NAME } from "./lens.js";
+import { PREBUILT } from "./lens.js";
 import { createCapturingLogger, type WideEvent } from "./logger.js";
 import { evaluateTab } from "./tab.js";
+import type { Settings, Step, TabContext, Tutorial } from "./tutorials/types.js";
 
 /**
  * The page ships pointing at a public endpoint, which answers `over rate limit` long before any
@@ -24,10 +24,11 @@ export type RunOutcome = {
 };
 
 export type RunInput = {
-  example: Example;
+  tutorial: Tutorial;
+  step: Step;
   settings: Settings;
   script: string;
-  /** Present only when the example declares Solidity. */
+  /** Present only when the step declares Solidity. */
   solidity?: string;
 };
 
@@ -43,16 +44,30 @@ function countingHttp(url: string, counter: { n: number }): Transport {
   }) as Transport;
 }
 
-export async function run(input: RunInput, log: (message: string) => void): Promise<RunOutcome> {
-  const tab = evaluateTab(input.script, input.example.modules);
+/**
+ * `prepare` runs once per page rather than once per step, so every step of a tutorial reads the same
+ * corpus and a comparison between two steps compares the transports rather than the inputs. The key
+ * carries the endpoint, because that is what would make the result stale.
+ */
+const prepared = new Map<string, Promise<Record<string, unknown>>>();
 
-  const edited = input.solidity !== undefined && input.solidity.trim() !== input.example.solidity?.trim();
-  if (edited) log("compiling Solidity (fetching solc on first use)…");
-  const lens = input.example.solidity
+export async function run(
+  input: RunInput,
+  log: (message: string) => void,
+  onEvent?: (event: WideEvent) => void,
+): Promise<RunOutcome> {
+  const tab = evaluateTab(input.script, input.tutorial.modules);
+
+  const declared = input.step.solidity;
+  const edited =
+    declared !== undefined && input.solidity !== undefined && input.solidity.trim() !== declared.source.trim();
+  if (edited) log("compiling Solidity (fetching solc on first use)");
+  const lens = declared
     ? edited
-      ? await compileLens(LENS_NAME, input.solidity!)
-      : (await import("./lens.js")).positionsLens
+      ? await compileLens(declared.name, input.solidity!)
+      : PREBUILT[declared.name]
     : undefined;
+  if (declared && !lens) throw new Error(`No prebuilt lens named "${declared.name}"`);
 
   const counter = { n: 0 };
   const context: TabContext = {
@@ -63,10 +78,23 @@ export async function run(input: RunInput, log: (message: string) => void): Prom
     lens,
   };
 
-  Object.assign(context, await input.example.prepare?.(context));
+  if (input.tutorial.prepare) {
+    const key = `${input.tutorial.id} ${input.settings.rpcUrl}`;
+    let pending = prepared.get(key);
+    if (!pending) {
+      pending = input.tutorial.prepare(context);
+      prepared.set(key, pending);
+      // A failed corpus fetch must not poison every later run of the page.
+      pending.catch(() => prepared.delete(key));
+    }
+    Object.assign(context, await pending);
+  }
 
   const events: WideEvent[] = [];
-  const logger = createCapturingLogger((event) => events.push(event));
+  const logger = createCapturingLogger((event) => {
+    events.push(event);
+    onEvent?.(event);
+  });
 
   const started = performance.now();
   const result = await withLogging(() => tab(context), { logger, service: "playground" });

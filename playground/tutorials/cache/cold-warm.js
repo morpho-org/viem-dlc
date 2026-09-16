@@ -19,7 +19,7 @@ const borrowEvent = parseAbiItem(
  * The store is an in-memory `LruStore`; a reload starts cold again. `NodeFsStore` would persist it
  * outside a browser.
  *
- * @type {import("../src/examples/types.js").Tab<import("../src/examples/shared.js").RangeContext>}
+ * @type {import("../../src/tutorials/types.js").Tab<import("../../src/tutorials/shared.js").RangeContext>}
  */
 const run = async ({ transport, chain, settings, range, log }) => {
   const client = createPublicClient({

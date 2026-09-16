@@ -1,8 +1,8 @@
-import source from "../../tabs/logs-divider.js?raw";
+import source from "../../tutorials/logs-divider/divider.js?raw";
 
-import type { Example } from "./types.js";
+import type { Tutorial } from "./types.js";
 
-export const logsDividerExample: Example = {
+export const logsDividerTutorial: Tutorial = {
   id: "logs-divider",
   title: "logsDivider",
   blurb:
@@ -13,5 +13,7 @@ export const logsDividerExample: Example = {
     { id: "blocks", label: "BLOCKS BACK", value: "20000", type: "number" },
     { id: "maxBlockRange", label: "MAX BLOCK RANGE", value: "2000", type: "number" },
   ],
-  scripts: [{ id: "divider", title: "DIVIDER", source }],
+  sections: [
+    { heading: "", prose: "", step: { id: "divider", scripts: [{ id: "divider", title: "DIVIDER", source }] } },
+  ],
 };

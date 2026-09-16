@@ -1,11 +1,10 @@
-import { sol, solFile } from "soltag";
-
-export const MORPHO = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb" as const;
-
-export const LENS_NAME = "MorphoPositionsLens";
+import { type InlineContract, sol, solFile } from "soltag";
 
 /**
- * The prebuilt lens, compiled from `tabs/positions.sol` at build time — the same file the editor
- * displays, so what a visitor reads before touching anything is what actually ran.
+ * Lenses compiled at build time from the same `.sol` files the editors display, so what a visitor
+ * reads before touching anything is what actually ran. A step names one; editing its source swaps in
+ * a browser compile of the same contract.
  */
-export const positionsLens = sol("MorphoPositionsLens")`${solFile("../tabs/positions.sol", { raw: true })}`;
+export const PREBUILT: Record<string, InlineContract> = {
+  VaultSnapshotLens: sol("VaultSnapshotLens")`${solFile("../tutorials/eth-call/vault-snapshot.sol", { raw: true })}`,
+};

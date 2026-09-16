@@ -16,7 +16,7 @@ const borrowEvent = parseAbiItem(
  * per chunk as it lands, which is why the progress below appears while the request is still in
  * flight rather than all at once at the end.
  *
- * @type {import("../src/examples/types.js").Tab<{ settings: { blocks: string; maxBlockRange: string } }>}
+ * @type {import("../../src/tutorials/types.js").Tab<{ settings: { blocks: string; maxBlockRange: string } }>}
  */
 const run = async ({ transport, chain, settings, log }) => {
   const client = createPublicClient({

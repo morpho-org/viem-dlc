@@ -6,11 +6,11 @@
  * Open `/selftest.html`, or drive it headlessly and read the document title.
  */
 import { CompressedLinesBlob, createSlot } from "../../src/internal/compressed-lines-blob.js";
-import initcodeScript from "../tabs/deployless-initcode.js?raw";
-import pristineSolidity from "../tabs/positions.sol?raw";
+import readLensScript from "../tutorials/eth-call/02-readlens.js?raw";
+import pristineSolidity from "../tutorials/eth-call/vault-snapshot.sol?raw";
 
 import { compileLens } from "./compile.js";
-import { LENS_NAME, positionsLens } from "./lens.js";
+import { PREBUILT } from "./lens.js";
 import { installNodeGlobals } from "./shim/globals.js";
 import { createZstdCompress, createZstdDecompress } from "./shim/zlib-gzip.js";
 import { evaluateTab } from "./tab.js";
@@ -27,7 +27,7 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 try {
-  check("evaluateTab yields a callable", typeof evaluateTab(initcodeScript) === "function");
+  check("evaluateTab yields a callable", typeof evaluateTab(readLensScript) === "function");
 
   try {
     evaluateTab('import { nope } from "nowhere";\nexport default async () => ({ summary: {} });');
@@ -36,8 +36,8 @@ try {
     check("unknown import rejected", `${error}`.includes("Cannot import"));
   }
 
-  const built = positionsLens.with();
-  const compiled = (await compileLens(LENS_NAME, pristineSolidity)).with();
+  const built = PREBUILT.VaultSnapshotLens!.with();
+  const compiled = (await compileLens("VaultSnapshotLens", pristineSolidity)).with();
   check(
     "browser bytecode matches build",
     compiled.factoryData === built.factoryData,

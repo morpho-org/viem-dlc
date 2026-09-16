@@ -150,3 +150,67 @@ body {
   border-left: 2px solid var(--gray-6);
   color: var(--gray-11);
 }
+
+/* Session-long event feed, docked below the page. */
+.stream {
+  position: sticky;
+  bottom: 0;
+  background: var(--color-panel-solid);
+  border-top: 1px solid var(--gray-6);
+  /* Span the page's own padding so the dock reads as part of the window, not the article. */
+  margin: var(--space-5) calc(-1 * var(--space-4)) calc(-1 * var(--space-8));
+  z-index: 2;
+}
+
+.stream-bar {
+  border-bottom: 1px solid var(--gray-6);
+}
+
+.stream-spacer {
+  flex: 1;
+}
+
+.stream-body {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-1);
+}
+
+.stream-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 2px 0;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+}
+
+.stream-row-button {
+  cursor: pointer;
+}
+.stream-row-button:hover {
+  background: var(--gray-3);
+}
+
+.stream-at {
+  color: var(--gray-9);
+  min-width: 5ch;
+  text-align: right;
+}
+
+.stream-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 var(--space-4);
+  padding: var(--space-2) 0 var(--space-2) 6ch;
+  border-left: 2px solid var(--gray-6);
+  margin-left: 2ch;
+}
+.stream-detail > div {
+  display: contents;
+}
