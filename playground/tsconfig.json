@@ -17,9 +17,7 @@
       "@morpho-org/viem-dlc/stores/hierarchical": ["../src/stores/hierarchical.ts"],
       "@morpho-org/viem-dlc/stores/ttl": ["../src/stores/ttl.ts"],
       "@morpho-org/viem-dlc/stores/throttled": ["../src/stores/throttled.ts"],
-      "@morpho-org/viem-dlc/*": ["../src/*/index.ts"],
-      "@components/*": ["./vendor/srcl/components/*"],
-      "@common/*": ["./vendor/srcl/common/*"]
+      "@morpho-org/viem-dlc/*": ["../src/*/index.ts"]
     },
     "plugins": [{ "name": "soltag/plugin" }]
   },

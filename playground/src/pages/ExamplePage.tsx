@@ -1,16 +1,8 @@
-import Badge from "@components/Badge";
-import BlockLoader from "@components/BlockLoader";
-import Button from "@components/Button";
-import Card from "@components/Card";
-import Divider from "@components/Divider";
-import Input from "@components/Input";
-import Table from "@components/Table";
-import TableColumn from "@components/TableColumn";
-import TableRow from "@components/TableRow";
+import { Badge, Button, Card, Flex, Heading, Separator, Spinner, Table, Tabs, Text, TextField } from "@radix-ui/themes";
 import * as React from "react";
 
 import { CodeEditor, type EditorHandle } from "../editor.js";
-import type { Example, Settings } from "../examples/types.js";
+import type { Control, Example, Settings } from "../examples/types.js";
 import { type RunOutcome, run } from "../runtime.js";
 
 /** Facets that answer "did this change anything" — shown first, and never hidden. */
@@ -58,6 +50,48 @@ function facetRows(fields: Record<string, unknown>) {
     .map((key) => ({ name: key, value: fields[key], highlight: false }));
 
   return [...leading, ...rest];
+}
+
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <Card size="2">
+      <Flex direction="column" gap="3">
+        <Heading as="h2" size="1" color="gray" className="panel-title">
+          {title}
+        </Heading>
+        {children}
+      </Flex>
+    </Card>
+  );
+}
+
+function Field({
+  label,
+  value,
+  type,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  type?: Control["type"];
+  onChange: (value: string) => void;
+}) {
+  const id = React.useId();
+
+  return (
+    <div>
+      <Text as="label" htmlFor={id} size="1" color="gray" mb="1" className="field-label">
+        {label}
+      </Text>
+      <TextField.Root
+        id={id}
+        value={value}
+        type={type === "number" ? "number" : "text"}
+        spellCheck={false}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </div>
+  );
 }
 
 export function ExamplePage({
@@ -135,47 +169,54 @@ export function ExamplePage({
   const event = outcome?.events.find((e) => Object.keys(e.fields).length > 3);
 
   return (
-    <>
-      <Card title={example.title.toUpperCase()}>{example.blurb}</Card>
+    <Flex direction="column" gap="4">
+      <header>
+        <Heading as="h1" size="4" mb="1">
+          {example.title}
+        </Heading>
+        <Text as="p" color="gray">
+          {example.blurb}
+        </Text>
+      </header>
 
-      <Card title="SETTINGS">
-        <Input label="RPC URL (BASE)" name="rpc" value={rpcUrl} onChange={(e) => onRpcUrl(e.target.value)} />
+      <Panel title="settings">
+        <Field label="RPC URL (Base)" value={rpcUrl} onChange={onRpcUrl} />
         {example.controls.map((control) => (
-          <Input
+          <Field
             key={control.id}
             label={control.label}
-            name={control.id}
             value={values[control.id] ?? ""}
-            onChange={(e) => setValues((prev) => ({ ...prev, [control.id]: e.target.value }))}
+            type={control.type}
+            onChange={(next) => setValues((prev) => ({ ...prev, [control.id]: next }))}
           />
         ))}
-        <Divider type="DOUBLE" />
-        <div className="actions">
-          <Button onClick={onRun} isDisabled={busy}>
-            {busy ? "RUNNING" : "RUN"}
+        <Separator size="4" />
+        <Flex align="center" gap="3" wrap="wrap">
+          <Button onClick={onRun} disabled={busy} variant="solid" highContrast>
+            <Spinner loading={busy} />
+            {busy ? "Running" : "Run"}
           </Button>
-          {busy ? <BlockLoader mode={9} /> : null}
-          <span className={failed ? "status failed" : "status"}>{status}</span>
-        </div>
-      </Card>
+          <Text size="1" color={failed ? "red" : "gray"}>
+            {status}
+          </Text>
+        </Flex>
+      </Panel>
 
       {example.scripts.length > 1 ? (
-        <div className="tabs">
-          {example.scripts.map((script) => (
-            <Button
-              key={script.id}
-              theme={script.id === active ? "PRIMARY" : "SECONDARY"}
-              onClick={() => selectTab(script.id)}
-            >
-              {script.title}
-            </Button>
-          ))}
-        </div>
+        <Tabs.Root value={active} onValueChange={selectTab}>
+          <Tabs.List>
+            {example.scripts.map((script) => (
+              <Tabs.Trigger key={script.id} value={script.id}>
+                {script.title}
+              </Tabs.Trigger>
+            ))}
+          </Tabs.List>
+        </Tabs.Root>
       ) : null}
 
       <div className={example.solidity ? "split" : ""}>
         {example.solidity ? (
-          <Card title={edited ? "LENS · EDITED, COMPILES IN-BROWSER" : "LENS · PREBUILT"}>
+          <Panel title={edited ? "lens · edited, compiles in-browser" : "lens · prebuilt"}>
             <CodeEditor
               key={`${example.id}-sol`}
               ref={solidityRef}
@@ -183,66 +224,81 @@ export function ExamplePage({
               language="solidity"
               onChange={(doc) => setEdited(doc.trim() !== example.solidity!.trim())}
             />
-            <Divider />
-            <Button
-              theme="SECONDARY"
-              onClick={() => {
-                solidityRef.current?.set(example.solidity!);
-                setEdited(false);
-              }}
-            >
-              RESET
-            </Button>
-          </Card>
+            <Flex>
+              <Button
+                variant="soft"
+                color="gray"
+                onClick={() => {
+                  solidityRef.current?.set(example.solidity!);
+                  setEdited(false);
+                }}
+              >
+                Reset
+              </Button>
+            </Flex>
+          </Panel>
         ) : null}
 
-        <Card title="SCRIPT">
+        <Panel title="script">
           <CodeEditor key={`${example.id}-js`} ref={scriptRef} doc={example.scripts[0]!.source} language="javascript" />
-          <Divider />
-          <Button
-            theme="SECONDARY"
-            onClick={() => {
-              const pristine = example.scripts.find((s) => s.id === active)!.source;
-              scripts.current.set(active, pristine);
-              scriptRef.current?.set(pristine);
-            }}
-          >
-            RESET
-          </Button>
-        </Card>
+          <Flex>
+            <Button
+              variant="soft"
+              color="gray"
+              onClick={() => {
+                const pristine = example.scripts.find((s) => s.id === active)!.source;
+                scripts.current.set(active, pristine);
+                scriptRef.current?.set(pristine);
+              }}
+            >
+              Reset
+            </Button>
+          </Flex>
+        </Panel>
       </div>
 
-      <Card title="WIDE EVENT">
+      <Panel title="wide event">
         {outcome ? (
           <>
-            <div className="summary">
+            <Flex gap="2" wrap="wrap">
               {Object.entries(outcome.summary).map(([key, value]) => (
-                <Badge key={key}>
-                  {format(value)} {key.toUpperCase()}
+                <Badge key={key} color="gray" variant="soft" size="2">
+                  {format(value)} {key}
                 </Badge>
               ))}
-              <Badge>{outcome.requests} REQUESTS</Badge>
-              <Badge>{outcome.elapsedMs.toFixed(0)} MS</Badge>
-              {outcome.compiledInBrowser ? <Badge>BROWSER-COMPILED LENS</Badge> : null}
-            </div>
-            <Divider type="DOUBLE" />
+              <Badge color="gray" variant="soft" size="2">
+                {outcome.requests} requests
+              </Badge>
+              <Badge color="gray" variant="soft" size="2">
+                {outcome.elapsedMs.toFixed(0)} ms
+              </Badge>
+              {outcome.compiledInBrowser ? (
+                <Badge color="jade" variant="soft" size="2">
+                  browser-compiled lens
+                </Badge>
+              ) : null}
+            </Flex>
             {event ? (
-              <Table>
-                {facetRows(event.fields).map((row) => (
-                  <TableRow key={row.name}>
-                    <TableColumn className={row.highlight ? "facet highlight" : "facet"}>{row.name}</TableColumn>
-                    <TableColumn className="value">{format(row.value)}</TableColumn>
-                  </TableRow>
-                ))}
-              </Table>
+              <Table.Root size="1" variant="surface">
+                <Table.Body>
+                  {facetRows(event.fields).map((row) => (
+                    <Table.Row key={row.name}>
+                      <Table.Cell>
+                        <Text color={row.highlight ? "jade" : undefined}>{row.name}</Text>
+                      </Table.Cell>
+                      <Table.Cell align="right">{format(row.value)}</Table.Cell>
+                    </Table.Row>
+                  ))}
+                </Table.Body>
+              </Table.Root>
             ) : (
-              "No wide event captured."
+              <Text color="gray">No wide event captured.</Text>
             )}
           </>
         ) : (
-          "Run it to see the facets."
+          <Text color="gray">Run it to see the facets.</Text>
         )}
-      </Card>
-    </>
+      </Panel>
+    </Flex>
   );
 }

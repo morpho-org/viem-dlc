@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["src/**", "test/**", "examples/**", "playground/**", "!playground/vendor/**"],
+    "includes": ["src/**", "test/**", "examples/**", "playground/**"],
     "ignoreUnknown": false
   },
   "formatter": {

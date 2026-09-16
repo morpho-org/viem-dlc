@@ -1,148 +1,137 @@
 /*
-Layout and syntax colours only. The reset, typography, and every `--theme-*` / `--ansi-*` token come
-from SRCL's `global.css`, imported ahead of this file.
+Layout, type, and syntax colours. Everything else — the reset, spacing scale, and every `--gray-*` /
+`--jade-*` token — comes from `@radix-ui/themes/styles.css`, imported ahead of this file.
 */
 
-:root {
-  --syn-keyword: var(--ansi-13-fuchsia);
-  --syn-type: var(--ansi-14-aqua);
-  --syn-function: var(--ansi-12-blue);
-  --syn-string: var(--ansi-10-lime);
-  --syn-number: var(--ansi-11-yellow);
-  --syn-comment: var(--theme-border-subdued);
-  --syn-property: var(--theme-text);
-  --syn-punctuation: var(--theme-border);
-  --syn-definition: var(--ansi-14-aqua);
+.radix-themes {
+  --default-font-family: var(--code-font-family);
+  --heading-font-family: var(--code-font-family);
+  --strong-font-family: var(--code-font-family);
+  --em-font-family: var(--code-font-family);
+  --quote-font-family: var(--code-font-family);
+
+  --syn-keyword: var(--plum-11);
+  --syn-type: var(--cyan-11);
+  --syn-function: var(--indigo-11);
+  --syn-string: var(--jade-11);
+  --syn-number: var(--amber-11);
+  --syn-comment: var(--gray-9);
+  --syn-property: var(--gray-12);
+  --syn-punctuation: var(--gray-8);
+  --syn-definition: var(--cyan-11);
+
+  min-height: 100vh;
 }
 
 body {
-  background: var(--theme-background);
-  color: var(--theme-text);
+  background: var(--color-background);
 }
 
-.page {
-  max-width: 1100px;
-  padding: 24px 16px 64px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+.shell {
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr);
+  align-items: start;
 }
 
 .sidebar {
   position: sticky;
   top: 0;
-  padding: 24px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  border-right: 1px solid var(--gray-6);
+  height: 100vh;
 }
 
-.brand {
-  margin: 0 0 12px 1ch;
-  font-size: var(--font-size);
-  font-weight: 600;
+.nav-item {
+  width: 100%;
+  justify-content: flex-start;
 }
 
 .group {
-  margin: 14px 0 4px 1ch;
-  color: var(--theme-border-subdued);
+  margin: var(--space-3) 0 var(--space-1);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  font-size: 11px;
+}
+
+.page {
+  max-width: 1100px;
+  padding: var(--space-5) var(--space-4) var(--space-8);
+}
+
+.panel-title,
+.field-label {
+  display: block;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .split {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 16px;
+  gap: var(--space-4);
   align-items: start;
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1100px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sidebar {
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--gray-6);
+  }
   .split {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
-.tabs {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.status {
-  color: var(--theme-border-subdued);
-}
-.status.failed {
-  color: var(--ansi-9-red);
-}
-
-.summary {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.facet.highlight {
-  color: var(--ansi-10-lime);
-}
-.value {
-  text-align: right;
-}
-
-/* CodeMirror draws its own scroller; the card supplies the frame. */
+/* CodeMirror draws its own scroller; the panel supplies the frame. */
 .cm-editor {
   min-height: 320px;
+  border: 1px solid var(--gray-6);
 }
 
-/* README mirror. SRCL resets nearly everything, so the prose rules are ours. */
+/* README mirror: plain markdown output, so these are the only rules that style it. */
 .prose {
   max-width: 80ch;
+  color: var(--gray-12);
 }
 .prose h1 {
-  font-size: 20px;
-  margin: 0 0 12px;
+  font-size: var(--font-size-5);
+  margin: 0 0 var(--space-3);
 }
 .prose h2 {
-  font-size: 16px;
-  margin: 32px 0 8px;
-  padding-top: 12px;
-  border-top: 1px solid var(--theme-border);
+  font-size: var(--font-size-4);
+  margin: var(--space-6) 0 var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--gray-6);
 }
 .prose h3 {
-  font-size: 14px;
-  margin: 24px 0 8px;
-  color: var(--ansi-10-lime);
+  font-size: var(--font-size-3);
+  margin: var(--space-5) 0 var(--space-2);
 }
 .prose p,
 .prose li {
-  line-height: 1.5;
+  line-height: 1.6;
 }
 .prose ul,
 .prose ol {
   padding-left: 3ch;
 }
 .prose a {
-  color: var(--ansi-12-blue);
+  color: var(--indigo-11);
 }
 .prose code {
-  color: var(--ansi-11-yellow);
+  color: var(--amber-11);
 }
 .prose pre {
   overflow-x: auto;
-  padding: 10px 12px;
-  border: 1px solid var(--theme-border);
-  background: var(--theme-background-input);
+  padding: var(--space-3);
+  border: 1px solid var(--gray-6);
+  background: var(--gray-2);
 }
 .prose pre code {
-  color: var(--theme-text);
+  color: var(--gray-12);
 }
 .prose table {
   border-collapse: collapse;
@@ -151,13 +140,13 @@ body {
 }
 .prose th,
 .prose td {
-  padding: 4px 12px 4px 0;
-  border-bottom: 1px solid var(--theme-border);
+  padding: var(--space-1) var(--space-4) var(--space-1) 0;
+  border-bottom: 1px solid var(--gray-6);
   text-align: left;
 }
 .prose blockquote {
-  margin: 12px 0;
+  margin: var(--space-3) 0;
   padding-left: 2ch;
-  border-left: 2px solid var(--theme-border);
-  color: var(--theme-border-subdued);
+  border-left: 2px solid var(--gray-6);
+  color: var(--gray-11);
 }

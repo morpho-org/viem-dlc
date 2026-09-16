@@ -40,28 +40,20 @@ specifier that is not in the registry fails loudly rather than yielding `undefin
 
 ## Interface
 
-[SRCL](https://www.sacred.computer/) supplies the components — a terminal-aesthetic React library
-from Internet Development Studio Company, MIT licensed. It has no npm package, so the components it
-needs are vendored under `vendor/srcl/` by `scripts/vendor-srcl.mjs`, which pins the upstream commit
-in each file's header. Re-sync with:
+[Radix Themes](https://www.radix-ui.com/themes) supplies the components. It is configured down to a
+sober palette — gray accent, sand grays, square corners, and the mono stack promoted to
+`--default-font-family` — so the page reads as a technical document rather than as a themed widget
+set, while every control behaves the way a visitor already expects.
 
-```sh
-node playground/scripts/vendor-srcl.mjs
-```
-
-Vendored files are generated — edit the script, never the output. They carry `@ts-nocheck` because
-SRCL's own tsconfig is looser than this repo's, and are excluded from Biome for the same reason.
-Vite aliases `@components/*` and `@common/*` to the vendored tree so the sources stay byte-for-byte
-upstream.
-
-SRCL scopes its palette to `body.theme-light` / `body.theme-dark` and sets neither by default;
-`main.tsx` applies one from `prefers-color-scheme`. Its `--font-family-mono` names FiraCode, whose
-font files are not vendored, so it falls back to the platform monospace.
+Tokens are imported modularly in `main.tsx`: the bundled `styles.css` carries all 26 colour scales,
+of which seven are used. `appearance` follows `prefers-color-scheme`, and both light and dark resolve
+from the same token set.
 
 Editors are CodeMirror 6 — `@replit/codemirror-lang-solidity` for the lens,
-`@codemirror/lang-javascript` for the script — with token colours mapped onto SRCL's `--ansi-*`
-primitives in `style.css`. The Solidity grammar tags value types (`uint256`, `address`) as keywords
-and leaves user identifiers untagged, so that pane is deliberately flatter than the JavaScript one.
+`@codemirror/lang-javascript` for the script — with token colours mapped onto Radix scales in
+`style.css`, so they follow the appearance with everything else. The Solidity grammar tags value
+types (`uint256`, `address`) as keywords and leaves user identifiers untagged, so that pane is
+deliberately flatter than the JavaScript one.
 
 ## Running the cache transport in a browser
 

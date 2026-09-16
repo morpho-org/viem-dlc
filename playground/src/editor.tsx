@@ -8,8 +8,8 @@ import { basicSetup } from "codemirror";
 import * as React from "react";
 
 /**
- * Colours name CSS variables rather than literals, so the palette resolves to SRCL's `--ansi-*`
- * primitives and follows its theme with the rest of the page.
+ * Colours name CSS variables rather than literals, so the palette resolves to Radix's colour
+ * scales and follows the appearance the rest of the page is rendered in.
  */
 const highlight = HighlightStyle.define([
   { tag: [tags.keyword, tags.moduleKeyword, tags.controlKeyword], color: "var(--syn-keyword)" },
@@ -24,15 +24,15 @@ const highlight = HighlightStyle.define([
 ]);
 
 const theme = EditorView.theme({
-  "&": { fontSize: "12px", backgroundColor: "transparent", color: "var(--theme-text)" },
+  "&": { fontSize: "12px", backgroundColor: "transparent", color: "var(--gray-12)" },
   "&.cm-focused": { outline: "none" },
-  ".cm-scroller": { fontFamily: "var(--font-family-mono)", lineHeight: "1.6", maxHeight: "440px" },
-  ".cm-content": { caretColor: "var(--theme-text)", minHeight: "300px" },
-  ".cm-gutters": { backgroundColor: "transparent", color: "var(--theme-border-subdued)", border: "none" },
+  ".cm-scroller": { fontFamily: "var(--code-font-family)", lineHeight: "1.6", maxHeight: "440px" },
+  ".cm-content": { caretColor: "var(--gray-12)", minHeight: "300px" },
+  ".cm-gutters": { backgroundColor: "transparent", color: "var(--gray-9)", border: "none" },
   ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "transparent" },
-  ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--theme-text)" },
+  ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--gray-12)" },
   "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-    backgroundColor: "var(--theme-focused-foreground-subdued)",
+    backgroundColor: "var(--gray-5)",
   },
 });
 
