@@ -1,4 +1,6 @@
 import { readLens } from "@morpho-org/viem-dlc/actions";
+import { deployless } from "@morpho-org/viem-dlc/transports";
+import { createPublicClient } from "viem";
 
 /**
  * Delivery by state override. The envelope is placed at a fixed address through `eth_call`'s
@@ -7,9 +9,14 @@ import { readLens } from "@morpho-org/viem-dlc/actions";
  * far larger chunks. A provider that ignores overrides is detected on the opening wave and the
  * request finishes as initcode, counted in `override_fallbacks_unsupported`.
  *
- * @type {import("../src/tab.js").Tab}
+ * @type {import("../src/examples/types.js").Tab<import("../src/examples/deployless.js").DeploylessContext>}
  */
-const run = async ({ client, lens, inputs, log }) => {
+const run = async ({ transport, chain, settings, lens, inputs, log }) => {
+  const client = createPublicClient({
+    chain,
+    transport: deployless(transport, { gasLimit: Number(settings.gasLimit) }),
+  });
+
   log(`reading ${inputs.length} positions through a state override`);
 
   const { results, skipped } = await readLens(client, {
@@ -23,9 +30,8 @@ const run = async ({ client, lens, inputs, log }) => {
   });
 
   const borrowing = results.filter((p) => p.borrowShares > 0n).length;
-  log(`${borrowing} of ${results.length} have outstanding borrow shares`);
 
-  return { results, skipped };
+  return { summary: { results: results.length, skipped: skipped.length, borrowing } };
 };
 
 export default run;

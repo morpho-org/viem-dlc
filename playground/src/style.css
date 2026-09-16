@@ -21,12 +21,34 @@ body {
 }
 
 .page {
-  max-width: 1180px;
-  margin: 0 auto;
+  max-width: 1100px;
   padding: 24px 16px 64px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  padding: 24px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brand {
+  margin: 0 0 12px 1ch;
+  font-size: var(--font-size);
+  font-weight: 600;
+}
+
+.group {
+  margin: 14px 0 4px 1ch;
+  color: var(--theme-border-subdued);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
 }
 
 .split {
@@ -78,4 +100,64 @@ body {
 /* CodeMirror draws its own scroller; the card supplies the frame. */
 .cm-editor {
   min-height: 320px;
+}
+
+/* README mirror. SRCL resets nearly everything, so the prose rules are ours. */
+.prose {
+  max-width: 80ch;
+}
+.prose h1 {
+  font-size: 20px;
+  margin: 0 0 12px;
+}
+.prose h2 {
+  font-size: 16px;
+  margin: 32px 0 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--theme-border);
+}
+.prose h3 {
+  font-size: 14px;
+  margin: 24px 0 8px;
+  color: var(--ansi-10-lime);
+}
+.prose p,
+.prose li {
+  line-height: 1.5;
+}
+.prose ul,
+.prose ol {
+  padding-left: 3ch;
+}
+.prose a {
+  color: var(--ansi-12-blue);
+}
+.prose code {
+  color: var(--ansi-11-yellow);
+}
+.prose pre {
+  overflow-x: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-border);
+  background: var(--theme-background-input);
+}
+.prose pre code {
+  color: var(--theme-text);
+}
+.prose table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+}
+.prose th,
+.prose td {
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--theme-border);
+  text-align: left;
+}
+.prose blockquote {
+  margin: 12px 0;
+  padding-left: 2ch;
+  border-left: 2px solid var(--theme-border);
+  color: var(--theme-border-subdued);
 }

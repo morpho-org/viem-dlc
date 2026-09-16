@@ -1,18 +1,23 @@
-import { readLens } from "@morpho-org/viem-dlc/actions";
-import { deployless, logsDivider, rateLimiter } from "@morpho-org/viem-dlc/transports";
-import type { InlineContract } from "soltag";
-import { type Address, type Chain, type Client, createPublicClient, type Hex, http, type Transport } from "viem";
+import { getLogs2, readLens } from "@morpho-org/viem-dlc/actions";
+import { HierarchicalStore } from "@morpho-org/viem-dlc/stores/hierarchical";
+import { LruStore } from "@morpho-org/viem-dlc/stores/lru";
+import { MemoryStore } from "@morpho-org/viem-dlc/stores/memory";
+import { ThrottledStore } from "@morpho-org/viem-dlc/stores/throttled";
+import { TtlStore } from "@morpho-org/viem-dlc/stores/ttl";
+import {
+  deployless,
+  failover,
+  logsDivider,
+  logsEnricher,
+  logsSieve,
+  rateLimiter,
+} from "@morpho-org/viem-dlc/transports";
+import { cache, createExponentialInvalidation, createSimpleInvalidation } from "@morpho-org/viem-dlc/transports/cache";
+import { createPublicClient, encodeEventTopics, http, numberToHex, parseAbiItem, rpcSchema } from "viem";
+import { getBlockNumber, getLogs } from "viem/actions";
 import { base } from "viem/chains";
 
-export type TabContext = {
-  client: Client<Transport, Chain>;
-  /** The lens as compiled right now — prebuilt, or from the editor's Solidity if it was changed. */
-  lens: InlineContract<"MorphoPositionsLens">;
-  inputs: readonly { id: Hex; user: Address }[];
-  log: (message: string) => void;
-};
-
-export type Tab = (context: TabContext) => Promise<{ results: readonly unknown[]; skipped: readonly number[] }>;
+import type { Tab } from "./examples/types.js";
 
 /**
  * What a tab's `import` statements resolve to. Tabs are evaluated rather than bundled, so this
@@ -20,9 +25,14 @@ export type Tab = (context: TabContext) => Promise<{ results: readonly unknown[]
  * `undefined` at the call site.
  */
 const MODULES: Record<string, Record<string, unknown>> = {
-  "@morpho-org/viem-dlc/actions": { readLens },
-  "@morpho-org/viem-dlc/transports": { deployless, logsDivider, rateLimiter },
-  viem: { createPublicClient, http },
+  "@morpho-org/viem-dlc/actions": { getLogs2, readLens },
+  "@morpho-org/viem-dlc/transports": { deployless, failover, logsDivider, logsEnricher, logsSieve, rateLimiter },
+  "@morpho-org/viem-dlc/transports/cache": { cache, createSimpleInvalidation, createExponentialInvalidation },
+  // The stores barrel is bypassed at the alias level (it would drag `fs`/`path`/`crypto` in), but
+  // scripts still read as they would in Node.
+  "@morpho-org/viem-dlc/stores": { HierarchicalStore, LruStore, MemoryStore, ThrottledStore, TtlStore },
+  viem: { createPublicClient, encodeEventTopics, http, numberToHex, parseAbiItem, rpcSchema },
+  "viem/actions": { getBlockNumber, getLogs },
   "viem/chains": { base },
 };
 
@@ -36,14 +46,16 @@ const IMPORT_STATEMENT = /import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/g;
  * imports become parameters of the same name, so the source a reader edits is the source that runs
  * without a bundler in the page.
  */
-export function evaluateTab(source: string): Tab {
+export function evaluateTab(source: string, extraModules?: Record<string, Record<string, unknown>>): Tab {
+  const modules = extraModules ? { ...MODULES, ...extraModules } : MODULES;
+
   const imports = source.match(IMPORT_BLOCK)?.[0] ?? "";
   const names: string[] = [];
   const values: unknown[] = [];
 
   for (const [, clause, specifier] of imports.matchAll(IMPORT_STATEMENT)) {
-    const module = MODULES[specifier!];
-    if (!module) throw new Error(`Cannot import "${specifier}" here. Available: ${Object.keys(MODULES).join(", ")}`);
+    const module = modules[specifier!];
+    if (!module) throw new Error(`Cannot import "${specifier}" here. Available: ${Object.keys(modules).join(", ")}`);
 
     for (const raw of clause!.split(",")) {
       const name = raw.trim().replace(/^type\s+/, "");

@@ -12,7 +12,19 @@ import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const REPO = "internet-development/www-sacred";
-const WANTED = ["Badge", "BlockLoader", "Button", "Card", "Divider", "Input", "Table", "TableColumn", "TableRow"];
+const WANTED = [
+  "ActionListItem",
+  "Badge",
+  "BlockLoader",
+  "Button",
+  "Card",
+  "Divider",
+  "Input",
+  "SidebarLayout",
+  "Table",
+  "TableColumn",
+  "TableRow",
+];
 
 const root = fileURLToPath(new URL("../vendor/srcl/", import.meta.url));
 

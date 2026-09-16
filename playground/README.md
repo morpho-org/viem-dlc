@@ -1,17 +1,24 @@
 # Playground
 
-An interactive counterpart to `examples/`: the same `deployless` + `readLens` read, with the lens
-and the script both editable and the wide event rendered as the result. It imports `src/` directly,
-so the page is the library at this commit rather than a published version.
+An interactive counterpart to `examples/`: a sidebar of feature pages, each with editable source and
+the wide event rendered as the result. It imports `src/` directly, so the page is the library at this
+commit rather than a published version.
+
+Routing is hash-based (`#/about`, `#/cache`, …) because GitHub Pages serves a static tree with no SPA
+fallback — a real path would 404 on reload or on a shared link. The first item mirrors the root
+`README.md`; the rest are examples.
 
 ```sh
 pnpm playground          # dev server
 pnpm playground:build    # static bundle into playground/dist
 ```
 
-Tabs select a script — `initcode` (the default delivery) and `override` (the envelope placed by
-state override, no byte cap). Each tab is a real file under `tabs/`, so the comparison is two
-programs rather than a flag, and there is no toggle to locate in the source.
+Each page is an `Example` (`src/examples/`): controls, one or more scripts, an optional lens, and an
+optional `prepare` that runs first. Scripts are real files under `tabs/`, so a comparison like
+`initcode` vs `override` is two programs rather than a flag. They receive a **rate-limited,
+request-counting `http` transport** and compose the transport under test over it themselves — the
+composition is the thing these examples exist to show, so it stays in the editable source rather than
+in the harness.
 
 ## How editing works
 
@@ -56,13 +63,52 @@ Editors are CodeMirror 6 — `@replit/codemirror-lang-solidity` for the lens,
 primitives in `style.css`. The Solidity grammar tags value types (`uint256`, `address`) as keywords
 and leaves user identifiers untagged, so that pane is deliberately flatter than the JavaScript one.
 
+## Running the cache transport in a browser
+
+`src/internal/compressed-lines-blob.ts` is reached unconditionally from both cache handlers and is
+built on Node streams and streaming zstd. `src/shim/zlib-gzip.ts` supplies the `zlib` surface it
+imports, backed by the browser's `CompressionStream`/`DecompressionStream` with **gzip**.
+
+That substitution is deliberate and narrow. No published JS or WASM zstd exposes a push-driven
+compressor — they all take a complete buffer — so using one would force the write path to
+materialise the whole uncompressed blob, which is exactly what the blob module's backpressured
+pipeline exists to avoid. `CompressionStream` is a genuine streaming transform, so the memory
+behaviour is preserved and only the codec changes:
+
+```
+                 peak heap growth    for 52.2 MB of data
+node zstd        0.2 MB              0.32 MB compressed
+gzip shim        0.3 MB              0.59 MB compressed
+```
+
+Reproduce with `scripts/codec-memory.ts` (it prints the command). Consequences, both bounded:
+`blob_bytes_written` on the wide event is a gzip figure, and a blob written here is unreadable by
+Node — which never comes up, because the browser Store is in-memory and per-session. Nothing in
+`src/` inspects the format; `isZstdFailure` keys on error *codes*, which the shim reproduces.
+
+The principled version is an injectable codec on `NdjsonMap`/`LazyNdjsonMap`, at which point the
+shim becomes a supported configuration rather than an alias.
+
+The other Node surfaces are aliased explicitly in `vite.config.ts` rather than via a polyfill plugin,
+so the list of divergences stays short and enumerable: `stream` (plus a `Readable.from` the browser
+build omits), `stream/promises` (no such subpath exists in `node-stdlib-browser`, and Node's error
+propagation had to be reproduced — `readable-stream` reports `ERR_STREAM_PREMATURE_CLOSE` to the
+consumer and keeps the real error for the callback), `string_decoder`, `events`, `process`, `buffer`.
+
+`installNodeGlobals()` is a function, not a side-effecting import: the package declares
+`"sideEffects": false`, so Rollup drops a bare `import "./globals.js"` and the globals never appear.
+
 ## Notes
 
 - **No server.** Calls go from the browser straight to the RPC endpoint, which works because the
   public Base and Robinhood endpoints send `access-control-allow-origin: *`. A private endpoint
   without CORS headers fails, and the UI says so rather than surfacing a bare fetch error.
-- Public endpoints rate-limit hard. The default 2 000 elements shows the initcode/override contrast
-  clearly but wants a permissive endpoint; a few hundred fit in one chunk either way.
+- Public endpoints rate-limit hard, and Base's caps a single `eth_getLogs` at 2 000 blocks, answered
+  as HTTP 413. The defaults are set for that; raise them against an endpoint that allows more.
+- The deployless page's default 2 000 elements shows the initcode/override contrast clearly but wants
+  a permissive endpoint; a few hundred fit in one chunk either way.
+- `getLogs2`'s three strategies are within noise over a few thousand logs, and what `reduce` and
+  `search` save first is peak memory rather than time. `test/bench` is where that is asserted.
 - Elements are the discovered `(market, borrower)` pairs repeated up to the requested count. Every
   element is a real position, so packing and gas figures are real; only input distinctness is
   synthetic.
