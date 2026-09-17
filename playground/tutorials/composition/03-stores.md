@@ -9,18 +9,18 @@ interface Store {
 }
 ```
 
-That's the whole contract, which is why stores nest. The step below defines a complete one in a
-dozen lines — it delegates to another store and counts what passes through — then wraps each tier so
-the fall-through is visible.
+That's the whole contract, which is why stores nest: anything that wraps a store is a store. The step
+below defines a complete one in a dozen lines — it delegates to another store and counts what passes
+through — then wraps each tier so the fall-through is visible.
 
 `HierarchicalStore` reads top to bottom and writes fan out. With `populateOnMiss`, an answer from a
 lower tier is written back up, so the second identical read never reaches it.
 
 At the default size the hot tier holds the whole range, so the warm pass hits it and the cold tier is
-never asked: `hot hits` rises and `cold hits` stays at zero. **Set the hot tier to 1000 bytes and run
-it again.** Now the range doesn't fit up top, the warm pass misses hot and `cold hits` answers it
-instead. That's what happens when a working set outgrows its fast tier, and it's why the fast tier is
-a cache rather than a shard.
+never asked: `hot hits` rises and `cold hits` stays at zero. **Set the hot tier to 1,000 bytes and
+run it again.** Now the range doesn't fit up top, the warm pass misses hot, and `cold hits` answers
+instead. That's what a working set outgrowing its fast tier looks like from the outside, and it's why
+the fast tier is a cache rather than a shard: nothing is lost when it's too small, only speed.
 
 The tiers that matter in production are the ones a browser can't run:
 
@@ -39,5 +39,6 @@ because those subpaths carry optional peer dependencies, the `stores` barrel del
 re-export them. `ThrottledStore` accepts writes without blocking when a tier is slower than the
 traffic.
 
-Always `await store.flush()` before exit. Debounced and remote tiers batch their writes, and
-flushing is what makes them attempt those writes — it promises the attempt, not success.
+Always `await store.flush()` before exit. Debounced and remote tiers batch their writes, and flushing
+is what makes them attempt those writes — it promises the attempt, not the success. A process that
+exits without it loses whatever the last batch held, which on a long backfill is the expensive part.

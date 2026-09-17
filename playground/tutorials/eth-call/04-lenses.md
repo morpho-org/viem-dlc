@@ -21,7 +21,9 @@ Both tabs return the same 120 snapshots:
 | client-side waterfall | 3 | 3 | 628 ms |
 | one lens call | 1 | 1 | 273 ms |
 
-The requests were never the expensive part. The *rounds* were, and only the lens removes them.
+The requests were never the expensive part. The *rounds* were, and only the lens removes them. The
+gap is one round trip to Base from a browser; it scales with your distance from the node, and a
+deeper dependency chain multiplies it again.
 
 Two things make this practical rather than clever.
 

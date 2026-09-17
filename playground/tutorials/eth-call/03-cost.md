@@ -15,8 +15,12 @@ The first tab measures both with no network involved. For 120 vaults:
 | encode | 5.7 ms | 0.3 ms |
 | wire bytes per element | 257 | 65 |
 
+*Measured in this browser tab. The milliseconds are your machine's; the byte counts and the ratio
+between them are properties of the encoding and hold anywhere.*
+
 Four times the bytes, paid on every request. That ratio is also why a chunk holds four times as many
-elements before it hits a size limit.
+elements before it hits a size limit — the encoding argument and the chunking argument are the same
+argument.
 
 ## Requests
 
@@ -26,7 +30,8 @@ elements. It's a reasonable design, and it does recover most of the data.
 
 It also can't tell why a batch failed. A gas-starved batch, a reverting element, and a throttled
 request are all `status: "failure"`, so the only safe reading is "try again smaller". Every split
-costs another request the node already spent time on:
+costs another request the node already spent time on, and the splits are wasted on the 119 elements
+that were never the problem:
 
 | | requests | result |
 | --- | --- | --- |
@@ -34,5 +39,5 @@ costs another request the node already spent time on:
 | `readLens` | 3 | 119 of 120 |
 
 Read request count rather than wall clock. This page rate-limits itself to keep public endpoints
-happy, so elapsed time mostly measures that limiter. Request count is what changes when you change
-providers, and it's what you're billed for.
+happy, so elapsed time here mostly measures that limiter. Request count is what changes when you
+change providers, and it's what you're billed for.

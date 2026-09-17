@@ -9,7 +9,7 @@ as `multicall`, and it works.
 This tutorial is about where it stops working, why you won't notice until it does, and what to use
 instead. Every step runs against the endpoint in the box above, over real vaults.
 
-One number to keep in view: `totalAssets()` doesn't cost the same everywhere.
+One fact carries the rest of this page: `totalAssets()` doesn't cost the same everywhere.
 
 | Vault | gas |
 | --- | --- |
@@ -19,11 +19,14 @@ One number to keep in view: `totalAssets()` doesn't cost the same everywhere.
 | Gauntlet USDC Prime | 193,280 |
 | Re7 USDC | 72,837 |
 
-A 26× spread, and none of it is yours to set. A Vault V2 allocates through adapters, so the cost of
-reading one is the cost of walking whatever its curator allocated to. That number moves when they
-act, not when you deploy.
+*Measured by bisecting the `gas` parameter on `mainnet.base.org`, September 2026.*
+
+A 26× spread across live contracts, and none of it is yours to set. A Vault V2 allocates through
+adapters, so reading one costs whatever walking its curator's allocations costs. That number moves
+when the curator acts, not when you deploy — which means the cost of your read is a variable held by
+someone else.
 
 Every step below reads through the same lens contract, shown beside the script. `grief` is the one
-thing on this page that isn't real: a loop that burns gas on a single vault, so you can watch what
-happens when one element gets expensive without waiting for a curator to make it happen. The table
-above is the honest version of the same event.
+thing on this page that isn't real: a loop that burns gas on a single vault, so you can watch an
+element get expensive on demand instead of waiting for a curator to do it. The table above is the
+honest version of the same event.

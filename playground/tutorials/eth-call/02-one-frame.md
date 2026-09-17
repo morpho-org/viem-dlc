@@ -1,4 +1,4 @@
-The problem isn't the gas ceiling. It's that 300 reads share one frame, so one of them can spend
+The problem was never the gas ceiling. It's that 300 reads share one frame, so one of them can spend
 what the others needed.
 
 `deployless` gives each element its own. It puts an envelope in front of your call; the envelope
@@ -25,6 +25,7 @@ Read the wide event underneath:
 
 Note what the script doesn't contain: no batch size, no gas figure, no retry policy, no bisect. The
 chunking adapts to what the node reports, so there is no number to tune and no number to get wrong.
+That's the whole trade — you give up a knob you were going to set wrong anyway.
 
 ## The hints are optional, and you don't have to guess them
 
@@ -34,14 +35,15 @@ describes what the lens costs (`fixed_gas`, `item_gas_avg`, `item_gas_stddev`), 
 wave. Every chunk after it is sized from what the pages actually reported, so a wrong figure costs
 one round trip and never a result.
 
-The second tab fills all of them in from the run you just did. It makes no difference here, and the
+The second tab fills all of them in from the run above. It makes no difference here, and the
 event says why. Gas would pay for about `(600,000,000 − 288,653) / 103,090 ≈ 5,800` elements in one
-frame, while this request sends 120 in a single batch. Gas isn't the binding constraint; the
-49,152-byte initcode cap is, at roughly 690 elements.
+frame, while this request sends 120 in a single batch. Gas isn't the binding constraint;
+[EIP-3860](https://eips.ethereum.org/EIPS/eip-3860)'s 49,152-byte initcode cap is, at roughly 690
+elements.
 
-That same ratio is the signal for the last two tabs, which are the two ways to stop bytes binding.
-`envelope: 'override'` places the envelope by state override so the 49,152-byte cap doesn't apply at
-all; `compress: true` FastLZ-compresses the elements so more fit under it. Reach for either once
-your corpus outgrows one chunk — at 120 vaults it already fits, so here they change the delivery and
-not the request count. `chunks_override`, `chunks_initcode` and `batch_bytes.max` in each table say
+That ratio is the signal for the last two tabs, which are the two ways to stop bytes binding.
+`envelope: 'override'` places the envelope by state override, so the initcode cap doesn't apply at
+all; `compress: true` FastLZ-compresses the elements so more fit under it. Reach for either once your
+corpus outgrows one chunk. At 120 vaults it already fits, so here they change the delivery and not
+the request count — `chunks_override`, `chunks_initcode` and `batch_bytes.max` in each table say
 which one carried the request and how close to the cap it came.
