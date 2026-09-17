@@ -30,6 +30,9 @@ importers:
       '@vercel/blob':
         specifier: ^2.6.1
         version: 2.6.1
+      tsx:
+        specifier: 4.23.1
+        version: 4.23.1
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -1552,7 +1555,6 @@ snapshots:
       esbuild: 0.28.1
     optionalDependencies:
       fsevents: 2.3.3
-    optional: true
 
   typescript@7.0.2:
     optionalDependencies:
@@ -1691,6 +1693,7 @@ time:
   '@types/node@25.2.0': '2026-02-01T15:38:51.767Z'
   '@upstash/redis@1.38.1': '2026-07-31T12:11:53.818Z'
   '@vercel/blob@2.6.1': '2026-07-08T10:32:05.586Z'
+  tsx@4.23.1: '2026-07-13T03:13:33.471Z'
   typescript@7.0.2: '2026-07-08T15:55:18.431Z'
   valibot@1.4.2: '2026-06-28T15:16:53.427Z'
   viem@2.55.10: '2026-07-27T09:50:39.663Z'
