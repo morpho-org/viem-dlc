@@ -1,5 +1,5 @@
-// Duplicated from ../.pnpmfile.cjs: pnpm reads this hook from the directory holding the
-// lockfile, so the root copy does not serve the playground's own install.
+// pnpm reads this hook from the directory holding the lockfile, so it covers this project only.
+// soltag is installed here and nowhere else, which is why this is the repo's only pnpmfile.
 //
 // soltag's bundler plugin needs the TS 5 JS compiler API, which typescript@7 (native) lacks.
 // Give soltag its own TS 5 instead of resolving its `typescript` peer to the repo's typescript@7.

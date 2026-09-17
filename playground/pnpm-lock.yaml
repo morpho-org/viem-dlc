@@ -9,7 +9,7 @@ overrides:
   postcss: ^8.5.24
   picomatch: ^4.0.5
 
-pnpmfileChecksum: sha256-DrX16xFquzqyeq1EJyAgjO6KAX2Kn37UiWxsEl1kWLg=
+pnpmfileChecksum: sha256-tXtEEZojFeMJabYIsm28vIcyprmmTtAAJjyDjyGe924=
 
 importers:
 

@@ -25,8 +25,9 @@ The boundary moves dependencies, not resolution — the Vite aliases and the tsc
 point at `../src/*.ts`, so the page remains the library at this commit. Three consequences follow
 from being its own project, each load-bearing:
 
-- `pnpm-workspace.yaml` and `.pnpmfile.cjs` are intentional duplicates of the root's. pnpm reads both
-  from the directory holding the lockfile, so neither is inherited. Drift between the pairs is a bug.
+- `pnpm-workspace.yaml` restates the root's install settings rather than inheriting them — pnpm reads
+  them from the directory holding the lockfile. Drift between the two files is a bug. `.pnpmfile.cjs`
+  has no counterpart: soltag is installed here and nowhere else, so this is the repo's only pnpmfile.
 - `server.fs.allow` in `vite.config.ts` is what lets the dev server read above this directory. Vite
   treats a directory containing `pnpm-workspace.yaml` as a workspace root; without the setting,
   `../src` and the About page's `?raw` README both 403.
