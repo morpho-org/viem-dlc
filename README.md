@@ -86,16 +86,16 @@ If you don't call `withLogging`, the library emits nothing and the dep is irrele
 import { withLogging } from '@morpho-org/viem-dlc'
 
 await withLogging(() => client.request({ method: 'eth_getLogs', params: [filter] }), {
-  logger,           // anything satisfying the `Logger` interface, e.g. a LogLayer instance
+  logger,           // anything satisfying the `Logger` interface, such as a LogLayer instance
   service: 'indexer', // extra opts become context fields on every event
 })
 ```
 
 Each outermost `client.request` made inside a `withLogging` scope emits a single
 `"concluded"` wide event. Transports contribute flat, queryable fields under their
-key — e.g. `viem-dlc-failover.succeeded_index`, `viem-dlc-logs-divider.logs_fetched` —
-and layers crossed many times per call (e.g. once per chunk under the divider)
-accumulate totals there (e.g. `viem-dlc-logs-sieve.logs_dropped`). If a call crosses
+key — `viem-dlc-failover.succeeded_index`, `viem-dlc-logs-divider.logs_fetched` —
+and layers crossed many times per call, such as the divider once per chunk,
+accumulate totals there, such as `viem-dlc-logs-sieve.logs_dropped`. If a call crosses
 several *instances* of the same transport — say, one cache per failover branch — later
 instances are suffixed `.1`, `.2`, ... in first-touch order, which is stable for a
 given composition. Every layer also stamps a per-instance `crossings` count, so the
@@ -103,16 +103,16 @@ event records which transports the call traversed and how many times each. Call-
 fields are `call_id`, `chain_id` (when the client has a chain), `duration_ms`, and `status`
 (`"ok"` or `"error"`). Failed calls
 emit at `error` level with the error attached via `withError`, so hosts that forward
-`withError` entries to an error reporter (e.g. Sentry) capture them automatically.
+`withError` entries to an error reporter such as Sentry capture them automatically.
 
 ## Transports
 
 ### `deployless`
 
-Thin transport wrapper for deployless `eth_call` splitting. It only intercepts calls carrying
-the `policy(...)` sentinel in `stateOverride`, re-packs the marked input array into one or more
-deployless-factory calls under a wire byte budget (`batch.batchSize`), aggregates the pages that
-come back, and forwards everything else unchanged.
+Splits a deployless `eth_call` into as many calls as it takes. It intercepts only calls carrying
+the `policy(...)` sentinel in `stateOverride`: it re-packs the marked input array into one or more
+deployless-factory calls under a wire byte budget (`batch.batchSize`) and aggregates the pages that
+come back. It forwards everything else unchanged.
 No gas figure is load-bearing: the envelope calls the lens's per-item function once per element
 in its own frame and reports how far it got, so a chunk adapts to whatever gas the node grants —
 see [Paginated lenses](#paginated-lenses). An optional `gasLimit` lets the opening wave
@@ -147,19 +147,19 @@ const result = await call(client, {
 })
 ```
 
-If `policy.cache` is present, `deployless(...)` ignores it and still behaves as split-only mode.
+If `policy.cache` is present, `deployless(...)` ignores it and stays in split-only mode.
 Use `cache(...)` when you want the same marked calls to populate and read from a backing store.
 
 Both transports take an optional `gasLimit`, the provider's `eth_call` gas cap:
-`deployless(http(rpcUrl), { gasLimit: 50_000_000 })`, or `gasLimit` beside `binSize` in the
-`cache` config. Together with the policy's `batch.gas` it sizes the opening wave; every later chunk
-is sized from what the pages report, so a value too low costs a round trip, never a result. On a
-chain whose nodes give an `eth_call` with `gas` unspecified a fixed default below the cap — Monad
-grants 8.1M and promotes only on out-of-gas, which a paging envelope never is — the transports also
-send it as every chunk's `gas`, and there a value above the provider's cap is rejected by the node
-and fails the request, so state the cap the provider documents; which chains those are is what
-[Chains](#chains) records. Behind `failover`, each
-branch states its own.
+`deployless(http(rpcUrl), { gasLimit: 50_000_000 })`, or `gasLimit` beside `binSize` in the `cache`
+config. Together with the policy's `batch.gas` it sizes the opening wave. Every later chunk is sized
+from what the pages report, so a value that is too low costs a round trip, never a result.
+
+Some chains run an `eth_call` that leaves `gas` unspecified in a fixed default below the cap — Monad
+grants 8.1M, and promotes only on out-of-gas, which a paging envelope never is. On those chains the
+transports send `gasLimit` as every chunk's `gas`, and a value above the provider's cap makes the
+node reject the request. State the cap the provider documents. [Chains](#chains) records which
+chains behave this way. Behind `failover`, each branch states its own.
 
 With observability enabled, batching reports `elements_requested` / `elements_fetched`,
 `nominal_batches` and `batch_bytes` (sizes of the initial packing against the wire budget;
@@ -204,10 +204,10 @@ fallback per request; turn the option off for it.
 
 ### `cache`
 
-All-in-one caching transport for `eth_getLogs` and `eth_call`. Internally composes five layers:
-oversized-log filtering (`logsSieve`), log enrichment (`logsEnricher`), rate limiting (`rateLimiter`),
-request splitting (`logsDivider`), and caching. Requires a `chain` on the client so it can
-namespace cache keys by chain ID.
+Caches `eth_getLogs` and `eth_call` through one transport. It composes five layers: oversized-log
+filtering (`logsSieve`), log enrichment (`logsEnricher`), rate limiting (`rateLimiter`), request
+splitting (`logsDivider`), and caching. It needs a `chain` on the client, so that it can namespace
+cache keys by chain ID.
 
 ```ts
 import { createPublicClient, http } from 'viem'
@@ -242,24 +242,25 @@ const transport = cache(http(rpcUrl), [
 const client = createPublicClient({ chain: mainnet, transport })
 ```
 
-The `binSize` determines cache entry granularity. Requests are aligned to bin boundaries
-to maximize cache hits. Smaller bins allow finer-grained invalidation but increase storage
-overhead. The `logsDivider` config's `alignTo` is automatically set to `binSize`.
+`binSize` sets the granularity of a cache entry. The transport aligns requests to bin boundaries
+so that overlapping windows hit the same entries, and it sets the `logsDivider` config's `alignTo`
+from `binSize` for you. Smaller bins invalidate more precisely and cost more entries; larger bins
+do the opposite.
 
-Two invalidation strategies are provided:
+The package ships two invalidation strategies:
 
 - `createSimpleInvalidation(minAgeMs?, maxAgeDays?, numHotBlocks?, avgInvalidationsPerRequest?)` — entries near the chain tip are always refetched; older entries are probabilistically invalidated based on age.
 - `createExponentialInvalidation(alphaAge?, maxAgeDays?, alphaBlocks?, scaleBlocks?)` — exponential model with separate time and block-age factors.
 
 ### `failover`
 
-Request-level fallback dispatcher for fronting multiple RPC providers with provider-specific
-limits. Each branch is a fully-built per-provider stack carrying its own `maxBlockRange` and,
-optionally, its own `gasLimit`; deployless lenses adapt to each node's grant on their own, and the
-cap sizes the opening wave. Branches are constructed once at composition time, so stateful inner transports
-(coalescing mutexes, rate-limiter token buckets) persist across requests instead of being
-rebuilt per call — unlike viem's stock `fallback`, which rebuilds the active branch on every
-request and effectively disables those features.
+Dispatches a request across several RPC providers, each with its own limits. Each branch is a
+fully-built per-provider stack carrying its own `maxBlockRange` and, optionally, its own `gasLimit`.
+Deployless lenses adapt to each node's grant on their own, and the cap sizes the opening wave.
+
+`failover` builds each branch once, at composition time, so stateful inner transports — coalescing
+mutexes, rate-limiter token buckets — persist across requests instead of being rebuilt per call.
+viem's stock `fallback` rebuilds the active branch on every request, which disables those features.
 
 ```ts
 import { createPublicClient, http } from 'viem'
@@ -300,9 +301,9 @@ failover([branchA, branchB], {
 
 ### `logsDivider`
 
-Splits large `eth_getLogs` requests into smaller chunks with automatic retry, optional alignment,
-internal rate/concurrency limiting via `rateLimiter`, log enrichment via `logsEnricher`, and
-oversized-log filtering via `logsSieve`.
+Splits a large `eth_getLogs` request into smaller chunks, retrying failures and aligning
+boundaries on request. It composes `rateLimiter` for rate and concurrency limits, `logsEnricher`
+for enrichment, and `logsSieve` for oversized-log filtering.
 
 ```ts
 import { createPublicClient, http } from 'viem'
@@ -345,9 +346,9 @@ const logs = await client.request({
 
 ### `logsEnricher`
 
-Enriches `eth_getLogs` responses with data that standard RPCs omit. Currently supports
-populating `blockTimestamp` by fetching block headers. Logs whose block was reorged away
-are silently dropped.
+Enriches `eth_getLogs` responses with data that standard RPCs omit. Today it populates
+`blockTimestamp` by fetching block headers. It drops logs whose block was reorged away, without
+reporting them.
 
 ```ts
 import { createPublicClient, http } from 'viem'
@@ -364,8 +365,8 @@ const client = createPublicClient({ transport })
 
 ### `logsSieve`
 
-Filters `eth_getLogs` responses by estimated UTF-8 payload size. Any `RpcLog` whose serialized
-size exceeds `maxBytes` is silently dropped. `logsDivider(...)` and `cache(...)` already
+Filters `eth_getLogs` responses by estimated UTF-8 payload size. It drops any `RpcLog` whose
+serialized size exceeds `maxBytes`, without reporting it. `logsDivider(...)` and `cache(...)` already
 compose this transport by default; use `logsSieve(...)` directly when filtering is all you need.
 
 ```ts
@@ -379,8 +380,8 @@ const client = createPublicClient({ transport })
 
 ### `rateLimiter`
 
-Token-bucket rate limiting with concurrency limiting and priority scheduling. When
-observability is enabled it reports `queue_wait_ms` (admission wait, summarized over
+Limits request rate with a token bucket, bounds concurrency, and schedules by priority. With
+observability enabled it reports `queue_wait_ms` (admission wait, summarized over
 every crossing in the call), which separates time spent queued behind your own limits
 from time spent waiting on the upstream RPC:
 
@@ -430,7 +431,7 @@ rather than in a transport option.
 
 ## Stores
 
-Key-value stores implementing the `Store` interface:
+Key-value stores. Each implements the `Store` interface:
 
 ```ts
 interface Store {
@@ -455,8 +456,8 @@ interface Store {
 
 ### Composing stores
 
-Stores are designed to be layered. For example, `createOptimizedUpstashStore` (exported from
-`@morpho-org/viem-dlc/stores/upstash`) returns a pre-composed stack:
+Stores nest, because anything that wraps a store is itself a store. `createOptimizedUpstashStore`,
+exported from `@morpho-org/viem-dlc/stores/upstash`, returns a pre-composed stack:
 
 ```
 LruStore (fast, in-process)
@@ -491,9 +492,9 @@ const store = new HierarchicalStore(
 
 ### `getLogs2`
 
-Drop-in replacement for viem's `getLogs` that adds cache-layer `search` pre-filtering and
-streaming `reduce`. Requires a client whose transport uses the `cache()` wrapper (i.e. whose
-`rpcSchema` is `CacheSchema`).
+Replaces viem's `getLogs`, adding cache-layer `search` pre-filtering and streaming `reduce`. It
+needs a client whose transport uses the `cache()` wrapper — that is, one whose `rpcSchema` is
+`CacheSchema`.
 
 `search` is a regex matched against raw NDJSON before parsing — use hex-encoded values
 (address fragments, topic prefixes) to skip expensive `JSON.parse` calls on irrelevant batches.
@@ -619,10 +620,10 @@ policy(opts: {
   Probabilistic Cache Stampede Prevention" (2015), assuming constant recompute
   cost. Defaults to 0 (disabled).
 
-Cache keys are derived from `(targetTo, factory, factoryData, selector, inputElement)`,
+The cache derives keys from `(targetTo, factory, factoryData, selector, inputElement)`,
 so repeat elements collapse into a single blob entry and novel elements are appended to
-the blob on the next fetch. The handler rejects any tx envelope field besides `data`
-(`from`, `gas`, `value`, etc.).
+the blob on the next fetch. The handler rejects every tx envelope field besides `data`,
+including `from`, `gas` and `value`.
 
 #### Paginated lenses
 
@@ -696,7 +697,7 @@ the node's `eth_call` gas cap, so a provider with a higher cap might serve them;
 
 ### `getDeploymentBlockNumber`
 
-Finds the block at which a contract was deployed using binary search over `getCode`.
+Finds the block a contract was deployed at, by binary search over `getCode`.
 
 ```ts
 import { createPublicClient, http } from 'viem'

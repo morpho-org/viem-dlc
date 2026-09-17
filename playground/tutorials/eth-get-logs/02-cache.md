@@ -30,3 +30,9 @@ which is the only property you actually need.
 The store here is an `LruStore`, so it lives in this tab and a reload starts cold. Outside a browser
 `NodeFsStore` puts it on disk, `CompressedStore` shrinks it, `HierarchicalStore` stacks a fast tier
 in front of a durable one, and `UpstashStore` or `VercelBlobStore` share it across processes.
+
+Know where this stops paying. A cache serves history and discovery until the query outgrows its
+host — around 10 MB of compressed logs per query in serverless memory, around 100 MB on a developer
+machine — and past that you want an indexer surfacing raw events instead. The README's
+[Choosing a half](https://github.com/morpho-org/viem-dlc#choosing-a-half) section has the sizes and
+the trade.
