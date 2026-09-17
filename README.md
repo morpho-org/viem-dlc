@@ -19,6 +19,54 @@ live in [`playground/`](./playground/README.md). Each is prose interleaved with 
 steps that call this package against a live endpoint, so every figure they quote is one you can
 reproduce.
 
+## Choosing a half
+
+The library has two independent halves, and they answer different questions. Neither is a general
+answer to "how do I read chain data"; each has a scale past which something else is the right tool.
+
+| What you need | Use | Holds up to | What replaces it past that |
+| --- | --- | --- | --- |
+| History and discovery — events over a block range | the `cache` transport | roughly 10 MB of zstd-compressed logs per query in serverless memory (about eight months of Morpho Vault V2 history), or roughly 100 MB on a developer machine (every Morpho Blue borrow event ever emitted) | an indexer surfacing raw events |
+| The freshest current state — the same question about many subjects, right now | a batched lens read: `readLens`, or `deployless` with `policy` | tens of thousands of elements before a provider's gas budget binds | an indexer accumulating derived state |
+
+The rule of thumb: **index for history and discovery, read a lens for the freshest current state.**
+Most systems want both — discover the subject list from logs, then read its live state through a
+lens.
+
+### When a lens fits
+
+A lens fits when you ask the same question about many subjects and each answer stands alone. That
+independence is a hard requirement rather than a preference — see the
+[semantic requirement](#eth_call-policy) on `policy`. It fits best when you want the current block
+rather than history, and when the answer is derived from several storage reads rather than sitting
+in one field.
+
+**Against a `multicall`, almost always.** Whatever the provider's gas cap and rate limits, a lens
+sends less calldata, decodes faster, and splits under pressure instead of failing. A low gas cap
+means more calls to answer the same list; it does not mean `multicall` would have done better,
+because a `multicall` aggregates into one call under one gas budget. One item that burns unbounded
+gas fails the whole batch, and every retry fails the same way — so anyone who can get an address
+into your input list can trigger that deliberately. This library bisects the offender out instead,
+which costs a few extra round trips rather than the query.
+
+**Against an indexer that accumulates derived state, usually — until the budget binds.** Such an
+indexer has to be deployed, backfilled, and kept correct across reorgs, and what it serves is always
+at least one block stale. A lens reads live chain state with nothing to stand up, and freshness is
+guaranteed by construction. The provider's gas cap and rate limit are what eventually bite; past
+that point there is a real trade, and the usual split is derived state from an indexer plus a lens
+for the fast-moving inputs.
+
+### When caching logs fits
+
+Caching does an indexer's job up to a point. For history and discovery the two are interchangeable
+until the query outgrows its host, at the sizes in the table above. Past that, indexing is required
+rather than preferred.
+
+It is also the fastest way to start, because there is nothing to deploy and nothing to backfill.
+That is what makes it the right choice for experimentation and for standing something up quickly,
+and it is worth knowing which of those two properties you are relying on: a cache that has quietly
+become the thing you index with will hit its ceiling as a surprise.
+
 ## Observability (optional)
 
 This library can emit structured events through a logger you provide. The expected

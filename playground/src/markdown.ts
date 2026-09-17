@@ -1,15 +1,19 @@
 import { marked } from "marked";
 
 /**
- * Heading slug. Shared by the renderer below and by {@link outline}, which reads the same markdown
+ * Heading slug, matching GitHub's: punctuation and symbols drop, `-` and `_` survive, spaces become
+ * hyphens. Shared by the renderer below and by {@link outline}, which reads the same markdown
  * without rendering it — the two have to agree for a table of contents entry to find its heading.
+ *
+ * Matching GitHub matters because the About page renders `README.md`, whose intra-document links
+ * are written against the anchors GitHub generates.
  */
 export const slugify = (text: string) =>
   text
     .toLowerCase()
-    .replace(/[`*_]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/[^\p{L}\p{N}\p{M}\- _]/gu, "")
+    .trim()
+    .replace(/ /g, "-");
 
 marked.use({
   renderer: {
