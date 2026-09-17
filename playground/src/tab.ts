@@ -1,12 +1,6 @@
 import { withLogging } from "@morpho-org/viem-dlc";
-import {
-  arrayifiedAbi,
-  getDeploymentBlockNumber,
-  getLogs2,
-  MAX_INITCODE_SIZE,
-  policy,
-  readLens,
-} from "@morpho-org/viem-dlc/actions";
+import { arrayifiedAbi, getDeploymentBlockNumber, getLogs2, policy, readLens } from "@morpho-org/viem-dlc/actions";
+import { EIP_3860_INITCODE_SIZE } from "@morpho-org/viem-dlc/chains";
 import { HierarchicalStore } from "@morpho-org/viem-dlc/stores/hierarchical";
 import { LruStore } from "@morpho-org/viem-dlc/stores/lru";
 import { MemoryStore } from "@morpho-org/viem-dlc/stores/memory";
@@ -51,10 +45,10 @@ const MODULES: Record<string, Record<string, unknown>> = {
     arrayifiedAbi,
     getDeploymentBlockNumber,
     getLogs2,
-    MAX_INITCODE_SIZE,
     policy,
     readLens,
   },
+  "@morpho-org/viem-dlc/chains": { EIP_3860_INITCODE_SIZE },
   "@morpho-org/viem-dlc/transports": {
     defaultShouldThrow,
     deployless,

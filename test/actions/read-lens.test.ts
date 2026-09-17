@@ -26,6 +26,7 @@ import {
   resolveArrayFunction,
   wireToArray,
 } from "../../src/utils/deployless/codec.inner.js";
+import { ethereumChain } from "../helpers/chains.js";
 import { flatGas } from "../helpers/page.js";
 
 const ADDRESS = "0x1111111111111111111111111111111111111111" as const;
@@ -95,7 +96,7 @@ function mockEnvelope(decline: number) {
 }
 
 function deploylessClient(requestFn: ReturnType<typeof vi.fn>) {
-  return createPublicClient({ transport: deployless(custom({ request: requestFn as never })) });
+  return createPublicClient({ chain: ethereumChain(), transport: deployless(custom({ request: requestFn as never })) });
 }
 
 describe("readLens", () => {

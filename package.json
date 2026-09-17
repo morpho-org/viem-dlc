@@ -1,12 +1,14 @@
 {
   "name": "@morpho-org/viem-dlc",
-  "version": "0.0.17",
+  "version": "0.0.18",
   "description": "A collection of flexible viem extensions with a focus on intelligent caching.",
   "license": "MIT",
   "keywords": [
     "viem",
     "cache",
-    "eth_getLogs"
+    "eth_getLogs",
+    "deployless",
+    "lens"
   ],
   "author": "Morpho Association <contact@morpho.org>",
   "contributors": [
@@ -29,6 +31,11 @@
       "types": "./dist/actions/index.d.ts",
       "import": "./dist/actions/index.js",
       "default": "./dist/actions/index.js"
+    },
+    "./chains": {
+      "types": "./dist/chains/index.d.ts",
+      "import": "./dist/chains/index.js",
+      "default": "./dist/chains/index.js"
     },
     "./stores": {
       "types": "./dist/stores/index.d.ts",
@@ -59,6 +66,11 @@
       "types": "./dist/utils/index.d.ts",
       "import": "./dist/utils/index.js",
       "default": "./dist/utils/index.js"
+    },
+    "./utils/deployless": {
+      "types": "./dist/utils/deployless/index.d.ts",
+      "import": "./dist/utils/deployless/index.js",
+      "default": "./dist/utils/deployless/index.js"
     }
   },
   "scripts": {
@@ -85,7 +97,7 @@
   "peerDependencies": {
     "@upstash/redis": "^1.0.0",
     "@vercel/blob": "^2.3.0",
-    "viem": "^2.0.0"
+    "viem": "^2.43.0"
   },
   "peerDependenciesMeta": {
     "@upstash/redis": {
