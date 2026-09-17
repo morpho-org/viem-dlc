@@ -7,7 +7,7 @@ import { getLogs2 } from "../../dist/actions/index.js";
 import { HierarchicalStore, LruStore, NodeFsStore } from "../../dist/stores/index.js";
 import { cache, createSimpleInvalidation } from "../../dist/transports/cache/index.js";
 
-/** Morpho Blue on Base; the same query examples/02 and /03 make. */
+/** Morpho Blue on Base; the same query the `eth_getLogs` tutorial makes. */
 const MORPHO = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb" as const;
 const MORPHO_DEPLOYMENT_BLOCK = 13_977_148n;
 const SAMPLE_BORROWER = "0x6aBB9Aeb93e9aF04c8D9FD2b84BF6ca8EDC3eAf2" as const;

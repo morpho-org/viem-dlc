@@ -39,6 +39,9 @@ event says why. Gas would pay for about `(600,000,000 − 288,653) / 103,090 ≈
 frame, while this request sends 120 in a single batch. Gas isn't the binding constraint; the
 49,152-byte initcode cap is, at roughly 690 elements.
 
-That same ratio is the signal for `batch.envelope: 'override'`, which places the envelope by state
-override so the byte cap stops applying. Reach for it when gas would pay for far more elements than
-bytes allow — which is to say, once your corpus outgrows one chunk.
+That same ratio is the signal for the last two tabs, which are the two ways to stop bytes binding.
+`envelope: 'override'` places the envelope by state override so the 49,152-byte cap doesn't apply at
+all; `compress: true` FastLZ-compresses the elements so more fit under it. Reach for either once
+your corpus outgrows one chunk — at 120 vaults it already fits, so here they change the delivery and
+not the request count. `chunks_override`, `chunks_initcode` and `batch_bytes.max` in each table say
+which one carried the request and how close to the cap it came.

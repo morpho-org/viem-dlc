@@ -7,12 +7,16 @@ import sharedFrame from "../../tutorials/eth-call/01-shared-frame.md?raw";
 import oneFrame from "../../tutorials/eth-call/02-one-frame.md?raw";
 import readLensScript from "../../tutorials/eth-call/02-readlens.js?raw";
 import readLensHintedScript from "../../tutorials/eth-call/02b-readlens-hinted.js?raw";
+import readLensOverrideScript from "../../tutorials/eth-call/02c-readlens-override.js?raw";
+import readLensCompressScript from "../../tutorials/eth-call/02d-readlens-compress.js?raw";
 import cost from "../../tutorials/eth-call/03-cost.md?raw";
 import encodingScript from "../../tutorials/eth-call/03-encoding.js?raw";
 import bisectScript from "../../tutorials/eth-call/03b-bisect.js?raw";
 import lensesProse from "../../tutorials/eth-call/04-lenses.md?raw";
 import waterfallScript from "../../tutorials/eth-call/04-waterfall.js?raw";
 import lensScript from "../../tutorials/eth-call/04b-lens.js?raw";
+import cacheProse from "../../tutorials/eth-call/05-cache.md?raw";
+import cachedScript from "../../tutorials/eth-call/05-cached.js?raw";
 import { fetchCorpus } from "../../tutorials/eth-call/corpus.js";
 import solidity from "../../tutorials/eth-call/vault-snapshot.sol?raw";
 
@@ -62,6 +66,8 @@ export const ethCallTutorial: Tutorial = {
         scripts: [
           { id: "plain", title: "no hints", source: readLensScript },
           { id: "hinted", title: "with gas hints", source: readLensHintedScript },
+          { id: "override", title: "override delivery", source: readLensOverrideScript },
+          { id: "compress", title: "compressed calldata", source: readLensCompressScript },
         ],
       },
     },
@@ -87,6 +93,15 @@ export const ethCallTutorial: Tutorial = {
           { id: "waterfall", title: "client-side waterfall", source: waterfallScript },
           { id: "lens", title: "one lens call", source: lensScript },
         ],
+      },
+    },
+    {
+      heading: "Caching elements, not calls",
+      prose: cacheProse,
+      step: {
+        id: "cached",
+        solidity: LENS,
+        scripts: [{ id: "cached", title: "cold / warm / half novel", source: cachedScript }],
       },
     },
   ],

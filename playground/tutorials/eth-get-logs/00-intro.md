@@ -1,6 +1,9 @@
-You want every `Borrow` event Morpho Blue has ever emitted on Base. Blue was deployed at block
-13,977,148 and the chain is past 51,400,000, so that's about 37 million blocks of history behind one
-`eth_getLogs` call.
+You want every `Borrow` event Morpho Blue has ever emitted on Base. That means knowing where its
+history starts, and the answer shouldn't be a number pasted from a block explorer — it's wrong for
+every other contract and every other chain. Run the step below: `getDeploymentBlockNumber`
+binary-searches `eth_getCode` and finds it in about 26 requests.
+
+Then subtract. That's roughly 37 million blocks of history behind one `eth_getLogs` call.
 
 No endpoint will answer that call. Every provider caps the request somehow — by block range, by
 result count, by response size, by wall clock — and the cap is different everywhere:

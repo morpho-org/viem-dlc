@@ -1,3 +1,4 @@
+import deploymentScript from "../../tutorials/eth-get-logs/00-deployment.js?raw";
 import intro from "../../tutorials/eth-get-logs/00-intro.md?raw";
 import dividerProse from "../../tutorials/eth-get-logs/01-divider.md?raw";
 import plainScript from "../../tutorials/eth-get-logs/01-plain.js?raw";
@@ -24,7 +25,14 @@ export const ethGetLogsTutorial: Tutorial = {
     { id: "binSize", label: "bin size", value: "2000", type: "number" },
   ],
   sections: [
-    { heading: "37 million blocks, one call", prose: intro },
+    {
+      heading: "37 million blocks, one call",
+      prose: intro,
+      step: {
+        id: "deployment",
+        scripts: [{ id: "deployment", title: "where history starts", source: deploymentScript }],
+      },
+    },
     {
       heading: "Find the limit, then stop caring about it",
       prose: dividerProse,

@@ -1,9 +1,13 @@
+/**
+ * Node-side config for one-off scripts: `pnpm script <file>`. Compiles inline Solidity and resolves
+ * the package to `src/`, with none of the browser shims `playground/vite.config.ts` aliases in.
+ */
 import { fileURLToPath } from "node:url";
 
 import soltag from "soltag/vite";
 import { defineConfig } from "vite";
 
-const src = fileURLToPath(new URL("../src/", import.meta.url));
+const src = fileURLToPath(new URL("./src/", import.meta.url));
 
 export default defineConfig({
   plugins: [soltag({ solc: { optimizer: { enabled: true, runs: 200 } } })],

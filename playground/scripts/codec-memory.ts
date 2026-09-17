@@ -2,10 +2,10 @@
  * Proves the claim `src/shim/zlib-gzip.ts` rests on: substituting the codec does not cost the
  * blob pipeline its constant-memory property.
  *
- * Run both sides and compare — the playground config aliases `zlib` to the shim, the examples
- * config does not, so the same code runs against gzip-over-CompressionStream and real Node zstd:
+ * Run both sides and compare — the playground config aliases `zlib` to the shim, the node config
+ * does not, so the same code runs against gzip-over-CompressionStream and real Node zstd:
  *
- *   NODE_OPTIONS=--expose-gc LABEL="node zstd" pnpm exec vite-node -c examples/vite.config.ts playground/scripts/codec-memory.ts
+ *   NODE_OPTIONS=--expose-gc LABEL="node zstd" pnpm exec vite-node -c vite.node.config.ts playground/scripts/codec-memory.ts
  *   NODE_OPTIONS=--expose-gc LABEL="gzip shim" pnpm exec vite-node -c playground/vite.config.ts playground/scripts/codec-memory.ts
  *
  * Measured 2026-09-15: 0.2 MB and 0.3 MB peak growth respectively, against 52.2 MB of data.

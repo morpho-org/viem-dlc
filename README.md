@@ -12,9 +12,12 @@ pnpm add @morpho-org/viem-dlc
 
 Also available on the [GitHub Package Registry](https://npm.pkg.github.com).
 
-## Examples
+## Tutorials
 
-Runnable, feature-by-feature examples live in [`examples/`](./examples/README.md).
+Four interactive tutorials — `eth_getLogs`, `eth_call`, transport composition, and observability —
+live in [`playground/`](./playground/README.md). Each is prose interleaved with runnable, editable
+steps that call this package against a live endpoint, so every figure they quote is one you can
+reproduce.
 
 ## Observability (optional)
 

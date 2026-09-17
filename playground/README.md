@@ -1,8 +1,8 @@
 # Playground
 
-An interactive counterpart to `examples/`: a sidebar of feature pages, each with editable source and
-the wide event rendered as the result. It imports `src/` directly, so the page is the library at this
-commit rather than a published version.
+The library's tutorials: a sidebar of pages, each prose interleaved with runnable steps whose source
+is editable in place and whose result is the wide event the call emitted. It imports `src/` directly,
+so the page is the library at this commit rather than a published version.
 
 Routing is hash-based (`#/about`, `#/eth-call`, …) because GitHub Pages serves a static tree with no SPA
 fallback — a real path would 404 on reload or on a shared link. The first item mirrors the root

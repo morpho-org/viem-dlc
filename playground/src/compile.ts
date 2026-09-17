@@ -1,6 +1,6 @@
 import { InlineContract } from "soltag";
 
-/** Matches `examples/vite.config.ts`, so browser output is byte-identical to the build's. */
+/** Matches the soltag plugin's `runs`, so browser output is byte-identical to the build's. */
 const OPTIMIZER_RUNS = 200;
 
 let worker: Worker | undefined;

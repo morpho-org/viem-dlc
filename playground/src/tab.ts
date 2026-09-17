@@ -1,10 +1,19 @@
-import { arrayifiedAbi, getLogs2, MAX_INITCODE_SIZE, policy, readLens } from "@morpho-org/viem-dlc/actions";
+import { withLogging } from "@morpho-org/viem-dlc";
+import {
+  arrayifiedAbi,
+  getDeploymentBlockNumber,
+  getLogs2,
+  MAX_INITCODE_SIZE,
+  policy,
+  readLens,
+} from "@morpho-org/viem-dlc/actions";
 import { HierarchicalStore } from "@morpho-org/viem-dlc/stores/hierarchical";
 import { LruStore } from "@morpho-org/viem-dlc/stores/lru";
 import { MemoryStore } from "@morpho-org/viem-dlc/stores/memory";
 import { ThrottledStore } from "@morpho-org/viem-dlc/stores/throttled";
 import { TtlStore } from "@morpho-org/viem-dlc/stores/ttl";
 import {
+  defaultShouldThrow,
   deployless,
   failover,
   logsDivider,
@@ -37,8 +46,24 @@ import type { Tab } from "./tutorials/types.js";
  * `undefined` at the call site.
  */
 const MODULES: Record<string, Record<string, unknown>> = {
-  "@morpho-org/viem-dlc/actions": { arrayifiedAbi, getLogs2, MAX_INITCODE_SIZE, policy, readLens },
-  "@morpho-org/viem-dlc/transports": { deployless, failover, logsDivider, logsEnricher, logsSieve, rateLimiter },
+  "@morpho-org/viem-dlc": { withLogging },
+  "@morpho-org/viem-dlc/actions": {
+    arrayifiedAbi,
+    getDeploymentBlockNumber,
+    getLogs2,
+    MAX_INITCODE_SIZE,
+    policy,
+    readLens,
+  },
+  "@morpho-org/viem-dlc/transports": {
+    defaultShouldThrow,
+    deployless,
+    failover,
+    logsDivider,
+    logsEnricher,
+    logsSieve,
+    rateLimiter,
+  },
   "@morpho-org/viem-dlc/transports/cache": { cache, createSimpleInvalidation, createExponentialInvalidation },
   // The stores barrel is bypassed at the alias level (it would drag `fs`/`path`/`crypto` in), but
   // scripts still read as they would in Node.
