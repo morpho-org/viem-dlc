@@ -47,11 +47,28 @@ function countingHttp(url: string, counter: { n: number }): Transport {
 /**
  * `prepare` runs once per page rather than once per step, so every step of a tutorial reads the same
  * corpus and a comparison between two steps compares the transports rather than the inputs. The key
- * carries the endpoint, because that is what would make the result stale.
+ * carries the endpoint and the tutorial's {@link Tutorial.prepareKeys}, because those are what would
+ * make the result stale.
  */
 const prepared = new Map<string, Promise<Record<string, unknown>>>();
 
-export async function run(
+/**
+ * Runs are serialized page-wide. `shim/async-hooks.ts` tracks one active scope rather than a real
+ * async context, so two overlapping runs would misattribute each other's events; the step cards
+ * disable only their own button, which is not enough on a page with several.
+ */
+let queue: Promise<unknown> = Promise.resolve();
+
+export function run(input: RunInput, log: (message: string) => void, onEvent?: (event: WideEvent) => void) {
+  const next = queue.then(
+    () => runExclusive(input, log, onEvent),
+    () => runExclusive(input, log, onEvent),
+  );
+  queue = next.catch(() => {});
+  return next;
+}
+
+async function runExclusive(
   input: RunInput,
   log: (message: string) => void,
   onEvent?: (event: WideEvent) => void,
@@ -79,7 +96,8 @@ export async function run(
   };
 
   if (input.tutorial.prepare) {
-    const key = `${input.tutorial.id} ${input.settings.rpcUrl}`;
+    const facets = (input.tutorial.prepareKeys ?? []).map((id) => `${id}=${input.settings[id]}`);
+    const key = [input.tutorial.id, input.settings.rpcUrl, ...facets].join(" ");
     let pending = prepared.get(key);
     if (!pending) {
       pending = input.tutorial.prepare(context);
@@ -88,6 +106,8 @@ export async function run(
       pending.catch(() => prepared.delete(key));
     }
     Object.assign(context, await pending);
+    // `prepare`'s own requests belong to no step. Elapsed time is already measured from below.
+    counter.n = 0;
   }
 
   const events: WideEvent[] = [];

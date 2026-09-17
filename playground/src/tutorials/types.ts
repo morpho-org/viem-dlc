@@ -69,7 +69,14 @@ export type Tutorial = {
   modules?: Record<string, Record<string, unknown>>;
   /**
    * Runs once per page rather than once per step, so every step sees the same corpus. Memoized
-   * against the tutorial and the endpoint; anything returned is merged into each step's context.
+   * against the tutorial, the endpoint, and {@link Tutorial.prepareKeys}; anything returned is
+   * merged into each step's context.
    */
   prepare?: (context: TabContext) => Promise<Record<string, unknown>>;
+  /**
+   * Which control ids `prepare` reads. Changing one of these re-runs it; every other control is
+   * left out of the key on purpose, so a control that only narrows what a step displays keeps the
+   * memoized corpus rather than refetching it.
+   */
+  prepareKeys?: readonly string[];
 };

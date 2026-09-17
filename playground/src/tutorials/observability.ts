@@ -53,6 +53,8 @@ export const observabilityTutorial: Tutorial = {
     },
   ],
 
+  prepareKeys: ["blocks", "binSize"],
+
   async prepare(context: TabContext) {
     const [{ range }, { vaults }] = await Promise.all([alignedRange(context), fetchCorpus(120)]);
     return { range, vaults };

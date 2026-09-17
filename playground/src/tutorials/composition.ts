@@ -54,4 +54,5 @@ export const compositionTutorial: Tutorial = {
     },
   ],
   prepare: alignedRange,
+  prepareKeys: ["blocks", "binSize"],
 };

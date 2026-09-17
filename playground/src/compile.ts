@@ -17,9 +17,13 @@ const pending = new Map<number, { resolve: (artifacts: never) => void; reject: (
 export async function compileLens<name extends string>(name: name, source: string): Promise<InlineContract<name>> {
   if (!worker) {
     worker = new Worker(new URL("./solc.worker.ts", import.meta.url));
-    // Without this a failed `importScripts` would leave every caller awaiting forever.
+    // Without this a failed `importScripts` would leave every caller awaiting forever. The worker
+    // is dropped as well as drained, or the next call would post into a dead one and hang instead
+    // of retrying the download.
     worker.onerror = (event) => {
       const reason = new Error(`Compiler worker failed to start: ${event.message || "unknown error"}`);
+      worker?.terminate();
+      worker = undefined;
       for (const [id, entry] of pending) {
         pending.delete(id);
         entry.reject(reason);

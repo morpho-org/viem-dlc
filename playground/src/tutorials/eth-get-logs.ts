@@ -71,4 +71,5 @@ export const ethGetLogsTutorial: Tutorial = {
     },
   ],
   prepare: alignedRange,
+  prepareKeys: ["blocks", "binSize"],
 };

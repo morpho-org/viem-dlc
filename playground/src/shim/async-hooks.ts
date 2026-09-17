@@ -4,7 +4,7 @@
  * The library carries its observability scope across awaits through `AsyncLocalStorage` and
  * silently emits nothing where that import fails, which in a browser is always. This tracks a
  * single active scope instead of a real async context, so it is only correct while one scope is
- * open at a time — the UI serializes runs to keep that true.
+ * open at a time — `runtime.ts` serializes runs page-wide to keep that true.
  */
 export class AsyncLocalStorage<T> {
   #current: T | undefined;
