@@ -1,0 +1,31 @@
+# The playground is its own pnpm project, not a member of the root workspace, so that installing the
+# library's dev tree never pulls the UI tree down with it. pnpm stops walking up when it finds this
+# file, which is what establishes the boundary.
+#
+# pnpm 11 reads the settings below from the workspace file rather than from package.json, so they do
+# not cross that boundary -- these are deliberate duplicates of ../pnpm-workspace.yaml and drift
+# between the two is a bug. `undici` is the one entry not duplicated: it enters only through
+# @vercel/blob, which stays at the root.
+packages:
+- .
+
+# Minimum age (in minutes) a package version must reach before pnpm will install it.
+# 7 days = 10080 minutes, preferred for supply-chain hardening.
+minimumReleaseAge: 10080
+resolutionMode: time-based
+
+# esbuild is a transitive dependency (via Vite), but pnpm 11 blocks its postinstall unless approved,
+# causing ERR_PNPM_IGNORED_BUILDS during install.
+allowBuilds:
+  esbuild: true
+
+# Advisory fixes for transitive dependencies. `resolutionMode: time-based` otherwise pins these below
+# their patched versions, since their parents haven't bumped. Drop each entry once its parent's own
+# range picks up the patched version.
+overrides:
+  # server.fs.deny bypasses, path traversal, launch-editor UNC disclosure
+  vite: ^7.3.6
+  # arbitrary file read, path traversal, XSS via unescaped </style>
+  postcss: ^8.5.24
+  # ReDoS and method injection via extglob / POSIX character classes
+  picomatch: ^4.0.5

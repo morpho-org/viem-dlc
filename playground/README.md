@@ -9,9 +9,30 @@ fallback — a real path would 404 on reload or on a shared link. The first item
 `README.md`; the rest are tutorials.
 
 ```sh
+pnpm install             # in this directory, once — the playground installs separately
 pnpm playground          # dev server
 pnpm playground:build    # static bundle into playground/dist
 ```
+
+## Its own pnpm project
+
+This directory has its own `package.json`, `pnpm-lock.yaml` and `pnpm-workspace.yaml`, and is
+deliberately not a member of the root workspace. React, Radix, CodeMirror and `solc` are the tutorial
+site's dependencies, not the library's, and a contributor working on `src/` should not install them.
+Run `pnpm install` here as well as at the root; the two root scripts above delegate with `pnpm -C`.
+
+The boundary moves dependencies, not resolution — the Vite aliases and the tsconfig `paths` still
+point at `../src/*.ts`, so the page remains the library at this commit. Three consequences follow
+from being its own project, each load-bearing:
+
+- `pnpm-workspace.yaml` and `.pnpmfile.cjs` are intentional duplicates of the root's. pnpm reads both
+  from the directory holding the lockfile, so neither is inherited. Drift between the pairs is a bug.
+- `server.fs.allow` in `vite.config.ts` is what lets the dev server read above this directory. Vite
+  treats a directory containing `pnpm-workspace.yaml` as a workspace root; without the setting,
+  `../src` and the About page's `?raw` README both 403.
+- `resolve.dedupe` covers every bare specifier the aliases leave alone. `../src` sits outside this
+  project, so a bare import it makes would otherwise resolve against the root's `node_modules` —
+  bundling `viem` twice, and failing outright for the shims, which live only here.
 
 A page is a `Tutorial` (`src/tutorials/`): page-scoped controls, then an ordered list of sections.
 A section is prose, a runnable step, or both. Each step owns its editors, its Run button and its

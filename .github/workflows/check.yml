@@ -21,7 +21,9 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            playground/pnpm-lock.yaml
           node-version: "24"
 
       - name: Install dependencies
@@ -32,8 +34,11 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+      # The playground is a detached pnpm project with its own lockfile.
+      - name: Install playground dependencies
+        run: pnpm -C playground install --frozen-lockfile
       - name: Typecheck playground
-        run: pnpm typecheck:playground
+        run: pnpm -C playground typecheck
 
       - name: Test
         run: pnpm test

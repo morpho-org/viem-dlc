@@ -10,6 +10,9 @@ const shim = fileURLToPath(new URL("./src/shim/", import.meta.url));
 export default defineConfig({
   // GitHub Pages serves a project site under /<repo>/.
   base: "/viem-dlc/",
+  // This directory is its own pnpm project, so Vite would otherwise treat it as the workspace root
+  // and deny the reads that reach above it: `../src` and the `?raw` README behind the About page.
+  server: { fs: { allow: [".."] } },
   // esbuild transforms JSX directly; @vitejs/plugin-react would only add Fast Refresh.
   esbuild: { jsx: "automatic", jsxImportSource: "react" },
   build: {
@@ -26,6 +29,11 @@ export default defineConfig({
   },
   plugins: [soltag({ solc: { optimizer: { enabled: true, runs: 200 } } })],
   resolve: {
+    // `../src` is outside this pnpm project, so a bare specifier it imports would resolve against
+    // the root's node_modules. viem lives in both and would be bundled twice; the shims below live
+    // only here, and resolving them from the root fails outright. Every name the aliases leave bare
+    // belongs in this list. viem is pinned to the same exact version in both manifests.
+    dedupe: ["viem", "string_decoder", "events", "process", "buffer"],
     alias: [
       { find: /^node:async_hooks$/, replacement: asyncHooks },
       // The Node surface `src/` reaches for. Each entry is a place the page diverges from Node, so

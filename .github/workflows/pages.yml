@@ -27,14 +27,20 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            playground/pnpm-lock.yaml
           node-version: "24"
 
+      # Both installs are needed: the bundle compiles `src/`, which imports `valibot` from the
+      # root install, while everything else resolves from the playground's own.
       - name: Install dependencies
         run: pnpm install
+      - name: Install playground dependencies
+        run: pnpm -C playground install --frozen-lockfile
 
       - name: Build playground
-        run: pnpm playground:build
+        run: pnpm -C playground build
 
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
