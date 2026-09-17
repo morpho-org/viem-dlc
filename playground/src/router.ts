@@ -20,4 +20,6 @@ export function useRoute(): string {
 
 export const navigate = (route: string) => {
   window.location.hash = `#/${route}`;
+  // A hash change never scrolls, so a new page would otherwise open at the old page's offset.
+  window.scrollTo({ top: 0 });
 };

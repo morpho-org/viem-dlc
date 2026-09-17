@@ -49,7 +49,7 @@ export function TutorialPage({
           <Heading as="h1" size="5" mb="1">
             {tutorial.title}
           </Heading>
-          <Text as="p" color="gray">
+          <Text as="p" color="gray" className="blurb">
             {tutorial.blurb}
           </Text>
         </header>
@@ -59,16 +59,18 @@ export function TutorialPage({
             <Heading as="h2" size="1" color="gray" className="panel-title">
               settings
             </Heading>
-            <Field label="RPC URL (Base)" value={rpcUrl} onChange={onRpcUrl} />
-            {(tutorial.controls ?? []).map((control) => (
-              <Field
-                key={control.id}
-                label={control.label}
-                value={values[control.id] ?? ""}
-                type={control.type}
-                onChange={(next) => setValues((prev) => ({ ...prev, [control.id]: next }))}
-              />
-            ))}
+            <div className="fields">
+              <Field label="RPC URL (Base)" value={rpcUrl} wide onChange={onRpcUrl} />
+              {(tutorial.controls ?? []).map((control) => (
+                <Field
+                  key={control.id}
+                  label={control.label}
+                  value={values[control.id] ?? ""}
+                  type={control.type}
+                  onChange={(next) => setValues((prev) => ({ ...prev, [control.id]: next }))}
+                />
+              ))}
+            </div>
           </Flex>
         </Card>
 

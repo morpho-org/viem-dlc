@@ -110,15 +110,19 @@ export function StepCard({
           </Tabs.Root>
         ) : null}
 
-        {(step.controls ?? []).map((control) => (
-          <Field
-            key={control.id}
-            label={control.label}
-            value={values[control.id] ?? ""}
-            type={control.type}
-            onChange={(next) => setValues((prev) => ({ ...prev, [control.id]: next }))}
-          />
-        ))}
+        {step.controls?.length ? (
+          <div className="fields">
+            {step.controls.map((control) => (
+              <Field
+                key={control.id}
+                label={control.label}
+                value={values[control.id] ?? ""}
+                type={control.type}
+                onChange={(next) => setValues((prev) => ({ ...prev, [control.id]: next }))}
+              />
+            ))}
+          </div>
+        ) : null}
 
         <div className={step.solidity ? "split" : ""}>
           {step.solidity ? (

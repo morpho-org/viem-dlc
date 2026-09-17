@@ -51,7 +51,7 @@ export function App() {
       <div className="shell">
         <Flex asChild direction="column" gap="1" p="4" className="sidebar">
           <nav>
-            <Heading size="2" mb="2">
+            <Heading size="2" mb="2" className="brand">
               viem-dlc
             </Heading>
             {ITEMS.map((item, index) => (

@@ -7,17 +7,19 @@ export function Field({
   label,
   value,
   type,
+  wide,
   onChange,
 }: {
   label: string;
   value: string;
   type?: Control["type"];
+  wide?: boolean;
   onChange: (value: string) => void;
 }) {
   const id = React.useId();
 
   return (
-    <div>
+    <div className={wide ? "field field-wide" : "field"}>
       <Text as="label" htmlFor={id} size="1" color="gray" mb="1" className="field-label">
         {label}
       </Text>

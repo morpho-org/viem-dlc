@@ -29,7 +29,8 @@ body {
 
 .shell {
   display: grid;
-  grid-template-columns: 208px minmax(0, 1fr);
+  /* Wide enough that the longest tutorial title stays on one line. */
+  grid-template-columns: 17rem minmax(0, 1fr);
   align-items: start;
 }
 
@@ -37,7 +38,13 @@ body {
   position: sticky;
   top: 0;
   border-right: 1px solid var(--gray-6);
+  background: var(--gray-2);
   height: 100vh;
+}
+
+/* Everything in the sidebar shares one left edge: the labels carry the button's own inset. */
+.sidebar .brand {
+  padding-inline: var(--space-2);
 }
 
 /* One variant for every item, so selecting one doesn't shift it: `ghost` carries a negative
@@ -45,6 +52,9 @@ body {
 .sidebar .nav-item {
   width: 100%;
   justify-content: flex-start;
+  padding-inline: var(--space-2);
+  text-align: left;
+  white-space: nowrap;
   background-color: transparent;
 }
 
@@ -55,16 +65,19 @@ body {
 .sidebar .nav-item-active,
 .sidebar .nav-item-active:hover {
   background-color: var(--gray-a4);
+  color: var(--gray-12);
 }
 
 .group {
-  margin: var(--space-3) 0 var(--space-1);
+  margin: var(--space-4) 0 var(--space-1);
+  padding-inline: var(--space-2);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
 
 .page {
   max-width: 1100px;
+  margin-inline: auto;
   padding: var(--space-5) var(--space-4) var(--space-8);
 }
 
@@ -73,6 +86,24 @@ body {
   display: block;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+/* The blurb reads as prose, so it keeps the prose measure. */
+.blurb {
+  max-width: 80ch;
+}
+
+/* Numeric controls don't need a full row; a URL does. */
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: var(--space-3);
+  align-items: end;
+}
+
+.field-wide {
+  grid-column: 1 / -1;
+  max-width: 48rem;
 }
 
 .split {
@@ -107,6 +138,13 @@ body {
 .prose {
   max-width: 80ch;
   color: var(--gray-12);
+}
+/* The article supplies its own rhythm; its edges are the section's. */
+.prose > :first-child {
+  margin-top: 0;
+}
+.prose > :last-child {
+  margin-bottom: 0;
 }
 .prose h1 {
   font-size: var(--font-size-5);

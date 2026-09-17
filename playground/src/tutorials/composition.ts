@@ -12,7 +12,7 @@ export const compositionTutorial: Tutorial = {
   id: "composition",
   title: "The transport stack",
   blurb:
-    "The five layers behind `cache(...)`, what each one costs, and how to state a provider's limits " +
+    "The five layers behind cache(...), what each one costs, and how to state a provider's limits " +
     "once instead of at every call site.",
   controls: [
     { id: "blocks", label: "blocks back", value: "20000", type: "number" },
