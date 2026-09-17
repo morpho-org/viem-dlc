@@ -43,7 +43,7 @@ const run = async ({ transport, chain, log }) => {
         ?.replace(/^\s*Details:\s*/, "")
         .trim();
       log(`${span} blocks: rejected — ${message ?? "see the error"}`);
-      if (!firstError) firstError = message ?? "rejected";
+      firstError = message ?? "rejected";
       break;
     }
   }

@@ -9,9 +9,10 @@ fallback — a real path would 404 on reload or on a shared link. The first item
 `README.md`; the rest are tutorials.
 
 ```sh
-pnpm install             # in this directory, once — the playground installs separately
-pnpm playground          # dev server
-pnpm playground:build    # static bundle into playground/dist
+pnpm install    # in this directory — the playground installs separately from the library
+pnpm dev        # dev server
+pnpm build      # static bundle into dist/
+pnpm typecheck  # checks this directory, and the tutorial .js files, against ../src
 ```
 
 ## Its own pnpm project
@@ -19,7 +20,8 @@ pnpm playground:build    # static bundle into playground/dist
 This directory has its own `package.json`, `pnpm-lock.yaml` and `pnpm-workspace.yaml`, and is
 deliberately not a member of the root workspace. React, Radix, CodeMirror and `solc` are the tutorial
 site's dependencies, not the library's, and a contributor working on `src/` should not install them.
-Run `pnpm install` here as well as at the root; the two root scripts above delegate with `pnpm -C`.
+Run `pnpm install` here as well as at the root, and run the scripts above from this directory —
+the library's `package.json` deliberately carries none of them.
 
 The boundary moves dependencies, not resolution — the Vite aliases and the tsconfig `paths` still
 point at `../src/*.ts`, so the page remains the library at this commit. Three consequences follow
@@ -64,7 +66,7 @@ never before, so a visitor who only reads or switches tabs never downloads it. B
 and the standard-JSON input match soltag's own, browser output is byte-identical to build output —
 `selftest.html` asserts exactly that.
 
-Scripts are `.js` with JSDoc types, which keeps them inside `pnpm typecheck:playground` (so they
+Scripts are `.js` with JSDoc types, which keeps them inside `pnpm typecheck` (so they
 cannot rot against `src/`) while staying directly evaluable: `evaluateTab` strips the import block
 and rebinds those names as function parameters against a small registry in `src/tab.ts`. A
 specifier that is not in the registry fails loudly rather than yielding `undefined`.

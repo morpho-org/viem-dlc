@@ -1,6 +1,6 @@
 {
   "name": "@morpho-org/viem-dlc",
-  "version": "0.0.18",
+  "version": "0.0.19",
   "description": "A collection of flexible viem extensions with a focus on intelligent caching.",
   "license": "MIT",
   "keywords": [
@@ -85,11 +85,7 @@
     "prepare": "pnpm build",
     "loc": "tokei src",
     "bench": "vitest bench --run",
-    "bench:memory": "BENCH=1 vitest run test/bench/get-logs.memory.test.ts",
-    "playground": "pnpm -C playground dev",
-    "playground:build": "pnpm -C playground build",
-    "typecheck:playground": "pnpm -C playground typecheck",
-    "script": "vite-node -c vite.node.config.ts"
+    "bench:memory": "BENCH=1 vitest run test/bench/get-logs.memory.test.ts"
   },
   "dependencies": {
     "valibot": "^1.4.2"
