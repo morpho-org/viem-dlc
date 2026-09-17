@@ -76,7 +76,7 @@ export function App() {
           </nav>
         </Flex>
 
-        <main className="page">
+        <main className="page page-wide">
           {tutorial ? <TutorialPage tutorial={tutorial} rpcUrl={rpcUrl} onRpcUrl={setRpcUrl} /> : <About />}
         </main>
       </div>

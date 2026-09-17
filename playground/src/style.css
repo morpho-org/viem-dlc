@@ -86,6 +86,72 @@ body {
   padding: var(--space-5) var(--space-4) var(--space-8);
 }
 
+/* A tutorial page is the article at its own measure, plus room for the outline beside it. */
+.page-wide {
+  max-width: 1400px;
+}
+
+.with-toc {
+  display: grid;
+  grid-template-columns: minmax(0, 1100px) fit-content(15rem);
+  gap: var(--space-6);
+  align-items: start;
+  justify-content: center;
+}
+
+/* A page that is only prose sets its column to the prose measure, so the outline sits beside the
+   text rather than across an empty gutter. */
+.with-toc-prose {
+  grid-template-columns: minmax(0, 80ch) fit-content(15rem);
+}
+
+.toc {
+  position: sticky;
+  top: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 1px solid var(--gray-6);
+  padding-left: var(--space-3);
+}
+
+.toc-title {
+  margin-bottom: var(--space-2);
+  color: var(--gray-11);
+  font-size: var(--font-size-1);
+}
+
+.toc-item {
+  padding: 2px 0;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--gray-11);
+  font: inherit;
+  font-size: var(--font-size-1);
+  line-height: 1.4;
+  cursor: pointer;
+}
+.toc-item:hover {
+  color: var(--gray-12);
+}
+
+.toc-depth-2 {
+  padding-left: 2ch;
+}
+
+.toc-item-active {
+  color: var(--gray-12);
+  font-weight: bold;
+}
+
+/* Landing a heading flush against the viewport edge reads as a cut-off page. */
+.tutorial h2,
+.prose h2,
+.prose h3 {
+  scroll-margin-top: var(--space-5);
+}
+
 .panel-title,
 .field-label {
   display: block;
@@ -116,6 +182,16 @@ body {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--space-4);
   align-items: start;
+}
+
+/* Below this the article itself needs the width more than its outline does. */
+@media (max-width: 1280px) {
+  .with-toc {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .toc {
+    display: none;
+  }
 }
 
 @media (max-width: 1100px) {
