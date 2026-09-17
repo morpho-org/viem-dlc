@@ -25,8 +25,9 @@ runs the same code against the busiest borrower in the range and the rarest one:
 | search, common target — 33 of 50 bins | 5,619 |
 | search, rare target — 1 of 50 bins | **121** |
 
-Time follows the parsed counts: the rare-target pass finishes in roughly 40% less than the others,
-and nothing there touches the network.
+Elapsed time tracks those counts, because on a warm pass parsing is nearly all of the work — in the
+run these counts came from, the rare-target pass finished about 40% faster than the others. The step
+prints its own times; nothing in this table touches the network.
 
 A borrower in most bins can't be skipped, and `search` earns nothing but its own regex cost. A
 borrower in one bin means 49 bins are never decoded. **`search` pays in proportion to how rare your

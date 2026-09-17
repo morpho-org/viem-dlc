@@ -8,7 +8,7 @@ word, and the padded calldata. A lens read's unit is the array, so the elements 
 the array-shaped fragment `arrayifiedAbi` derives from the per-item function, and each element costs
 only its own packed bytes.
 
-The first tab measures both with no network involved. For 120 vaults:
+The **encoding only** tab measures both with no network involved. For 120 vaults:
 
 | | multicall | lens |
 | --- | --- | --- |
@@ -24,7 +24,7 @@ argument.
 
 ## Requests
 
-The second tab is the code you'd write after being caught by the first section: raise `batchSize` for
+The **multicall + bisect** tab is the code you'd write after being caught by the first section: raise `batchSize` for
 the request count, and when a batch comes back empty, split it in half and retry, down to single
 elements. It's a reasonable design, and it does recover most of the data.
 

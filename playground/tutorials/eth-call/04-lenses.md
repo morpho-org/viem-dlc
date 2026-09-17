@@ -14,7 +14,7 @@ s.asset       = IVaultV2(x.vault).asset();
 s.decimals    = IERC20Metadata(s.asset).decimals();
 ```
 
-Both tabs return the same 120 snapshots:
+At the default 120 vaults, both tabs return the same snapshots:
 
 | | rounds | requests | elapsed |
 | --- | --- | --- | --- |

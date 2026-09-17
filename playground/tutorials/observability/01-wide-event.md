@@ -5,9 +5,25 @@ so you can count what arrives.
 It runs the same read twice: once outside the scope, once inside. Outside, nothing. Inside, one event
 carrying fields from every transport the call crossed.
 
-**The `Logger` interface is structural.** It's `child`, `withContext`, `metadataOnly`, `info`,
-`warn`, `error`, and a small builder with `withMetadata` and `withError`. A
-[LogLayer](https://loglayer.dev) instance satisfies it as-is:
+**The `Logger` interface is structural**, and small enough to state in full:
+
+```ts
+interface Logger extends LogBuilder {
+  child(): Logger
+  withContext(context: Record<string, unknown>): Logger
+  metadataOnly(metadata: Record<string, unknown>): void
+}
+
+interface LogBuilder {
+  withMetadata(metadata: Record<string, unknown>): LogBuilder
+  withError(error: unknown): LogBuilder
+  info(message?: string): void
+  warn(message?: string): void
+  error(message?: string): void
+}
+```
+
+A [LogLayer](https://loglayer.dev) instance satisfies it as-is:
 
 ```ts
 import { ConsoleTransport, LogLayer } from 'loglayer'

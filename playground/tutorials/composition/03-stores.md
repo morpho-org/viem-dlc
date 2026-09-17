@@ -1,6 +1,8 @@
 A `Store` is four methods:
 
 ```ts
+type MaybePromise<T> = T | Promise<T>
+
 interface Store {
   get(key: string): MaybePromise<Buffer[] | null>
   set(key: string, value: Buffer[]): MaybePromise<void>

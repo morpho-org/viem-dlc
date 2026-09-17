@@ -1,4 +1,4 @@
-The first tab asks the endpoint for a widening range and reports where it stops. On the default
+The **plain getLogs** tab asks the endpoint for a widening range and reports where it stops. On the default
 public endpoint that's 2,000 blocks. On a commercial one it's often 100,000 — but watch the
 milliseconds on the way up, because the range limit isn't the only thing that degrades. A request
 that takes 3 seconds at 100,000 blocks isn't a request you want in a loop either.
@@ -9,7 +9,7 @@ for — the same 100,000 blocks that answer fine today return a response-size er
 gets popular. A constant that was right when you wrote it decays without any of your code changing.
 So any loop you write has to discover the limit at runtime and back off when it finds one.
 
-`logsDivider` is that loop. The second tab runs the same range through it:
+`logsDivider` is that loop. The **logsDivider** tab runs the same range through it:
 
 - **`maxBlockRange`** is a ceiling, not a promise. A chunk rejected for size, or one that times out,
   is halved and retried. Guessing high costs a round trip; guessing low costs requests. Neither

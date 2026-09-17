@@ -1,5 +1,5 @@
-The problem was never the gas ceiling. It's that 300 reads share one frame, so one of them can spend
-what the others needed.
+The problem was never the gas ceiling. It's that every read in a batch shares one frame, so one of
+them can spend what the others needed.
 
 `deployless` gives each element its own. It puts an envelope in front of your call; the envelope
 reads the element array and invokes the lens's per-item function **once per element, in a fresh
@@ -16,7 +16,7 @@ Run it with the same `grief` that returned nothing above. You get 119 results an
 `skipped`, in three requests, at every `batchSize` — there isn't one to set. A partial result is a
 successful response, not an exception.
 
-Read the wide event underneath:
+Run the **no hints** tab, then read these fields off the wide event it emits:
 
 - `pages_continued` — the first frame stopped early, and the elements it didn't reach were re-packed.
 - `pages_escalated` — the grief element was retried on its own.
@@ -35,13 +35,14 @@ describes what the lens costs (`fixed_gas`, `item_gas_avg`, `item_gas_stddev`), 
 wave. Every chunk after it is sized from what the pages actually reported, so a wrong figure costs
 one round trip and never a result.
 
-The second tab fills all of them in from the run above. It makes no difference here, and the
+The **with gas hints** tab fills all of them in from the run above. It makes no difference here, and the
 event says why. Gas would pay for about `(600,000,000 − 288,653) / 103,090 ≈ 5,800` elements in one
 frame, while this request sends 120 in a single batch. Gas isn't the binding constraint;
 [EIP-3860](https://eips.ethereum.org/EIPS/eip-3860)'s 49,152-byte initcode cap is, at roughly 690
 elements.
 
-That ratio is the signal for the last two tabs, which are the two ways to stop bytes binding.
+That ratio is the signal for the **override delivery** and **compressed calldata** tabs, the two
+ways to stop bytes binding.
 `envelope: 'override'` places the envelope by state override, so the initcode cap doesn't apply at
 all; `compress: true` FastLZ-compresses the elements so more fit under it. Reach for either once your
 corpus outgrows one chunk. At 120 vaults it already fits, so here they change the delivery and not

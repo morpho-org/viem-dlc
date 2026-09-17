@@ -18,7 +18,7 @@ status                               ok
 duration_ms                          8420
 ```
 
-That shape is deliberate. One row per request, wide rather than deep, is what you can actually query
-later: no joins across spans, no sampling decisions, no reconstructing a call from twelve log lines.
+That shape is deliberate. One row per outermost call — the read you asked for, however many RPC
+requests it became — wide rather than deep, is what you can actually query later: no joins across spans, no sampling decisions, no reconstructing a call from twelve log lines.
 The question you'll want to ask six months from now — *which reads escalated, and what did they have
 in common?* — is a `WHERE` clause against one table, or it's an afternoon.
