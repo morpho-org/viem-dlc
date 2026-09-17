@@ -29,14 +29,17 @@ body {
 
 .shell {
   display: grid;
-  /* Wide enough that the longest tutorial title stays on one line. */
-  grid-template-columns: 18rem minmax(0, 1fr);
+  /* The nav column sizes to its longest label, so titles are never measured by hand. The cap is a
+     backstop for a pathological one, which then ellipsizes rather than spilling. */
+  grid-template-columns: fit-content(22rem) minmax(0, 1fr);
   align-items: start;
 }
 
 .sidebar {
   position: sticky;
   top: 0;
+  /* Without this the nav's own min-content floors the track and the cap above can't bind. */
+  min-width: 0;
   border-right: 1px solid var(--gray-6);
   background: var(--gray-2);
   height: 100vh;
@@ -55,6 +58,8 @@ body {
   padding-inline: var(--space-2);
   text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   background-color: transparent;
 }
 
