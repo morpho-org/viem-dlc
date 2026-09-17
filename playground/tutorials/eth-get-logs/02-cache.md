@@ -1,0 +1,30 @@
+A finalized block's logs are finished. They will not change, they will not be reordered, and nothing
+you do will produce a different answer tomorrow. Refetching them is spending requests on a value you
+already had.
+
+So put a store in front of the divider. That's the `cache` transport: the same splitting, retrying
+and enrichment as the last section, with the store in front and rate limiting behind.
+
+Run the step and compare the two passes. The cold pass makes one request per chunk. The warm pass
+makes exactly one — `eth_blockNumber`, to find out where the tip is now — and answers from the store.
+
+Three things make that work, and all three are decisions about *alignment* rather than storage.
+
+**Bins.** `binSize` sets the granularity of a cache entry, and the divider's `alignTo` is set from
+it automatically. Every chunk therefore covers a whole bin, so a later request for an overlapping
+window hits the same entries instead of straddling them. Smaller bins invalidate more precisely and
+cost more entries; larger bins do the opposite.
+
+**A range that ends below the tip.** This page asks for a range that stops short of the head and
+lands on a bin boundary. That isn't tidiness — a range touching the tip has a bin that isn't
+finished yet, which is invalidated on every pass, so the warm run would refetch it and the
+comparison would mean nothing.
+
+**Invalidation that knows where the tip is.** `createSimpleInvalidation()` always refetches entries
+near the head, where reorgs live, and probabilistically refreshes older ones by age.
+`createExponentialInvalidation()` weighs time and block-age separately. Neither has to be told what
+finality means; both just treat recent blocks as untrustworthy.
+
+The store here is an `LruStore`, so it lives in this tab and a reload starts cold. Outside a browser
+`NodeFsStore` puts it on disk, `CompressedStore` shrinks it, `HierarchicalStore` stacks a fast tier
+in front of a durable one, and `UpstashStore` or `VercelBlobStore` share it across processes.

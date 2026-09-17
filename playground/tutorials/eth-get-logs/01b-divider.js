@@ -9,12 +9,15 @@ const borrowEvent = parseAbiItem(
 );
 
 /**
- * `logsDivider` splits one wide `eth_getLogs` into aligned chunks, retries what fails, and drops
- * oversized logs. No cache and no store are involved — this is the transport on its own.
+ * The same range the previous tab couldn't ask for, through `logsDivider`.
  *
- * The third request parameter is the divider's own schema extension: `onLogsResponse` fires once
- * per chunk as it lands, which is why the progress below appears while the request is still in
- * flight rather than all at once at the end.
+ * `maxBlockRange` is a ceiling, not a promise: a chunk that comes back 413 or times out is halved
+ * and retried, so an endpoint stricter than your guess costs a round trip rather than the request.
+ * `alignTo` snaps chunk boundaries to fixed multiples, which is what lets the cache in the next
+ * section reuse them.
+ *
+ * `onLogsResponse` is the divider's own schema extension. It fires per chunk as each lands, which is
+ * why the feed below fills while the request is still in flight.
  *
  * @type {import("../../src/tutorials/types.js").Tab<{ settings: { blocks: string; maxBlockRange: string } }>}
  */
@@ -35,6 +38,7 @@ const run = async ({ transport, chain, settings, log }) => {
 
   let chunks = 0;
   let logs = 0;
+  const started = performance.now();
 
   const all = await client.request({
     method: "eth_getLogs",
@@ -57,7 +61,14 @@ const run = async ({ transport, chain, settings, log }) => {
     ],
   });
 
-  return { summary: { logs: all.length, chunks, blocks: Number(settings.blocks) } };
+  return {
+    summary: {
+      logs: all.length,
+      chunks,
+      blocks: Number(settings.blocks),
+      elapsed: `${(performance.now() - started).toFixed(0)} ms`,
+    },
+  };
 };
 
 export default run;

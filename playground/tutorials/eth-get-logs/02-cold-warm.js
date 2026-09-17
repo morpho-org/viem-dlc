@@ -12,12 +12,13 @@ const borrowEvent = parseAbiItem(
 /**
  * The all-in-one `cache` transport, run twice over the same range.
  *
- * `binSize` sets cache granularity and the divider's `alignTo` follows it, so requests land on bin
- * boundaries and the second pass is served entirely from the store. Only the `eth_blockNumber`
- * preflight goes out on the warm pass.
+ * `cache` is the previous section's divider with a store in front of it, plus rate limiting, log
+ * enrichment and oversize filtering. `binSize` sets cache granularity and the divider's `alignTo`
+ * follows it, so every chunk lands on a bin boundary and the second pass is served entirely from
+ * the store. Only the `eth_blockNumber` preflight goes out on the warm pass.
  *
- * The store is an in-memory `LruStore`; a reload starts cold again. `NodeFsStore` would persist it
- * outside a browser.
+ * The store is an in-memory `LruStore`, so a reload starts cold again. `NodeFsStore` persists it
+ * outside a browser, and `HierarchicalStore` puts one in front of the other.
  *
  * @type {import("../../src/tutorials/types.js").Tab<import("../../src/tutorials/shared.js").RangeContext>}
  */

@@ -4,9 +4,9 @@ An interactive counterpart to `examples/`: a sidebar of feature pages, each with
 the wide event rendered as the result. It imports `src/` directly, so the page is the library at this
 commit rather than a published version.
 
-Routing is hash-based (`#/about`, `#/cache`, …) because GitHub Pages serves a static tree with no SPA
+Routing is hash-based (`#/about`, `#/eth-call`, …) because GitHub Pages serves a static tree with no SPA
 fallback — a real path would 404 on reload or on a shared link. The first item mirrors the root
-`README.md`; the rest are examples.
+`README.md`; the rest are tutorials.
 
 ```sh
 pnpm playground          # dev server
@@ -105,9 +105,11 @@ consumer and keeps the real error for the callback), `string_decoder`, `events`,
   public Base and Robinhood endpoints send `access-control-allow-origin: *`. A private endpoint
   without CORS headers fails, and the UI says so rather than surfacing a bare fetch error.
 - Public endpoints rate-limit hard, and Base's caps a single `eth_getLogs` at 2 000 blocks, answered
-  as HTTP 413. The defaults are set for that; raise them against an endpoint that allows more.
-- `getLogs2`'s three strategies are within noise over a few thousand logs, and what `reduce` and
-  `search` save first is peak memory rather than time. `test/bench` is where that is asserted.
+  as HTTP 413 with `-32614`. The `eth_getLogs` tutorial's first step discovers that cap live rather
+  than asserting it, so it reports whatever your endpoint allows.
+- `getLogs2`'s `search` pays in proportion to how rare the target is: over 100 000 blocks in 50 bins
+  it skips parsing for a borrower in one bin (121 logs parsed of 7 327) and saves almost nothing for
+  one in 33. `reduce` bounds memory rather than time, and `test/bench` is where that is asserted.
 - The `eth_call` tutorial reads Morpho Vault V2 on Base, fetched from `api.morpho.org` with a pinned
   snapshot as fallback. Every vault and every gas figure is real. `grief` is the one synthetic input:
   a loop in the lens that burns gas on one element, standing in for cost a curator controls. The page
