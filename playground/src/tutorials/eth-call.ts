@@ -37,7 +37,7 @@ const LENS = { name: "VaultSnapshotLens", source: solidity };
 
 export const ethCallTutorial: Tutorial = {
   id: "eth-call",
-  title: "Beyond multicall",
+  title: "Multicall without compromise",
   blurb:
     "Read one value from every Morpho vault on Base, first with Multicall3 and then with a lens. " +
     "The controls are shared by every step, so each comparison changes the transport and nothing else.",

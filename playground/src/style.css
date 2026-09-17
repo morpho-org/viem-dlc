@@ -30,7 +30,7 @@ body {
 .shell {
   display: grid;
   /* Wide enough that the longest tutorial title stays on one line. */
-  grid-template-columns: 17rem minmax(0, 1fr);
+  grid-template-columns: 18rem minmax(0, 1fr);
   align-items: start;
 }
 
