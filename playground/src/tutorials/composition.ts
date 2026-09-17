@@ -10,7 +10,7 @@ import type { Tutorial } from "./types.js";
 
 export const compositionTutorial: Tutorial = {
   id: "composition",
-  title: "composition",
+  title: "The transport stack",
   blurb:
     "The five layers behind `cache(...)`, what each one costs, and how to state a provider's limits " +
     "once instead of at every call site.",

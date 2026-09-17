@@ -7,7 +7,7 @@ import { navigate, useRoute } from "./router.js";
 import { TUTORIALS, tutorialById } from "./tutorials/index.js";
 
 const ITEMS = [
-  { id: "about", title: "about", group: "" },
+  { id: "about", title: "About", group: "" },
   ...TUTORIALS.map((tutorial) => ({ id: tutorial.id, title: tutorial.title, group: "tutorials" })),
 ];
 
@@ -58,9 +58,9 @@ export function App() {
               <React.Fragment key={item.id}>
                 {item.group && ITEMS[index - 1]?.group !== item.group ? <GroupLabel>{item.group}</GroupLabel> : null}
                 <Button
-                  variant={route === item.id ? "soft" : "ghost"}
+                  variant="soft"
                   color="gray"
-                  className="nav-item"
+                  className={route === item.id ? "nav-item nav-item-active" : "nav-item"}
                   onClick={() => navigate(item.id)}
                 >
                   {item.title}
@@ -68,7 +68,7 @@ export function App() {
               </React.Fragment>
             ))}
             <GroupLabel>links</GroupLabel>
-            <Button asChild variant="ghost" color="gray" className="nav-item">
+            <Button asChild variant="soft" color="gray" className="nav-item">
               <a href="https://github.com/morpho-org/viem-dlc" target="_blank" rel="noreferrer">
                 github ↗
               </a>

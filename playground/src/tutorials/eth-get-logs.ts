@@ -16,7 +16,7 @@ import type { Tutorial } from "./types.js";
 
 export const ethGetLogsTutorial: Tutorial = {
   id: "eth-get-logs",
-  title: "eth_getLogs",
+  title: "Log history that scales",
   blurb:
     "Read Morpho Blue's Borrow history on Base, from one call that no endpoint will answer to a " +
     "shared cache that serves every borrower without another request.",

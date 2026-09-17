@@ -23,7 +23,7 @@ const LENS = { name: "VaultSnapshotLens", source: solidity };
 
 export const observabilityTutorial: Tutorial = {
   id: "observability",
-  title: "observability",
+  title: "Wide-event telemetry",
   blurb:
     "Where every number the other tutorials quote comes from: one wide event per call, emitted " +
     "only inside a scope you open, through a logger you supply.",

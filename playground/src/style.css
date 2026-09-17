@@ -40,9 +40,21 @@ body {
   height: 100vh;
 }
 
-.nav-item {
+/* One variant for every item, so selecting one doesn't shift it: `ghost` carries a negative
+   alignment margin that `soft` doesn't. */
+.sidebar .nav-item {
   width: 100%;
   justify-content: flex-start;
+  background-color: transparent;
+}
+
+.sidebar .nav-item:hover {
+  background-color: var(--gray-a3);
+}
+
+.sidebar .nav-item-active,
+.sidebar .nav-item-active:hover {
+  background-color: var(--gray-a4);
 }
 
 .group {
