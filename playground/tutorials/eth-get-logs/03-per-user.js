@@ -14,7 +14,7 @@ const borrowEvent = parseAbiItem(
  *
  * The blob key is `hash(address, topics)`, and `args` puts the borrower into `topics`. So every
  * borrower gets a blob of their own, warm only for whoever paid to fill it. One store is shared by
- * everything here, exactly as a server would hold one — it doesn't help, because the keys differ.
+ * everything here, as a server would share one. It does not help, because the keys differ.
  *
  * @type {import("../../src/tutorials/types.js").Tab<import("../../src/tutorials/shared.js").RangeContext>}
  */
@@ -36,13 +36,13 @@ const run = async ({ transport, chain, settings, range, log }) => {
 
   // One broad pass, only to find two borrowers who actually appear in this range.
   const all = await getLogs2(client, { address: MORPHO, event: borrowEvent, strict: true, ...range });
-  if (all.length === 0) throw new Error("No Borrow logs in this range — widen it.");
+  if (all.length === 0) throw new Error("No Borrow logs in this range; widen it.");
 
   const counts = new Map();
   for (const entry of all) counts.set(entry.args.onBehalf, (counts.get(entry.args.onBehalf) ?? 0) + 1);
   const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const [first, second] = [ranked[0]?.[0], ranked[1]?.[0]];
-  if (!first || !second) throw new Error("Need two distinct borrowers in this range — widen it.");
+  if (!first || !second) throw new Error("Need two distinct borrowers in this range; widen it.");
 
   /** @param {`0x${string}`} user */
   const forUser = async (user) => {

@@ -6,8 +6,8 @@ import { multicall } from "viem/actions";
  * both sides run identical code.
  *
  * `batchSize` is viem's only lever, and it counts bytes. Leave it at the 1024-byte default and you
- * pay one request per handful of vaults. Raise it and the requests collapse — until one batch costs
- * more gas than the node will spend, and that batch returns nothing.
+ * pay one request per handful of vaults. Raise it and the requests collapse, until one batch costs
+ * more gas than the node will spend. That batch returns nothing.
  *
  * @type {import("../../src/tutorials/types.js").Tab<import("../../src/tutorials/eth-call.js").EthCallContext>}
  */
@@ -16,7 +16,7 @@ const run = async ({ transport, chain, settings, lens, vaults, log }) => {
 
   const count = Number(settings.vaults);
   const grief = BigInt(settings.grief);
-  // One vault carries the extra cost. Which one is arbitrary; that it exists is the point.
+  // One vault carries the extra cost. Which one does not matter.
   const inputs = vaults.slice(0, count).map((vault, i) => ({ vault, grief: i === 0 ? grief : 0n }));
 
   log(`${inputs.length} vaults through Multicall3 at batchSize=${settings.batchSize}`);

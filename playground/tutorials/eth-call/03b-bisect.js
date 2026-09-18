@@ -5,8 +5,8 @@ import { multicall } from "viem/actions";
  * What you write once you've been bitten: raise `batchSize` for the request count, then halve any
  * batch that comes back empty and retry it, down to single elements.
  *
- * It works. It also costs a failed request for every split, and the splits are pure waste — the node
- * spent real time on each one before giving up. Compare its request count with the previous
+ * It works. It also costs a failed request for every split, and the splits are pure waste, since the
+ * node spent real time on each one before giving up. Compare its request count with the previous
  * section's, remembering that the public endpoint's rate limit sets the wall clock here, so the
  * request count is the figure worth reading.
  *

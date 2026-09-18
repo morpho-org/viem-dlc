@@ -11,7 +11,7 @@ const borrowEvent = parseAbiItem(
 /**
  * The same range the previous tab couldn't ask for, through `logsDivider`.
  *
- * `maxBlockRange` is a ceiling, not a promise: a chunk that comes back 413 or times out is halved
+ * `maxBlockRange` is a ceiling: a chunk that comes back 413 or times out is halved
  * and retried, so an endpoint stricter than your guess costs a round trip rather than the request.
  * `alignTo` snaps chunk boundaries to fixed multiples, which is what lets the cache in the next
  * section reuse them.

@@ -8,8 +8,8 @@ import { createPublicClient } from "viem";
  * transport's `gasLimit`.
  *
  * Expect the same request count. The hints size the opening wave, and the opening wave here is
- * bounded by bytes rather than by gas, so there is nothing for them to improve. That is the point:
- * they are an optimization you can skip, not a configuration you have to get right.
+ * bounded by bytes rather than by gas, so there is nothing for them to improve. The hints are an
+ * optimization you may skip. A wrong one costs a round trip.
  *
  * @type {import("../../src/tutorials/types.js").Tab<import("../../src/tutorials/eth-call.js").EthCallContext>}
  */

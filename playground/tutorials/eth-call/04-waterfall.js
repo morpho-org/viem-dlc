@@ -7,7 +7,7 @@ import { multicall } from "viem/actions";
  * asset, and you cannot know its asset until you've called the vault.
  *
  * Batching makes each round cheap. It does nothing about the number of rounds, because the
- * dependency is in your data, not in your transport.
+ * dependency is in your data and no transport can remove it.
  *
  * @type {import("../../src/tutorials/types.js").Tab<import("../../src/tutorials/eth-call.js").EthCallContext>}
  */

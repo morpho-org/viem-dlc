@@ -17,8 +17,8 @@ const borrowEvent = parseAbiItem(
  * `search` is matched against a bin's raw NDJSON *before* it is parsed, so a bin that cannot contain
  * the borrower is never decoded. `parsed` counts the logs each pass actually handed to JavaScript.
  *
- * The last two passes use the same code against different borrowers, which is the whole point:
- * `search` saves exactly as much as your target is rare.
+ * The last two passes run the same code against different borrowers, so the only variable is the
+ * data. `search` saves exactly as much as your target is rare.
  *
  * @type {import("../../src/tutorials/types.js").Tab<import("../../src/tutorials/shared.js").RangeContext>}
  */
@@ -43,7 +43,7 @@ const run = async ({ transport, chain, settings, range, log }) => {
 
   log("warming the range");
   const all = await getLogs2(client, query);
-  if (all.length === 0) throw new Error("No Borrow logs in this range — widen it.");
+  if (all.length === 0) throw new Error("No Borrow logs in this range; widen it.");
 
   const counts = new Map();
   for (const entry of all) counts.set(entry.args.onBehalf, (counts.get(entry.args.onBehalf) ?? 0) + 1);

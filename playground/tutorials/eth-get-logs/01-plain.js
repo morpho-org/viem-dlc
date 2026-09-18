@@ -9,7 +9,7 @@ const borrowEvent = parseAbiItem(
 
 /**
  * Plain viem, no transport under it. Ask for a widening range and watch where the endpoint stops
- * answering — the point isn't that one span fails, it's that you can't know which one will.
+ * answering. Which span fails depends on the endpoint, and nothing tells you in advance.
  *
  * @type {import("../../src/tutorials/types.js").Tab<{ settings: { blocks: string } }>}
  */
@@ -42,13 +42,13 @@ const run = async ({ transport, chain, log }) => {
         .find((line) => /limited|range|exceed|413|too many|response size/i.test(line))
         ?.replace(/^\s*Details:\s*/, "")
         .trim();
-      log(`${span} blocks: rejected — ${message ?? "see the error"}`);
+      log(`${span} blocks: rejected: ${message ?? "see the error"}`);
       firstError = message ?? "rejected";
       break;
     }
   }
 
-  // The endpoint's own words go to the feed rather than a badge; they are a sentence, not a figure.
+  // The endpoint's own words go to the feed rather than a badge, since they are a sentence.
   log(firstError ? `the endpoint's limit: ${firstError}` : "no limit hit within the widest span tried");
 
   return {

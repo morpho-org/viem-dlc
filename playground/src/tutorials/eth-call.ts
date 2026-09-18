@@ -72,7 +72,7 @@ export const ethCallTutorial: Tutorial = {
       },
     },
     {
-      heading: "What it costs",
+      heading: "The lens read is also cheaper",
       prose: cost,
       step: {
         id: "cost",

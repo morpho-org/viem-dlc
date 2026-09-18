@@ -11,8 +11,8 @@ import { createPublicClient } from "viem";
  * element is answered from the store and never reaches the envelope, so only novel elements cost a
  * request. `delta` spreads expiries so a blob filled in one burst doesn't expire in one burst.
  *
- * Four passes: half the corpus cold, the same half again, then the whole corpus — half of which has
- * never been seen — and finally the whole corpus warm. Watch `elements_fetched` against
+ * Four passes: half the corpus cold, the same half again, then the whole corpus (half of which has
+ * never been seen), and finally the whole corpus warm. Watch `elements_fetched` against
  * `elements_requested`: on the third pass only the new half goes upstream.
  *
  * @type {import("../../src/tutorials/types.js").Tab<import("../../src/tutorials/eth-call.js").EthCallContext>}

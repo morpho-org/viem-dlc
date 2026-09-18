@@ -16,7 +16,7 @@ const borrowEvent = parseAbiItem(
  * limiter changes when requests leave, never how many.
  *
  * `blockTimestamp` is the enricher's backfill. Base is an OP-stack chain and already returns
- * `blockTimestamp` on every log, so turning it on costs nothing here — the summary reports whether
+ * `blockTimestamp` on every log, so turning it on costs nothing here. The summary reports whether
  * the endpoint supplied them. On a chain that doesn't, the enricher fetches one block per distinct
  * block that carried a log, which is the number below.
  *
