@@ -16,8 +16,8 @@ const borrowEvent = parseAbiItem(
  * The first branch points at an endpoint that does not exist, standing in for a provider that is
  * down. The second is the endpoint configured above. Each branch is a **complete `cache` stack
  * built once**, so its rate limiter, its coalescing state and its knowledge of its own block-range
- * limit persist across requests — which is what viem's `fallback` cannot do, because it only
- * dispatches between bare transports.
+ * limit persist across requests. viem's `fallback` cannot do this, because it only dispatches
+ * between bare transports.
  *
  * The store is shared, so whatever branch A managed to fetch before it failed is already visible to
  * branch B. Read `succeeded_index` in the table: 0 means the primary served it, 1 means it fell

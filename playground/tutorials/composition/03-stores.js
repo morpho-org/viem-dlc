@@ -13,7 +13,7 @@ const borrowEvent = parseAbiItem(
  * A `Store` is four methods over `Buffer[]`. That is the entire interface, which is why one can
  * wrap another.
  *
- * `Counting` below is a complete, working store in a dozen lines — it just delegates and tallies.
+ * `Counting` below is a complete, working store in a dozen lines. It delegates and tallies.
  * Putting one around each tier makes the fall-through visible: reads try tier 1 first, and a miss
  * that tier 2 answers is written back up, so the same read a second time never reaches tier 2.
  *
@@ -61,7 +61,7 @@ const run = async ({ transport, chain, settings, range, log }) => {
   // `populateOnMiss` is what writes a tier-2 answer back into tier 1.
   const store = new HierarchicalStore([hot, cold], { populateOnMiss: true });
 
-  // The interface is public, so you can use a store directly — nothing about it is transport-shaped.
+  // The interface is public, so you can use a store directly; nothing about it is transport-shaped.
   // This one is separate so the probe doesn't land in the counters below.
   const scratch = new LruStore({ maxBytes: 1_000 });
   await scratch.set("hello", [Buffer.from("world")]);

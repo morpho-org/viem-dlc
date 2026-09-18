@@ -42,12 +42,12 @@ const run = async ({ transport, chain, settings, range, log }) => {
 
   const query = { address: MORPHO, event: borrowEvent, strict: true, ...range };
 
-  log("cold pass — nothing in the store yet");
+  log("cold pass: nothing in the store yet");
   const coldStart = performance.now();
   const cold = await getLogs2(client, query);
   const coldMs = performance.now() - coldStart;
 
-  log(`warm pass — ${cold.length} logs now binned in the store`);
+  log(`warm pass: ${cold.length} logs now binned in the store`);
   const warmStart = performance.now();
   const warm = await getLogs2(client, query);
   const warmMs = performance.now() - warmStart;

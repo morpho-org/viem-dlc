@@ -6,7 +6,7 @@ import { createPublicClient } from "viem";
  * The other way to fit more elements under a byte cap: send fewer bytes.
  *
  * `compress: true` FastLZ-compresses the element array on the wire, and the envelope decompresses
- * element by element as it attempts them — so a highly compressible chunk pages like any other and
+ * element by element as it attempts them, so a highly compressible chunk pages like any other and
  * costs nothing before its first element. Addresses padded to 32 bytes compress well, which is most
  * element types.
  *

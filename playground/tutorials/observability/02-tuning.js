@@ -7,11 +7,11 @@ import { createPublicClient } from "viem";
  * The loop the `eth_call` tutorial opens, closed.
  *
  * Run the lens without stating a single figure. The event that comes back carries what the frame
- * cost — and those are exactly the numbers `gasLimit` and `batch.gas` want. This prints the config
+ * cost, and those are exactly the numbers `gasLimit` and `batch.gas` want. This prints the config
  * to paste.
  *
- * Take them over a representative window. They are properties of the lens and the provider, not of
- * one request, and the only thing a wrong value costs is a round trip.
+ * Take them over a representative window. They describe the lens and the provider rather than a
+ * single request, and a wrong value costs only a round trip.
  *
  * @type {import("../../src/tutorials/types.js").Tab<import("../../src/tutorials/observability.js").ObservabilityContext>}
  */
@@ -79,8 +79,8 @@ const run = async ({ transport, chain, settings, lens, vaults, log }) => {
     log(`gas would pay for ~${affordable} elements per frame; this request packed ${perChunk} per chunk`);
     // Only meaningful once the request is large enough to fill a chunk: below that, the packing is
     // bounded by what you asked for rather than by bytes, and the ratio says nothing.
-    if (batches === 1 && perChunk < 600) log("too few elements to tell what binds — raise the count");
-    else log(affordable > perChunk * 2 ? "bytes bind — consider envelope: 'override'" : "gas binds — initcode is fine");
+    if (batches === 1 && perChunk < 600) log("too few elements to tell what binds; raise the count");
+    else log(affordable > perChunk * 2 ? "bytes bind; consider envelope: 'override'" : "gas binds; initcode is fine");
   }
 
   return {

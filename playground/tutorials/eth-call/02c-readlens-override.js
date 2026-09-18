@@ -12,7 +12,7 @@ import { createPublicClient } from "viem";
  *
  * Reach for it when the wide event says bytes bind well before gas. A provider that ignores
  * overrides is detected on the opening wave and the request finishes as initcode, which
- * `override_fallbacks_unsupported` reports — one wasted wave, never a lost result.
+ * `override_fallbacks_unsupported` reports. That costs one wasted wave and no results.
  *
  * Watch `chunks_override` and `chunks_initcode` below to see which delivery actually carried it.
  *

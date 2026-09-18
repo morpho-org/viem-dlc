@@ -40,13 +40,13 @@ const run = async ({ transport, chain, settings, range, log }) => {
   const filled = performance.now();
   const all = await getLogs2(client, query);
   log(`filled the range: ${all.length} logs in ${(performance.now() - filled).toFixed(0)} ms`);
-  if (all.length === 0) throw new Error("No Borrow logs in this range — widen it.");
+  if (all.length === 0) throw new Error("No Borrow logs in this range; widen it.");
 
   const counts = new Map();
   for (const entry of all) counts.set(entry.args.onBehalf, (counts.get(entry.args.onBehalf) ?? 0) + 1);
   const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const [first, second] = [ranked[0]?.[0], ranked[1]?.[0]];
-  if (!first || !second) throw new Error("Need two distinct borrowers in this range — widen it.");
+  if (!first || !second) throw new Error("Need two distinct borrowers in this range; widen it.");
 
   /** @param {`0x${string}`} user */
   const forUser = async (user) => {
