@@ -1,0 +1,353 @@
+/*
+Layout, type, and syntax colours. Everything else — the reset, spacing scale, and every `--gray-*` /
+`--jade-*` token — comes from `@radix-ui/themes/styles.css`, imported ahead of this file.
+*/
+
+.radix-themes {
+  --default-font-family: var(--code-font-family);
+  --heading-font-family: var(--code-font-family);
+  --strong-font-family: var(--code-font-family);
+  --em-font-family: var(--code-font-family);
+  --quote-font-family: var(--code-font-family);
+
+  --syn-keyword: var(--plum-11);
+  --syn-type: var(--cyan-11);
+  --syn-function: var(--indigo-11);
+  --syn-string: var(--jade-11);
+  --syn-number: var(--amber-11);
+  --syn-comment: var(--gray-9);
+  --syn-property: var(--gray-12);
+  --syn-punctuation: var(--gray-8);
+  --syn-definition: var(--cyan-11);
+
+  min-height: 100vh;
+}
+
+body {
+  background: var(--color-background);
+}
+
+.shell {
+  display: grid;
+  /* The nav column sizes to its longest label, so titles are never measured by hand. The cap is a
+     backstop for a pathological one, which then ellipsizes rather than spilling. */
+  grid-template-columns: fit-content(22rem) minmax(0, 1fr);
+  align-items: start;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  /* Without this the nav's own min-content floors the track and the cap above can't bind. */
+  min-width: 0;
+  border-right: 1px solid var(--gray-6);
+  background: var(--gray-2);
+  height: 100vh;
+}
+
+/* Everything in the sidebar shares one left edge: the labels carry the button's own inset. */
+.sidebar .brand {
+  padding-inline: var(--space-2);
+}
+
+/* One variant for every item, so selecting one doesn't shift it: `ghost` carries a negative
+   alignment margin that `soft` doesn't. */
+.sidebar .nav-item {
+  width: 100%;
+  justify-content: flex-start;
+  padding-inline: var(--space-2);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background-color: transparent;
+}
+
+.sidebar .nav-item:hover {
+  background-color: var(--gray-a3);
+}
+
+.sidebar .nav-item-active,
+.sidebar .nav-item-active:hover {
+  background-color: var(--gray-a4);
+  color: var(--gray-12);
+}
+
+.group {
+  margin: var(--space-4) 0 var(--space-1);
+  padding-inline: var(--space-2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.page {
+  max-width: 1100px;
+  margin-inline: auto;
+  padding: var(--space-5) var(--space-4) var(--space-8);
+}
+
+/* A tutorial page is the article at its own measure, plus room for the outline beside it. */
+.page-wide {
+  max-width: 1400px;
+}
+
+.with-toc {
+  display: grid;
+  grid-template-columns: minmax(0, 1100px) fit-content(15rem);
+  gap: var(--space-6);
+  align-items: start;
+  justify-content: center;
+}
+
+/* A page that is only prose sets its column to the prose measure, so the outline sits beside the
+   text rather than across an empty gutter. */
+.with-toc-prose {
+  grid-template-columns: minmax(0, 80ch) fit-content(15rem);
+}
+
+.toc {
+  position: sticky;
+  top: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 1px solid var(--gray-6);
+  padding-left: var(--space-3);
+}
+
+.toc-title {
+  margin-bottom: var(--space-2);
+  color: var(--gray-11);
+  font-size: var(--font-size-1);
+}
+
+.toc-item {
+  padding: 2px 0;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--gray-11);
+  font: inherit;
+  font-size: var(--font-size-1);
+  line-height: 1.4;
+  cursor: pointer;
+}
+.toc-item:hover {
+  color: var(--gray-12);
+}
+
+.toc-depth-2 {
+  padding-left: 2ch;
+}
+
+.toc-item-active {
+  color: var(--gray-12);
+  font-weight: bold;
+}
+
+/* Landing a heading flush against the viewport edge reads as a cut-off page. */
+.tutorial h2,
+.prose h2,
+.prose h3 {
+  scroll-margin-top: var(--space-5);
+}
+
+.panel-title,
+.field-label {
+  display: block;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* The blurb reads as prose, so it keeps the prose measure. */
+.blurb {
+  max-width: 80ch;
+}
+
+/* Numeric controls don't need a full row; a URL does. */
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: var(--space-3);
+  align-items: end;
+}
+
+.field-wide {
+  grid-column: 1 / -1;
+  max-width: 48rem;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+/* Below this the article itself needs the width more than its outline does. */
+@media (max-width: 1280px) {
+  .with-toc {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .toc {
+    display: none;
+  }
+}
+
+@media (max-width: 1100px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sidebar {
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--gray-6);
+  }
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* CodeMirror draws its own scroller; the panel supplies the frame. */
+.cm-editor {
+  min-height: 320px;
+  border: 1px solid var(--gray-6);
+}
+
+/* README mirror: plain markdown output, so these are the only rules that style it. */
+.prose {
+  max-width: 80ch;
+  color: var(--gray-12);
+}
+/* The article supplies its own rhythm; its edges are the section's. */
+.prose > :first-child {
+  margin-top: 0;
+}
+.prose > :last-child {
+  margin-bottom: 0;
+}
+.prose h1 {
+  font-size: var(--font-size-5);
+  margin: 0 0 var(--space-3);
+}
+.prose h2 {
+  font-size: var(--font-size-4);
+  margin: var(--space-6) 0 var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--gray-6);
+}
+.prose h3 {
+  font-size: var(--font-size-3);
+  margin: var(--space-5) 0 var(--space-2);
+}
+.prose p,
+.prose li {
+  line-height: 1.6;
+}
+.prose ul,
+.prose ol {
+  padding-left: 3ch;
+}
+/* A paragraph that is nothing but emphasis is a caption: provenance for the table above it. */
+.prose p:has(> em:only-child) {
+  margin-top: calc(-1 * var(--space-2));
+  color: var(--gray-11);
+  font-size: var(--font-size-1);
+}
+.prose a {
+  color: var(--indigo-11);
+}
+.prose code {
+  color: var(--amber-11);
+}
+.prose pre {
+  overflow-x: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--gray-6);
+  background: var(--gray-2);
+}
+.prose pre code {
+  color: var(--gray-12);
+}
+.prose table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+}
+.prose th,
+.prose td {
+  padding: var(--space-1) var(--space-4) var(--space-1) 0;
+  border-bottom: 1px solid var(--gray-6);
+  text-align: left;
+}
+.prose blockquote {
+  margin: var(--space-3) 0;
+  padding-left: 2ch;
+  border-left: 2px solid var(--gray-6);
+  color: var(--gray-11);
+}
+
+/* Session-long event feed, docked below the page. */
+.stream {
+  position: sticky;
+  bottom: 0;
+  background: var(--color-panel-solid);
+  border-top: 1px solid var(--gray-6);
+  /* Span the page's own padding so the dock reads as part of the window, not the article. */
+  margin: var(--space-5) calc(-1 * var(--space-4)) calc(-1 * var(--space-8));
+  z-index: 2;
+}
+
+.stream-bar {
+  border-bottom: 1px solid var(--gray-6);
+}
+
+.stream-spacer {
+  flex: 1;
+}
+
+.stream-body {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-1);
+}
+
+.stream-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 2px 0;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+}
+
+.stream-row-button {
+  cursor: pointer;
+}
+.stream-row-button:hover {
+  background: var(--gray-3);
+}
+
+.stream-at {
+  color: var(--gray-9);
+  min-width: 5ch;
+  text-align: right;
+}
+
+.stream-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 var(--space-4);
+  padding: var(--space-2) 0 var(--space-2) 6ch;
+  border-left: 2px solid var(--gray-6);
+  margin-left: 2ch;
+}
+.stream-detail > div {
+  display: contents;
+}

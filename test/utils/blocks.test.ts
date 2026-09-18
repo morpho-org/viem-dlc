@@ -237,6 +237,17 @@ describe("classifyBlockRangeError", () => {
       expect(classifyBlockRangeError(error)).toBe("range");
     });
 
+    it("detects Base's 'limited to a 10,000 range' message", () => {
+      const error = createRpcError(-32614, "eth_getLogs is limited to a 10,000 range");
+      expect(classifyBlockRangeError(error)).toBe("range");
+    });
+
+    it("detects viem's ResponseBodyTooLargeError", () => {
+      const error = new Error("HTTP response body exceeded the size limit.");
+      error.name = "ResponseBodyTooLargeError";
+      expect(classifyBlockRangeError(error)).toBe("range");
+    });
+
     it("detects -32000 errors", () => {
       const error = createRpcError(-32000, "Server error");
       expect(classifyBlockRangeError(error)).toBe("range");

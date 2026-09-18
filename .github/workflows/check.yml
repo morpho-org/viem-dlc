@@ -17,11 +17,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Nothing here pushes; don't leave GITHUB_TOKEN in the runner's git config.
+          persist-credentials: false
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            playground/pnpm-lock.yaml
           node-version: "24"
 
       - name: Install dependencies
@@ -32,6 +37,11 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+      # The playground is a detached pnpm project with its own lockfile.
+      - name: Install playground dependencies
+        run: pnpm -C playground install --frozen-lockfile
+      - name: Typecheck playground
+        run: pnpm -C playground typecheck
 
       - name: Test
         run: pnpm test

@@ -1,0 +1,43 @@
+{
+  "name": "@morpho-org/viem-dlc-playground",
+  "version": "0.0.0",
+  "description": "Interactive tutorials for @morpho-org/viem-dlc, built against the library's source.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/copy-soljson.mjs && vite",
+    "build": "node scripts/copy-soljson.mjs && soltag -p . && vite build",
+    "typecheck": "soltag -p . && tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.4",
+    "@codemirror/view": "^6.43.11",
+    "@lezer/highlight": "^1.2.3",
+    "@morpho-org/viem-dlc": "link:..",
+    "@radix-ui/themes": "^3.3.0",
+    "@replit/codemirror-lang-solidity": "^6.0.2",
+    "buffer": "^6.0.3",
+    "codemirror": "^6.0.2",
+    "events": "^3.3.0",
+    "marked": "^18.0.12",
+    "process": "^0.11.10",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "stream-browserify": "^3.0.0",
+    "string_decoder": "^1.3.0",
+    "viem": "2.55.10"
+  },
+  "devDependencies": {
+    "@types/node": "25.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "solc": "^0.8.36",
+    "soltag": "^0.0.17",
+    "typescript": "7.0.2",
+    "vite": "^7.3.6"
+  },
+  "packageManager": "pnpm@11.20.0"
+}

@@ -1,0 +1,26 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
+    "rootDir": "..",
+    "types": ["vite/client"],
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "paths": {
+      "@morpho-org/viem-dlc": ["../src/index.ts"],
+      "@morpho-org/viem-dlc/stores/lru": ["../src/stores/lru.ts"],
+      "@morpho-org/viem-dlc/stores/memory": ["../src/stores/memory.ts"],
+      "@morpho-org/viem-dlc/stores/hierarchical": ["../src/stores/hierarchical.ts"],
+      "@morpho-org/viem-dlc/stores/ttl": ["../src/stores/ttl.ts"],
+      "@morpho-org/viem-dlc/stores/throttled": ["../src/stores/throttled.ts"],
+      "@morpho-org/viem-dlc/*": ["../src/*/index.ts"]
+    },
+    "plugins": [{ "name": "soltag/plugin" }]
+  },
+  "include": ["./**/*.ts", "./**/*.tsx", "./**/*.js", "./.soltag/types.d.ts"],
+  "exclude": ["dist", "public", "node_modules"]
+}
