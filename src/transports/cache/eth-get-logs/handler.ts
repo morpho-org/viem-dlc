@@ -70,8 +70,6 @@ export async function handleEthGetLogs(
     if (requestedRange.fromBlock > requestedRange.toBlock) {
       return { leader: { action: "resolve", result: [] } };
     }
-    // TODO: handle the above + case where they're above latest, maybe throw errors, both here and in divider.
-    // TODO: also maybe update divideBlockRange to allow only aligning fromBlock to help avoid this in divider
 
     const expectedMetadataRanges = new Map<string, BlockRange>();
     const expectedDataKeys = new Set<string>();

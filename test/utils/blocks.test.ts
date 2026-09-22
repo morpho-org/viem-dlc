@@ -158,6 +158,36 @@ describe("divideBlockRange", () => {
     });
   });
 
+  describe("with clampTo", () => {
+    it("caps the aligned end at the ceiling", () => {
+      const ranges = divideBlockRange({ fromBlock: 10_003n, toBlock: 15_000n }, 10_000, 10_000, 12_345n);
+      expect(ranges).toEqual([{ fromBlock: 10_000n, toBlock: 12_345n }]);
+    });
+
+    it("drops chunks that alignment pushed entirely past the ceiling", () => {
+      // Without the ceiling, alignment to 10_000 runs the end out to 109_999, so 1_000-block
+      // chunks cover four ranges that lie wholly above 105_000.
+      const ranges = divideBlockRange({ fromBlock: 100_000n, toBlock: 105_000n }, 1_000, 10_000, 105_000n);
+      expect(ranges).toHaveLength(6);
+      expect(ranges[ranges.length - 1]).toEqual({ fromBlock: 105_000n, toBlock: 105_000n });
+    });
+
+    it("leaves ranges untouched when the ceiling is above the aligned end", () => {
+      const range = { fromBlock: 10_003n, toBlock: 39_995n };
+      expect(divideBlockRange(range, 10_000, 10_000, 1_000_000n)).toEqual(divideBlockRange(range, 10_000, 10_000));
+    });
+
+    it("returns an empty array when the ceiling precedes the aligned start", () => {
+      const ranges = divideBlockRange({ fromBlock: 10_003n, toBlock: 15_000n }, 10_000, 10_000, 9_000n);
+      expect(ranges).toEqual([]);
+    });
+
+    it("applies the ceiling with Infinity", () => {
+      const ranges = divideBlockRange({ fromBlock: 10_003n, toBlock: 99_995n }, Infinity, 10_000, 95_000n);
+      expect(ranges).toEqual([{ fromBlock: 10_000n, toBlock: 95_000n }]);
+    });
+  });
+
   describe("with Infinity (unconstrained)", () => {
     it("returns single range for entire span", () => {
       const ranges = divideBlockRange({ fromBlock: 0n, toBlock: 1_000_000n }, Infinity);

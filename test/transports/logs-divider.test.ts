@@ -197,6 +197,25 @@ describe("handleEthGetLogs", () => {
         expect(call[0].params[0].topics).toEqual(topics);
       }
     });
+
+    it("never requests past the chain tip when alignment extends beyond it", async () => {
+      const latestBlock = 105_000n;
+      const requestFn = createMockRequestFn({ latestBlock, logGenerator: () => [] });
+
+      await handleEthGetLogs(requestFn, [{ fromBlock: toHex(100_000n), toBlock: "latest" }], {
+        ...defaultConfig,
+        maxBlockRange: 1_000,
+        alignTo: 10_000,
+      });
+
+      const ranges = requestFn.mock.calls
+        .filter((call) => call[0].method === "eth_getLogs")
+        .map((call) => [BigInt(call[0].params[0].fromBlock), BigInt(call[0].params[0].toBlock)]);
+
+      expect(ranges).toHaveLength(6);
+      expect(ranges.every(([, toBlock]) => toBlock <= latestBlock)).toBe(true);
+      expect(ranges).toContainEqual([105_000n, 105_000n]);
+    });
   });
 
   describe("chunk priority", () => {
