@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { MemoryStore } from "../../src/stores/index.js";
+import { MemoryStore } from "../../src/stores/memory.js";
 import { ThrottledStore, type ThrottledStoreOptions } from "../../src/stores/throttled.js";
 import { sleep } from "../../src/utils/sleep.js";
 

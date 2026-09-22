@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { CompressedStore } from "../../src/stores/compressed.js";
-import { MemoryStore } from "../../src/stores/index.js";
+import { MemoryStore } from "../../src/stores/memory.js";
 
 describe("CompressedStore", () => {
   it("compresses and decompresses values transparently", async () => {

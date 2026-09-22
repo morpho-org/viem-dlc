@@ -3,7 +3,7 @@ import type { Hex, RpcSchema } from "viem";
 import type { BlockRange, EIP1193Parameters } from "../../types.js";
 import type { DeploylessTarget } from "../../utils/deployless/codec.envelope.js";
 import { hash } from "../../utils/hash.js";
-import { deepTransform } from "../../utils/index.js";
+import { deepTransform } from "../../utils/objects.js";
 import { pick } from "../../utils/pick.js";
 import type { Tail } from "../../utils/tuples.js";
 import { extractEthCallPolicy } from "../state-overrides.js";

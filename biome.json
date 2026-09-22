@@ -30,6 +30,23 @@
           "options": {
             "style": "auto"
           }
+        },
+        "noRestrictedImports": {
+          "level": "error",
+          "options": {
+            "patterns": [
+              {
+                "group": [
+                  "**/actions/index.js",
+                  "**/stores/index.js",
+                  "**/transports/index.js",
+                  "**/utils/index.js",
+                  "**/utils/deployless/index.js"
+                ],
+                "message": "Import the defining module. Barrels are entry points for consumers of the published package."
+              }
+            ]
+          }
         }
       }
     }
@@ -59,5 +76,17 @@
         }
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["src/index.ts", "test/bench/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": "off"
+          }
+        }
+      }
+    }
+  ]
 }

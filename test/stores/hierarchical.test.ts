@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { HierarchicalStore, MemoryStore } from "../../src/stores/index.js";
+import { HierarchicalStore } from "../../src/stores/hierarchical.js";
+import { MemoryStore } from "../../src/stores/memory.js";
 import type { Store } from "../../src/types.js";
 
 describe("HierarchicalStore", () => {

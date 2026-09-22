@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { MemoryStore } from "../../src/stores/index.js";
+import { MemoryStore } from "../../src/stores/memory.js";
 
 describe("MemoryStore", () => {
   it("returns null for missing keys", async () => {

@@ -1,7 +1,8 @@
 import { type RpcLog, toHex } from "viem";
 import { type Mock, vi } from "vitest";
 
-import { createSlot, LazyNdjsonMap } from "../../../../src/internal/index.js";
+import { createSlot } from "../../../../src/internal/compressed-lines-blob.js";
+import { LazyNdjsonMap } from "../../../../src/internal/lazy-ndjson-map.js";
 import type { Entry } from "../../../../src/internal/ndjson-map.js";
 import type { MemoryStore } from "../../../../src/stores/memory.js";
 import type { CachedChunk, CachedLogs, CachedMetadata } from "../../../../src/transports/cache/eth-get-logs/types.js";

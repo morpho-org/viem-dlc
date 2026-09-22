@@ -3,14 +3,9 @@ import { zstdCompressSync } from "zlib";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  type Codec,
-  CompressedLinesBlob,
-  createSlot,
-  type Entry,
-  type LazyEntry,
-  LazyNdjsonMap,
-} from "../../src/internal/index.js";
+import { CompressedLinesBlob, createSlot } from "../../src/internal/compressed-lines-blob.js";
+import { LazyNdjsonMap } from "../../src/internal/lazy-ndjson-map.js";
+import type { Codec, Entry, LazyEntry } from "../../src/internal/ndjson-map.js";
 import { parse, stringify } from "../../src/utils/json.js";
 
 const codec: Codec<string> = {
