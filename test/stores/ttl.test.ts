@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { HierarchicalStore, LruStore, TtlStore } from "../../src/stores/index.js";
+import { HierarchicalStore } from "../../src/stores/hierarchical.js";
+import { LruStore } from "../../src/stores/lru.js";
+import { TtlStore } from "../../src/stores/ttl.js";
 import type { Store } from "../../src/types.js";
 
 const bytes = (s: string): Buffer[] => [Buffer.from(s)];

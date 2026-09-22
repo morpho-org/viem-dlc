@@ -44,21 +44,10 @@ async function fetchRangeWithRetry(
 ): Promise<RpcLog[]> {
   if (depth > ctx.stats.splits.maxDepth) ctx.stats.splits.maxDepth = depth;
 
-  // Constrain toBlock to chain tip (range may span past it due to alignment)
-  const constrainedRange: BlockRange = {
-    fromBlock: range.fromBlock,
-    toBlock: min(range.toBlock, ctx.latestBlockNumber),
-  };
-
-  // This happens when alignTo > maxBlockRange and alignment extends past latestBlockNumber.
-  if (constrainedRange.fromBlock > constrainedRange.toBlock) {
-    return [];
-  }
-
   const filter = {
     ...ctx.baseFilter,
-    fromBlock: toHex(constrainedRange.fromBlock),
-    toBlock: toHex(constrainedRange.toBlock),
+    fromBlock: toHex(range.fromBlock),
+    toBlock: toHex(range.toBlock),
   };
 
   try {
@@ -81,8 +70,8 @@ async function fetchRangeWithRetry(
     // Success - invoke callback
     ctx.onLogsResponse?.({
       logs,
-      fromBlock: constrainedRange.fromBlock,
-      toBlock: constrainedRange.toBlock,
+      fromBlock: range.fromBlock,
+      toBlock: range.toBlock,
       fetchedAtBlock: ctx.latestBlockNumber,
       fetchedAt: Date.now(),
     });
@@ -92,8 +81,7 @@ async function fetchRangeWithRetry(
   } catch (error) {
     const cause = classifyBlockRangeError(error);
     if (cause === "range" || (cause === "timeout" && timeoutSplitsRemaining > 0)) {
-      // Use constrainedRange to avoid halving into invalid ranges
-      const halves = halveBlockRange(constrainedRange);
+      const halves = halveBlockRange(range);
 
       if (halves) {
         const nextBudget = cause === "timeout" ? timeoutSplitsRemaining - 1 : timeoutSplitsRemaining;
@@ -164,7 +152,7 @@ export async function handleEthGetLogs(
   };
 
   const range: BlockRange = { fromBlock, toBlock };
-  const chunks = divideBlockRange(range, config.maxBlockRange, config.alignTo);
+  const chunks = divideBlockRange(range, config.maxBlockRange, config.alignTo, latestBlockNumber);
 
   facet?.set({
     from_block: Number(fromBlock),

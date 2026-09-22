@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { LruStore } from "../../src/stores/index.js";
+import { LruStore } from "../../src/stores/lru.js";
 
 describe("LruStore", () => {
   it("throws if maxBytes is less than 1", () => {

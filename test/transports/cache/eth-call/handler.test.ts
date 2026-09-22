@@ -15,7 +15,7 @@ import {
 } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { LazyNdjsonMap } from "../../../../src/internal/index.js";
+import { LazyNdjsonMap } from "../../../../src/internal/lazy-ndjson-map.js";
 import { createFacetId, observe, withLogging } from "../../../../src/observability.js";
 import { MemoryStore } from "../../../../src/stores/memory.js";
 import { handleEthCall } from "../../../../src/transports/cache/eth-call/handler.js";

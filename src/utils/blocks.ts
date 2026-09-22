@@ -58,8 +58,15 @@ export function isInBlockRange(range: BlockRange) {
  *   multiples of this value. This may extend chunks slightly beyond the original range
  *   (e.g., [10_003, 99_995] with alignTo=10_000 becomes chunks aligned to [10_000, ...] and [..., 100_000]).
  *   Useful for cache hit optimization.
+ * @param clampTo Optional ceiling applied after alignment, so no chunk extends past it. Pass the
+ *   chain tip to keep alignment from producing chunks that cover only unmined blocks.
  */
-export function divideBlockRange(range: BlockRange, maxBlockRange: number, alignTo?: number): BlockRange[] {
+export function divideBlockRange(
+  range: BlockRange,
+  maxBlockRange: number,
+  alignTo?: number,
+  clampTo?: bigint,
+): BlockRange[] {
   if (range.fromBlock > range.toBlock) return [];
 
   const alignment = alignTo ? BigInt(alignTo) : undefined;
@@ -67,23 +74,26 @@ export function divideBlockRange(range: BlockRange, maxBlockRange: number, align
   // Align the starting block down to alignment boundary
   const alignedStart = alignment ? (range.fromBlock / alignment) * alignment : range.fromBlock;
 
-  // Align the ending block up to alignment boundary
+  // Align the ending block up to alignment boundary, then apply the ceiling
   const alignedEnd = alignment ? (range.toBlock / alignment + 1n) * alignment - 1n : range.toBlock;
+  const end = clampTo === undefined ? alignedEnd : min(alignedEnd, clampTo);
+
+  if (alignedStart > end) return [];
 
   // Handle unconstrained case (Infinity) - return single range
   if (!Number.isFinite(maxBlockRange)) {
-    return [{ fromBlock: alignedStart, toBlock: alignedEnd }];
+    return [{ fromBlock: alignedStart, toBlock: end }];
   }
 
   const ranges: BlockRange[] = [];
   const step = BigInt(maxBlockRange);
   let current = alignedStart;
 
-  while (current <= alignedEnd) {
+  while (current <= end) {
     const chunkEnd = current + step - 1n;
     ranges.push({
       fromBlock: current,
-      toBlock: min(chunkEnd, alignedEnd),
+      toBlock: min(chunkEnd, end),
     });
     current = chunkEnd + 1n;
   }
