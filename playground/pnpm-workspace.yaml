@@ -29,3 +29,5 @@ overrides:
   postcss: ^8.5.24
   # ReDoS and method injection via extglob / POSIX character classes
   picomatch: ^4.0.5
+  # GHSA-ph9p-34f9-6g65, GHSA-52f5-9888-hmc6, GHSA-7c78-jf6q-g5cm; solc@0.8.37 still pins 0.2.6
+  tmp: ^0.2.7
