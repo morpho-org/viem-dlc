@@ -25,6 +25,7 @@ import type { BatchOptions } from "../utils/deployless/call.js";
  * @param opts.batch Optional batching config, see {@link BatchOptions}. What bounds a chunk's bytes
  *   isn't here: the chain states its initcode limit and the transport states the provider's
  *   `batchSize`.
+ * @param opts.label Optional name for the lens, stamped on the wide event; see {@link EthCallPolicy}.
  * @param opts.cache Optional cache config. Honored by the `cache` transport only; if omitted,
  *   or when used with `deployless`, `batch` is still honored without caching.
  * @param opts.cache.blobKey Identifies the backing cache blob. Requests with the same
