@@ -10,6 +10,7 @@ overrides:
   picomatch: ^4.0.5
   tmp: ^0.2.7
   ws: 8.21.1
+  source-map-js: ^1.2.2
 
 pnpmfileChecksum: sha256-tXtEEZojFeMJabYIsm28vIcyprmmTtAAJjyDjyGe924=
 
@@ -52,7 +53,7 @@ importers:
         version: 3.3.0
       marked:
         specifier: ^18.0.12
-        version: 18.0.12
+        version: 18.1.0
       process:
         specifier: ^0.11.10
         version: 0.11.10
@@ -1432,8 +1433,8 @@ packages:
   js-sha3@0.8.0:
     resolution: {integrity: sha512-gF1cRrHhIzNfToc802P800N8PpXS+evLLXfsVpowqmAFR9uwbi89WvXg2QspOmXL8QL86J4T1EpFu+yUkwJY3Q==}
 
-  marked@18.0.12:
-    resolution: {integrity: sha512-LEm4ga2YeI2T3GVHj9b0BaDPPk93LLTHMFeMyQbNIzPxc8vCI0y/scy0ZA6z6lXKyT9j9Nhl/OC6ZYKYGuFScA==}
+  marked@18.1.0:
+    resolution: {integrity: sha512-PamYXWWWg2nboG3oX5Ffzpy3EFZROqZJK9hSlMmUnekp7TxPs5DcT95vwd46m73/exfKCRVMtgXoPMI4FEJL6w==}
     engines: {node: '>= 20'}
     hasBin: true
 
@@ -1552,8 +1553,8 @@ packages:
       solc: ^0.8.0
       viem: ^2.0.0
 
-  source-map-js@1.2.1:
-    resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
+  source-map-js@1.2.2:
+    resolution: {integrity: sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==}
     engines: {node: '>=0.10.0'}
 
   stream-browserify@3.0.0:
@@ -2933,7 +2934,7 @@ snapshots:
 
   js-sha3@0.8.0: {}
 
-  marked@18.0.12: {}
+  marked@18.1.0: {}
 
   memorystream@0.3.1: {}
 
@@ -2962,7 +2963,7 @@ snapshots:
     dependencies:
       nanoid: 3.3.18
       picocolors: 1.1.1
-      source-map-js: 1.2.1
+      source-map-js: 1.2.2
 
   process@0.11.10: {}
 
@@ -3136,7 +3137,7 @@ snapshots:
       - vite
       - webpack
 
-  source-map-js@1.2.1: {}
+  source-map-js@1.2.2: {}
 
   stream-browserify@3.0.0:
     dependencies:
@@ -3261,7 +3262,7 @@ time:
   buffer@6.0.3: '2020-11-23T02:51:27.107Z'
   codemirror@6.0.2: '2025-06-19T11:48:48.519Z'
   events@3.3.0: '2021-02-27T16:51:27.318Z'
-  marked@18.0.12: '2026-09-07T20:40:26.015Z'
+  marked@18.1.0: '2026-10-05T15:40:41.608Z'
   process@0.11.10: '2017-04-26T12:34:27.448Z'
   react-dom@19.3.0: '2026-09-09T17:17:39.744Z'
   react@19.3.0: '2026-09-09T17:21:30.071Z'
