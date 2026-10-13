@@ -6,7 +6,7 @@ packages:
 minimumReleaseAge: 10080
 resolutionMode: time-based
 
-# esbuild is a transitive dependency (via Vitest/Vite), but pnpm 11 blocks its
+# esbuild is a transitive dependency (via Vitest/Vite/tsx), but pnpm 11 blocks its
 # postinstall unless approved, causing ERR_PNPM_IGNORED_BUILDS during install.
 allowBuilds:
   esbuild: true
