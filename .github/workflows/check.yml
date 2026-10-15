@@ -51,8 +51,8 @@ jobs:
           version: v1.8.1
       - name: Install solc
         run: |
-          curl -sSL https://github.com/ethereum/solidity/releases/download/v0.8.36/solc-static-linux -o "$RUNNER_TEMP/solc"
-          echo "c8d35afdddc3cd2743ee88b8f25e0fecd16e2bdd5f2120f37e52cd9cc45ae0e6  $RUNNER_TEMP/solc" | sha256sum -c
+          curl -sSL https://github.com/ethereum/solidity/releases/download/v0.8.37/solc-static-linux -o "$RUNNER_TEMP/solc"
+          echo "5de843c2c93563cc66425c99a4fb13fdbf32b4c4ae07469480faaf126e14404a  $RUNNER_TEMP/solc" | sha256sum -c
           sudo install -m 755 "$RUNNER_TEMP/solc" /usr/local/bin/solc
 
       - name: Test envelopes
