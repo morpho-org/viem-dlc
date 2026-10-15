@@ -7,8 +7,6 @@ settings:
 overrides:
   undici: ^6.28.1
   vite: ^7.3.7
-  postcss: ^8.5.24
-  picomatch: ^4.0.5
   ws: 8.21.1
 
 importers:
@@ -671,7 +669,7 @@ packages:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
     engines: {node: '>=12.0.0'}
     peerDependencies:
-      picomatch: ^4.0.5
+      picomatch: ^3 || ^4
     peerDependenciesMeta:
       picomatch:
         optional: true

@@ -20,9 +20,5 @@ overrides:
   undici: ^6.28.1
   # server.fs.deny bypasses, path traversal, launch-editor UNC disclosure
   vite: ^7.3.7
-  # arbitrary file read, path traversal, XSS via unescaped </style>
-  postcss: ^8.5.24
-  # ReDoS and method injection via extglob / POSIX character classes
-  picomatch: ^4.0.5
   # AIKIDO-2026-138234; viem pins 8.21.0 exactly
   ws: 8.21.1
