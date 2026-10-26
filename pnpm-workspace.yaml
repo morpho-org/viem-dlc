@@ -16,8 +16,10 @@ allowBuilds:
 # All are dev-only -- none reach consumers, who only get `dist` plus `valibot`.
 # Drop each entry once its parent's own range picks up the patched version.
 overrides:
-  # GHSA-rfgv-xxqx-mfg5, GHSA-859w-5945-r5v3 and others; @vercel/blob@2.6.1 still pins 6.24.1
-  undici: ^6.28.1
+  # GHSA-xjj6-f33q-929c, GHSA-4qv8-2p9j-2685; @vercel/blob@2.6.1 still pins 6.24.1
+  undici: ^6.29.1
+  # GHSA-mrhx-c7xc-m3w5; viem/abitype/ox peer auto-installs 4.1.11
+  zod: ^4.6.6
   # server.fs.deny bypasses, path traversal, launch-editor UNC disclosure
   vite: ^7.3.7
   # AIKIDO-2026-138234; viem pins 8.21.0 exactly
