@@ -12,6 +12,8 @@ export type EthCallPolicy = {
   /** The array-shaped fragment `arrayifiedAbi` derives: `f(T[]) returns (U[] results, uint256[] skipped)`. */
   abi: AbiFunction;
   batch?: BatchOptions;
+  /** Names the lens on the wide event as `eth_call.lens_label`. Not part of cache identity. */
+  label?: string;
   cache?: {
     blobKey: string;
     ttl: number;

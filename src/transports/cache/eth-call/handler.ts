@@ -1,11 +1,16 @@
-import type { Hex } from "viem";
+import { type Hex, toFunctionSignature } from "viem";
 
 import { LazyNdjsonMap } from "../../../internal/lazy-ndjson-map.js";
 import { getObservability } from "../../../observability.js";
 import type { EIP1193Parameters } from "../../../types.js";
 import { factorisedFactoryCall } from "../../../utils/deployless/call.js";
 import { type RestOfEthCallParams, unwrapDeploylessFactoryCall } from "../../../utils/deployless/codec.envelope.js";
-import { calldataToArray, pageToAbi, resolveArrayFunction } from "../../../utils/deployless/codec.inner.js";
+import {
+  calldataToArray,
+  itemFragmentOf,
+  pageToAbi,
+  resolveArrayFunction,
+} from "../../../utils/deployless/codec.inner.js";
 import { cyrb64Hash } from "../../../utils/hash.js";
 import { parse, stringify } from "../../../utils/json.js";
 import { extractEthCallPolicy } from "../../state-overrides.js";
@@ -46,7 +51,12 @@ export async function handleEthCall(
   const inputElements = calldataToArray(lens, targetData);
 
   const facet = getObservability()?.facet(facetId).sub("eth_call");
-  facet?.set({ input_elements: inputElements.length });
+  facet?.set({
+    input_elements: inputElements.length,
+    lens_address: target.address,
+    lens_signature: toFunctionSignature(itemFragmentOf(policy.abi)),
+    lens_label: policy.label,
+  });
 
   if (inputElements.length === 0) {
     return pageToAbi(lens.outputLayout, { results: [], skipped: [] });

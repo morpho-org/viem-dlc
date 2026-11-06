@@ -109,12 +109,14 @@ const byteLength = (hex: Hex) => (hex.length - 2) / 2;
 type PolicyOpts = {
   batch?: { compress?: boolean; gas?: LensGas };
   withCache?: boolean;
+  label?: string;
 };
 
 function policySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
   const policy: Record<string, unknown> = { abi };
   if (opts.batch) policy.batch = opts.batch;
   if (opts.withCache) policy.cache = { blobKey: "test-blob", ttl: 60_000 };
+  if (opts.label) policy.label = opts.label;
   return {
     [ETH_CALL_POLICY_ADDRESS]: { code: toHex(JSON.stringify(policy)) },
   };
@@ -129,7 +131,7 @@ function createRequest(accounts: readonly Address[], opts: RequestOpts = {}): Et
     params: [
       { data: buildDeploylessCall(buildTargetCalldata(abi, accounts)) },
       "latest",
-      policySentinel(abi, { batch: opts.batch, withCache: opts.withCache }),
+      policySentinel(abi, { batch: opts.batch, withCache: opts.withCache, label: opts.label }),
     ],
   };
 }
@@ -292,6 +294,18 @@ describe("deployless", () => {
       // One sample per batch, none exceeding the budget it was packed under.
       expect(field("batch_bytes.count")).toBe(field("nominal_batches"));
       expect(field("batch_bytes.max")).toBeLessThanOrEqual(batchSize);
+    });
+
+    it("stamps the lens's address, per-item signature, and label onto the wide event", async () => {
+      const transport = createTransport(mockPagedFn(), { batchSize: wireBytesFor(3) });
+
+      const { logger, events } = createStubLogger();
+      await withLogging(() => transport.request(createRequest(addrs(2), { label: "BalancesLens" })), { logger });
+
+      const field = (name: string) => findDotted(events[0]!.context, "viem-dlc-deployless", `eth_call.${name}`);
+      expect(field("lens_address")).toBe(TARGET_TO);
+      expect(field("lens_signature")).toBe("balancesOf(address)");
+      expect(field("lens_label")).toBe("BalancesLens");
     });
 
     it("lets the smaller of the gas prediction and batchSize bind the opening wave", async () => {

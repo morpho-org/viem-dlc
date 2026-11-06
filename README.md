@@ -565,6 +565,7 @@ const { results, skipped } = await readLens(client, {
   args: inputs,                        // T[]
   batch: { compress: true },
   cache: { blobKey: 'blue-health', ttl: 60_000 },
+  label: 'HealthLens',
 })
 ```
 
@@ -590,6 +591,7 @@ policy(opts: {
     continuations?: 'fill' | 'eager'
     envelope?: 'initcode' | 'override'
   }
+  label?: string
   cache?: {
     blobKey: string
     ttl: number
@@ -628,6 +630,9 @@ policy(opts: {
   range re-fetched as initcode, at the cost of one wasted wave per request, which
   `override_fallbacks_unsupported` reports. It pays only when bytes bind, which the wide event says: `(gas_limit_observed − fixed_gas) /
   item_gas_avg` well above `elements_requested / nominal_batches`.
+- **`opts.label`** — optional name for the lens, reported on the wide event as `lens_label`
+  next to `lens_address` (the lens's counterfactual address) and `lens_signature` (the per-item
+  function), which are always reported. Not part of cache identity.
 - **`opts.cache`** — optional cache config, honored by `cache(...)` only. If omitted,
   or when used with `deployless(...)`, `batch` is still honored without caching.
 - **`opts.cache.blobKey`** — identifies the backing store blob. Requests with the same

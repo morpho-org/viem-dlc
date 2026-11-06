@@ -1,10 +1,21 @@
-import { createTransport, type EIP1193RequestFn, type PublicRpcSchema, type Transport } from "viem";
+import {
+  createTransport,
+  type EIP1193RequestFn,
+  type PublicRpcSchema,
+  type Transport,
+  toFunctionSignature,
+} from "viem";
 
 import { createFacetId, type FacetId, getObservability, observe } from "../../observability.js";
 import type { EIP1193Parameters, SafelyExtendedRpcSchema } from "../../types.js";
 import { factorisedFactoryCall, type Provider, providerOf } from "../../utils/deployless/call.js";
 import { type RestOfEthCallParams, unwrapDeploylessFactoryCall } from "../../utils/deployless/codec.envelope.js";
-import { calldataToArray, pageToAbi, resolveArrayFunction } from "../../utils/deployless/codec.inner.js";
+import {
+  calldataToArray,
+  itemFragmentOf,
+  pageToAbi,
+  resolveArrayFunction,
+} from "../../utils/deployless/codec.inner.js";
 import { extractEthCallPolicy } from "../state-overrides.js";
 
 type Base = SafelyExtendedRpcSchema<PublicRpcSchema>;
@@ -110,7 +121,12 @@ async function handleEthCall(
   const elements = calldataToArray(lens, targetData);
 
   const facet = getObservability()?.facet(facetId).sub("eth_call");
-  facet?.set({ input_elements: elements.length });
+  facet?.set({
+    input_elements: elements.length,
+    lens_address: target.address,
+    lens_signature: toFunctionSignature(itemFragmentOf(policy.abi)),
+    lens_label: policy.label,
+  });
 
   if (elements.length === 0) {
     return pageToAbi(lens.outputLayout, { results: [], skipped: [] });

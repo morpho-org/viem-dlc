@@ -110,6 +110,7 @@ function wireBytesFor(count: number): number {
 
 type PolicyOpts = {
   batch?: { compress?: boolean; gas?: LensGas };
+  label?: string;
 };
 
 function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
@@ -119,6 +120,7 @@ function cachePolicySentinel(abi: AbiFunction, opts: PolicyOpts = {}) {
         JSON.stringify({
           abi,
           ...(opts.batch ? { batch: opts.batch } : {}),
+          ...(opts.label ? { label: opts.label } : {}),
           cache: { blobKey: "test-blob", ttl },
         }),
       ),
@@ -291,6 +293,25 @@ describe("handleEthCall", () => {
 
     expect(result).toBe("0x1234");
     expect(requestFn).toHaveBeenCalledWith({ method: "eth_call", params: [{ data: "0xabcdef" }, "latest"] });
+  });
+
+  it("stamps the lens's address, per-item signature, and label onto the wide event", async () => {
+    const { field } = await withFacet(ctx(mockPagedFn()), createRequest(addrs(2), { label: "BalancesLens" }));
+
+    expect(field("lens_address")).toBe(TARGET_TO);
+    expect(field("lens_signature")).toBe("balancesOf(address)");
+    expect(field("lens_label")).toBe("BalancesLens");
+  });
+
+  it("serves a labelled request from entries an unlabelled one cached", async () => {
+    const store = new MemoryStore();
+    await handleEthCall(ctx(mockPagedFn(), store), createRequest(addrs(2)));
+
+    const requestFn = mockPagedFn();
+    const result = await handleEthCall(ctx(requestFn, store), createRequest(addrs(2), { label: "BalancesLens" }));
+
+    expect(requestFn).not.toHaveBeenCalled();
+    expect(decodePage(result)).toEqual({ results: [1n, 2n], skipped: [] });
   });
 
   it("throws when policy is present but `to` is set", async () => {
