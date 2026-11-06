@@ -33,3 +33,5 @@ overrides:
   tmp: ^0.2.7
   # AIKIDO-2026-138234; viem pins 8.21.0 exactly
   ws: 8.21.1
+  # GHSA-68fv-2mgg-jv7q; postcss pins 1.2.1 under time-based resolution
+  source-map-js: ^1.2.2
