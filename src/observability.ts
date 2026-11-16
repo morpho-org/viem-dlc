@@ -170,6 +170,7 @@ function resolvePrefix(root: RootState, id: FacetId): string {
 interface Scope {
   parentLogger: Logger;
   context: Record<string, unknown>;
+  failureLevel: "error" | "warn";
   obs?: Observability;
   root?: RootState;
 }
@@ -201,6 +202,11 @@ function loadAls(): Promise<AlsLike | undefined> {
 
 export interface WithLoggingOpts {
   logger: Logger;
+  /**
+   * Level of the `"concluded"` event for a failed call. Defaults to `"error"`; use `"warn"`
+   * when the host already logs the error the call rethrows, so it isn't counted twice.
+   */
+  failureLevel?: "error" | "warn";
   /** Additional context fields, stamped onto every event emitted in this scope. */
   [key: string]: unknown;
 }
@@ -221,9 +227,9 @@ export async function withLogging<T>(fn: () => Promise<T> | T, opts: WithLogging
   const storage = await loadAls();
   if (!storage) return fn();
 
-  const { logger, ...rest } = opts;
+  const { logger, failureLevel = "error", ...rest } = opts;
 
-  return storage.run({ parentLogger: logger, context: rest }, fn);
+  return storage.run({ parentLogger: logger, context: rest, failureLevel }, fn);
 }
 
 /** Soft ceiling on accumulated facet bytes emitted on one wide event. */
@@ -277,7 +283,7 @@ function finalizeFields(root: RootState): Record<string, unknown> {
  *
  * The outermost boundary for a call derives the per-call child logger and facet
  * accumulator, then emits one `"concluded"` wide event when the call settles:
- * `info`-level on success, `error`-level with `withError` on rejection. Inner
+ * `info`-level on success, `withError` at `failureLevel` (default `error`) on rejection. Inner
  * boundaries contribute to that same event; no new ALS store is created past the
  * outermost one.
  *
@@ -328,6 +334,7 @@ export function observe<F extends (req: never) => Promise<unknown>>(fn: F, id: F
         // (LogLayer plugin forwarding `.withError()` entries to an ErrorReporter) capture it.
         const enriched = logger.withContext(fields);
         if (status === "ok") enriched.info("concluded");
+        else if (scope.failureLevel === "warn") enriched.withError(error).warn("concluded");
         else enriched.withError(error).error("concluded");
       };
       return fn(req).then(

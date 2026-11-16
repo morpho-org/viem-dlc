@@ -104,6 +104,8 @@ fields are `call_id`, `chain_id` (when the client has a chain), `duration_ms`, a
 (`"ok"` or `"error"`). Failed calls
 emit at `error` level with the error attached via `withError`, so hosts that forward
 `withError` entries to an error reporter such as Sentry capture them automatically.
+Pass `failureLevel: 'warn'` to `withLogging` when the host already logs the error the
+call rethrows, so one failure doesn't appear twice at `error` level.
 
 ## Transports
 

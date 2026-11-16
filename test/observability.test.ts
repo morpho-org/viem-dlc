@@ -70,9 +70,26 @@ describe("observability", () => {
 
       expect(events).toHaveLength(1);
       expect(events[0]!.name).toBe("concluded");
+      expect(events[0]!.level).toBe("error");
       expect(events[0]!.context.status).toBe("error");
       expect(events[0]!.error).toBeInstanceOf(Error);
       expect(typeof events[0]!.context.duration_ms).toBe("number");
+    });
+
+    it("emits the failed wide event at failureLevel without stamping it as context", async () => {
+      const { logger, events } = createStubLogger();
+
+      const observed = observe(async () => {
+        throw new Error("boom");
+      }, ROOT);
+
+      await expect(withLogging(() => observed({}), { logger, failureLevel: "warn" })).rejects.toThrow("boom");
+
+      expect(events).toHaveLength(1);
+      expect(events[0]!.level).toBe("warn");
+      expect(events[0]!.context.status).toBe("error");
+      expect(events[0]!.context).not.toHaveProperty("failureLevel");
+      expect(events[0]!.error).toBeInstanceOf(Error);
     });
 
     it("nested observe boundaries reuse the per-call logger and call_id", async () => {
