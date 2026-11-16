@@ -1,5 +1,6 @@
 export interface StubEvent {
   name: string;
+  level: "info" | "warn" | "error";
   context: Record<string, unknown>;
   metadata: Record<string, unknown>;
   error?: unknown;
@@ -19,8 +20,8 @@ export function createStubLogger() {
     let pendingMetadata: Record<string, unknown> = {};
     let pendingError: unknown;
 
-    const emit = (name: string) => {
-      events.push({ name, context: { ...context }, metadata: pendingMetadata, error: pendingError });
+    const emit = (level: StubEvent["level"], name: string) => {
+      events.push({ name, level, context: { ...context }, metadata: pendingMetadata, error: pendingError });
       pendingMetadata = {};
       pendingError = undefined;
       return layer;
@@ -42,12 +43,12 @@ export function createStubLogger() {
         pendingError = err;
         return layer;
       },
-      info: emit,
-      warn: emit,
-      error: emit,
+      info: (name: string) => emit("info", name),
+      warn: (name: string) => emit("warn", name),
+      error: (name: string) => emit("error", name),
       metadataOnly(extra: Record<string, unknown>) {
         pendingMetadata = { ...pendingMetadata, ...extra };
-        emit("");
+        emit("info", "");
       },
     };
     return layer;
