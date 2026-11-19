@@ -33,7 +33,7 @@ jobs:
           cache-dependency-path: |
             pnpm-lock.yaml
             playground/pnpm-lock.yaml
-          node-version: "24"
+          node-version: "24.22.3"
 
       # Both installs are needed: the bundle compiles `src/`, which imports `valibot` from the
       # root install, while everything else resolves from the playground's own.
