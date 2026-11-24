@@ -201,6 +201,10 @@ export const PriceBoard = contract(
 });
 
 // What the editor refuses in a body.
+class Point extends Struct({ x: uint256, y: uint256 }) {}
+const pointNorm = internal(pure(Point).returns(uint256), (p) => p.x + p.y);
+// @ts-expect-error an array type names one element type, in a struct as anywhere
+export class Pairs extends Struct({ pairs: [address, uint256] }) {}
 export const refused = internal(view(Query).returns(uint256), (q) => {
   const board = new Board();
   // @ts-expect-error a uint256 is not a uint64 without a conversion
@@ -211,6 +215,22 @@ export const refused = internal(view(Query).returns(uint256), (q) => {
   FEED.latest(1n);
   // @ts-expect-error a struct is built from its own fields
   board.holdings[0] = new Holding({ owner: q.token });
+  // @ts-expect-error a struct is built with new, not from a bare object
+  board.holdings[0] = { holder: q.token, balance: 0n, value: 0n, share: 0n };
+  // @ts-expect-error a bare object is not passed where a struct is expected
+  FixedPoint.mulWad(pointNorm({ x: 1n, y: 2n }), WAD);
+  // @ts-expect-error an array type names one element type
+  array([address, uint256], 2n);
+  // @ts-expect-error the options of a call name its gas
+  IERC20(q.token, {}).totalSupply();
+  // @ts-expect-error a low-level call is made on an address: address(FEED)
+  staticcall(FEED, "0x");
+  // @ts-expect-error only an address has code: address(FEED)
+  codeSize(FEED);
+  // @ts-expect-error an assembly block names its flag
+  assembly(() => yul.pop(0));
+  // @ts-expect-error a block that is a value names its flag after its type
+  assembly(bytes32, () => yul.mload(0x40));
   // @ts-expect-error a Holding is not a Board
   const other: Board = new Holding();
   return other.total;

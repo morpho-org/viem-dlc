@@ -369,14 +369,12 @@ export const array = bodyOnly<<T extends SolType>(of: T, length: bigint | number
 export const staticcall =
   bodyOnly<
     (
-      // biome-ignore lint/suspicious/noExplicitAny: any interface handle is a call target
-      target: Types.address | Handle<any>,
+      target: Types.address,
       data: Types.bytes | Hex,
       options?: CallOptions,
     ) => [success: boolean, returndata: Types.bytes]
   >("staticcall(…)");
 /** `a.code.length` */
-// biome-ignore lint/suspicious/noExplicitAny: any interface handle has code
-export const codeSize = bodyOnly<(account: Types.address | Handle<any>) => Types.uint256>("codeSize(…)");
+export const codeSize = bodyOnly<(account: Types.address) => Types.uint256>("codeSize(…)");
 /** `assembly ("memory-safe") { … }`, with opcodes imported from `@morpho-org/viem-dlc/solidity/yul`. */
 export const assembly = bodyOnly<Assembly>("assembly(…)");

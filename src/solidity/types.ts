@@ -278,7 +278,7 @@ export interface StructFields {
 /** `class Position extends Struct({ … }) {}`: a named type, and `new Position()` is its zero value. */
 // biome-ignore lint/suspicious/noExplicitAny: the default has to admit every field set
 export interface StructClass<F extends StructFields = any> {
-  new (init?: StructInput<F>): StructBody<F> & { readonly [FIELDS]?: F };
+  new (init?: StructInput<F>): StructBody<F> & { readonly [FIELDS]: F };
   readonly [FIELDS]: F;
 }
 export interface IfaceTag<F extends Record<string, Sig> = Record<string, Sig>> {
@@ -286,7 +286,7 @@ export interface IfaceTag<F extends Record<string, Sig> = Record<string, Sig>> {
 }
 /** A Solidity type as a lens names it: an elementary type, a struct class, an interface, or `[T]` for `T[]`. */
 // biome-ignore lint/suspicious/noExplicitAny: an interface of any function set is a type
-export type SolType = Token | IfaceTag<any> | StructClass | readonly SolType[];
+export type SolType = Token | IfaceTag<any> | StructClass | readonly [SolType];
 
 /** A lens only reads, so no other mutability can be declared. */
 export type Mutability = "view" | "pure";
@@ -331,8 +331,8 @@ export type In<T> =
     ? Inputs[S]
     : T extends IfaceTag<infer F>
       ? Handle<F>
-      : T extends StructClass<infer F>
-        ? InstanceType<T> | StructInput<F>
+      : T extends StructClass
+        ? InstanceType<T>
         : T extends readonly (infer U)[]
           ? SolArray<Out<U>>
           : never;
@@ -353,7 +353,7 @@ export type Returns<T extends readonly unknown[]> = T extends readonly []
 
 /** What a call may be given besides its arguments: `IPriceFeed(feed, { gas: 100_000 })`. */
 export interface CallOptions {
-  gas?: bigint | number;
+  gas: bigint | number;
 }
 export type Handle<F extends Record<string, Sig>> = {
   readonly [K in keyof F]: (...args: InArgs<F[K]["inputs"]>) => Returned<F[K]["outputs"]>;
@@ -508,15 +508,12 @@ type YulType = Bytes32Token | Token<"bytes"> | Token<"string">;
  * A block that ends in `return word` is a value: a uint256, or the type named first (the word is then
  * the bytes32 itself, or the memory pointer of the string or bytes). The type is an argument and not a
  * type parameter because a type parameter is erased before the transform reads the source. A block
- * with no `return` is a statement.
+ * with no `return` is a statement. Every block is `"memory-safe"`, and says so.
  */
 export interface Assembly {
   <T extends YulType>(type: T, flag: "memory-safe", block: () => bigint): Out<T>;
-  <T extends YulType>(type: T, block: () => bigint): Out<T>;
   (flag: "memory-safe", block: () => bigint): uint256;
-  (block: () => bigint): uint256;
   (flag: "memory-safe", block: () => void): void;
-  (block: () => void): void;
 }
 
 // ---- built-ins -----------------------------------------------------------------------------------------------
