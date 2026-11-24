@@ -29,7 +29,7 @@ export interface ExecutedPair extends FixturePair {
 /** The usual imports of a snippet, so a fixture shows only what it is about. */
 export const IMPORTS = `import {
   address, array, bool, bytes, bytes4, bytes32, contract, int256, internal, pure, require, revert, string, Struct,
-  uint8, uint64, uint128, uint256, view,
+  uint8, uint64, uint128, uint160, uint256, view,
 } from "@morpho-org/viem-dlc/solidity";`;
 
 export const MAX_UINT256 = 2n ** 256n - 1n;
