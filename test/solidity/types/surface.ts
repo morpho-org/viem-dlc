@@ -1,6 +1,6 @@
-// The whole surface on made-up contracts: a price feed, an ERC-20 and some fixed-point arithmetic. Nothing
-// here is run or compiled to Solidity. tsc accepting the file is the test, so it holds one use of every
-// construct a lens body may contain.
+// The whole surface on made-up contracts: a price feed, an ERC-20 and some fixed-point arithmetic. It holds
+// one use of every construct a lens body may contain. tsc accepting the file is one test, and
+// ../surface.test.ts is the other: it builds the lens below with the transform and solc. Nothing here is run.
 import {
   abi,
   address,
@@ -91,31 +91,33 @@ export const FixedPoint = library("FixedPoint", {
   mulWad: pure(uint256, uint256).returns(uint256),
   powWad: pure(uint256, uint256).returns(uint256),
 }).implementation({
-  mulWad: (x, y) => mulDiv(x, y, WAD),
+  mulWad: (x, y) => (x * y) / WAD,
   powWad(base, exponent) {
     let result = uint256(WAD);
-    for (let i = 0n; i < exponent; i++) result = mulDiv(result, base, WAD);
+    for (let i = 0n; i < exponent; i++) result = FixedPoint.mulWad(result, base);
     return result;
   },
 });
 
 // ---- typed Yul --------------------------------------------------------------------------------------------------
 // A block that returns a word is a uint256, or the type named first.
-const decimalsOrZero = internal(view(address).returns(uint256), (token) =>
-  assembly("memory-safe", () => {
+const decimalsOrZero = internal(view(address).returns(uint256), (token) => {
+  const decimals = assembly("memory-safe", () => {
     yul.mstore(0x00, yul.shl(224, DECIMALS_SELECTOR));
     const ok = yul.and(yul.staticcall(30000, token, 0x00, 0x04, 0x00, 0x20), yul.gt(yul.returndatasize(), 0x1f));
     return yul.mul(ok, yul.mload(0x00));
-  }),
-);
-const pairId = internal(pure(address, uint256).returns(bytes32), (token, index) =>
-  assembly(bytes32, "memory-safe", () => {
+  });
+  return decimals;
+});
+const pairId = internal(pure(address, uint256).returns(bytes32), (token, index) => {
+  const id = assembly(bytes32, "memory-safe", () => {
     const larger = (a: bigint, b: bigint) => yul.xor(a, yul.mul(yul.xor(a, b), yul.gt(b, a)));
     yul.mstore(0x00, token);
     yul.mstore(0x20, larger(index, 1n));
     return yul.keccak256(0x00, 0x40);
-  }),
-);
+  });
+  return id;
+});
 
 // ---- the lens ---------------------------------------------------------------------------------------------------
 export const PriceBoard = contract(
@@ -147,11 +149,12 @@ export const PriceBoard = contract(
     o.updatedAt = updatedAt;
     o.stale = block.timestamp - updatedAt > STALE_AFTER;
 
-    // A block that returns nothing assigns the locals declared around it.
+    // A block that returns nothing assigns the locals declared around it. It reads a local, not a field.
+    const token = q.token;
     let decimals = 0n;
     let size = 0n;
     assembly("memory-safe", () => {
-      size = yul.extcodesize(q.token);
+      size = yul.extcodesize(token);
       decimals = yul.mload(0x40);
     });
     decimals = size === 0n || codeSize(q.token) === 0n ? 0n : decimalsOrZero(q.token);
