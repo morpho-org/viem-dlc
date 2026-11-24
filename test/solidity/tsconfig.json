@@ -17,5 +17,8 @@
       "@morpho-org/viem-dlc/solidity/vite": ["../../src/solidity/build/adapters/vite.ts"]
     }
   },
-  "include": ["."]
+  "include": ["."],
+  // The fixture projects are applications of their own, each with its own tsconfig.json and "@/" alias.
+  // The integration tests build them, and the Next build among them typechecks the lens modules.
+  "exclude": ["integrations/fixtures", "integrations/.work"]
 }

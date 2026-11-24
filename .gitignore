@@ -57,3 +57,6 @@ test/bench/fixtures/
 
 # copied from node_modules/solc for the playground's in-browser compiler
 playground/public/
+
+# Fixture projects the solidity integration tests build
+test/solidity/integrations/.work/
