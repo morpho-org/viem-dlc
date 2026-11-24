@@ -432,6 +432,23 @@ describe("arrays: what is printed", () => {
     `);
     expect(built.lenses[0]?.printed.solidity).toContain("return (xs[i + 1] * (i + xs.length)) + i;");
   });
+
+  it("a local declared through Number or BigInt takes the type of the argument", async () => {
+    const built = await buildSnippet(`${IMPORTS}
+      export const Lens = contract("Lens", { f: pure([uint128], uint64).returns(uint256) }).implementation({
+        f(xs, i) {
+          const count = BigInt(xs.length);
+          const at = Number(i);
+          const picked = xs[Number(at)]!;
+          return picked + count;
+        },
+      });
+    `);
+    const solidity = built.lenses[0]?.printed.solidity;
+    expect(solidity).toContain("uint256 count = xs.length;");
+    expect(solidity).toContain("uint64 at = i;");
+    expect(solidity).toContain("uint128 picked = xs[at];");
+  });
 });
 
 describe("arrays: rejections", () => {

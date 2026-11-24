@@ -9,8 +9,13 @@
  *   declarations ({@link Printer.typeOf}). An initializer with no declared type, such as arithmetic,
  *   is a located error asking for a conversion.
  * - **Data location.** A reference-type parameter of an external function is `calldata`. Everything
- *   else is `memory`.
- * - **The spelling of a literal.** `0n` is `0`, `60_000` is `60000`, `'text'` is `"text"`.
+ *   else is `memory`: locals, helper parameters and return values.
+ * - **The spelling of a literal.** `0n` is `0`, `60_000` is `60000`, `'text'` is `"text"`, a string
+ *   outside ASCII is a `unicode"…"` literal, `'0x313ce567'` is `hex"313ce567"`, and a `'0x…'` of 40
+ *   digits is an address literal.
+ *
+ * What is only TypeScript is erased before anything is read: annotations, generics, `as`, `satisfies`,
+ * `!`, a `this` parameter, and a type declared in a body. `Number(x)` and `BigInt(x)` print as `x`.
  *
  * An operator is printed as the same operator. Parentheses come from the tree and never from the source
  * text, so a module prints the same from `.ts` and from built `.js`: an operator that is an operand of
@@ -80,7 +85,7 @@ const OPERATORS = new Set([
   "UpdateExpression",
 ]);
 
-/** Statements that are only TypeScript. They print as nothing, as an empty statement does. */
+/** Statements that print as nothing: the empty statement, and a type declared in a body, which is only TypeScript. */
 const ERASED_STATEMENTS = new Set(["EmptyStatement", "TSTypeAliasDeclaration", "TSInterfaceDeclaration"]);
 
 const UINT256: TypeRef = { kind: "elementary", name: "uint256" };
@@ -570,7 +575,7 @@ class Printer {
       if (callee?.kind !== "builtin" || callee.module !== "global") break;
       const [argument, ...rest] = node.arguments;
       if (!argument || rest.length || is(argument, "SpreadElement"))
-        return this.#fail(node, `${callee.name}(x) takes one argument, and prints as it`);
+        return this.#fail(node, `${callee.name}(x) takes one argument, and prints as x`);
       node = unwrap(argument);
     }
     return node;
