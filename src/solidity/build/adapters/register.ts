@@ -21,8 +21,12 @@ registerHooks({
     if (!mentionsPackage(code)) return loaded;
     const result = transformSync(code, fileURLToPath(url), {
       resolve: resolveSync,
-      // A script runs once: there is nothing to rerun when a dependency changes.
-      addDependency: () => {},
+      // A script runs once, except under `node --watch`, which restarts it when a file it loaded changes.
+      // The rewrite removes the imports of the files a lens was compiled from, so Node never loads them:
+      // they are reported the way Node's own loaders report a file to the watching parent process.
+      addDependency(file) {
+        if (process.env.WATCH_REPORT_DEPENDENCIES && process.send) process.send({ "watch:require": [file] });
+      },
       warn: (diagnostic) => console.warn(formatDiagnostic(diagnostic)),
     });
     return result ? { ...loaded, source: result.code } : loaded;

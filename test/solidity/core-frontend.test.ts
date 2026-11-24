@@ -717,9 +717,9 @@ export const Lens = contract("Lens", { f: ${signature} }).implementation({
       "ONE.toString()",
     ],
     [
-      "a namespace inside a namespace, in a body",
+      "a namespace inside a namespace, used as a value in a body",
       'import * as all from "./lens.js";\nexport * as again from "./lens.js";',
-      "return x + all.again.Lens;",
+      "return x + all.again;",
       "a namespace import can only be used as namespace.name",
       "all.again",
     ],

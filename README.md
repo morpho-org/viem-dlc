@@ -736,6 +736,153 @@ const block = await getDeploymentBlockNumber(client, {
 })
 ```
 
+## Solidity lenses in TypeScript
+
+A lens can be written inline, in any `.ts` or `.tsx` file, in TypeScript syntax with Solidity's
+meaning. A build integration compiles it with solc when the file is built or tested and puts its ABI
+and bytecode in its place, so production code holds no compiler, no parser and no lens source.
+
+```ts
+import { contract, internal, pure, Struct, uint256 } from '@morpho-org/viem-dlc/solidity'
+
+const WAD = 10n ** 18n
+
+class Quote extends Struct({ gross: uint256, fee: uint256, net: uint256 }) {}
+
+const mulDivDown = internal(pure(uint256, uint256, uint256).returns(uint256), (x, y, d) => (x * y) / d)
+
+export const QuoteLens = contract('QuoteLens', {
+  quote: pure(uint256, uint256, uint256).returns(Quote),
+}).implementation({
+  quote(assets, price, feeRate) {
+    const o = new Quote()
+    o.gross = mulDivDown(assets, price, WAD)
+    o.fee = mulDivDown(o.gross, feeRate, WAD)
+    o.net = o.gross - o.fee
+    return o
+  },
+})
+
+// QuoteLens.abi, QuoteLens.bytecode, and the descriptor viem's deployless calls take:
+const quote = await client.readContract({ ...QuoteLens.with(), functionName: 'quote', args: [assets, price, feeRate] })
+```
+
+Read a body as Solidity. Arithmetic happens at the operands' width and reverts on overflow, solc is
+the type checker, and a body never runs as JavaScript. The declarations give the editor its types:
+`quote` above has the fields `gross`, `fee` and `net`, with no generated file.
+
+### Entry points
+
+| Import | What it is | Needs |
+| --- | --- | --- |
+| `@morpho-org/viem-dlc/solidity` | What a lens module imports: the types, `Struct`, `view`, `pure`, `iface`, `internal`, `immutable`, `library`, `contract`, and what a body can call | `viem` |
+| `@morpho-org/viem-dlc/solidity/yul` | The opcodes of an `assembly` block | nothing |
+| `@morpho-org/viem-dlc/solidity/vite` | The plugin for Vite, Vitest, Rolldown and tsdown | `solc`, `oxc-parser` |
+| `@morpho-org/viem-dlc/solidity/next` | `withSolidity`, for Next with Turbopack | `solc`, `oxc-parser` |
+| `@morpho-org/viem-dlc/solidity/register` | The `node --import` hook, for scripts | `solc`, `oxc-parser`, `oxc-resolver` |
+| `viem-dlc-solidity` (command) | `check`, which compiles every lens under a directory | `solc`, `oxc-parser`, `oxc-resolver` |
+| `@morpho-org/viem-dlc/solidity/build` | The transform itself, for writing another integration | `solc`, `oxc-parser` |
+
+`solc`, `oxc-parser` and `oxc-resolver` are optional peer dependencies. Install them where lenses
+are built or tested, and nowhere else:
+
+```bash
+pnpm add -D solc@0.8.36 oxc-parser oxc-resolver
+```
+
+The first two rows are all that reaches production, and they import only `viem`.
+
+### Integrations
+
+Add one integration for each tool that loads lens code. A lens that no integration compiled throws
+on first use and names them.
+
+```ts
+// vite.config.ts. vitest.config.ts and tsdown.config.ts take the same plugin.
+import { defineConfig } from 'vite'
+import { solidity } from '@morpho-org/viem-dlc/solidity/vite'
+
+export default defineConfig({ plugins: [solidity()] })
+```
+
+```ts
+// next.config.ts
+import { withSolidity } from '@morpho-org/viem-dlc/solidity/next'
+
+export default withSolidity({ /* the rest of the Next configuration */ })
+```
+
+```bash
+node --import @morpho-org/viem-dlc/solidity/register script.ts
+```
+
+Every integration runs the same transform, and holds to the same rules:
+
+- **A lens that does not compile fails the build or the test run**, never a request. solc's errors
+  are reported at the TypeScript file, line and column, through the tool's own error output:
+
+  ```
+  src/lens.ts:41:17 - error: Type uint256 is not implicitly convertible to expected type uint128.
+  ```
+
+  A warning is printed the same way and does not stop the build. An error solc gives without a
+  location, such as a setting it refuses, is reported at the lens.
+- **An edit to any file a lens was built from recompiles it**: the lens's own module, the module of a
+  helper or a constant it imports, and `solidity.config.json`. That holds in watch mode
+  (`next dev`, the Vite dev server, `vitest`, `tsdown --watch`, `node --watch`) and from one run to the
+  next.
+- **Modules are parsed and never run.** A lens reaches helpers, structs and constants in other
+  modules through imports, re-exports, `export *` and namespace imports, resolved by the tool's own
+  resolver, so a path alias such as `@/` works. A helper can also be read from the JavaScript that
+  `tsc` emitted for it. Output that a bundler or a minifier has rewritten is not supported: it may be
+  refused, or print different Solidity.
+- **Nothing is written into the source tree.** The only files written are the tool's own output and
+  the cache described below.
+
+Next is supported with Turbopack. A webpack build of a configuration wrapped in `withSolidity` stops
+with an error, and webpack, esbuild and Bun have no integration yet.
+
+### `solidity.config.json`
+
+One file per repository pins the compiler, so a lens compiles the same way in a build and in a test.
+Each lens uses the nearest `solidity.config.json` above its file.
+
+```json
+{
+  "solc": {
+    "version": "0.8.36",
+    "settings": { "optimizer": { "enabled": true, "runs": 200 } }
+  }
+}
+```
+
+- `solc.version` is an exact version. The installed `solc` package has to be that version; another
+  one is an error, not a substitute.
+- `solc.settings` is solc's standard-JSON `settings`, without `outputSelection`. It is optional.
+
+Compiled lenses are cached in `node_modules/.cache/viem-dlc-solidity`, beside the configuration
+file, under a hash of the Solidity, the settings and the version. A lens found there needs no
+compiler: with `solc` absent, a build succeeds on a warm cache, and on a cold one it fails and names
+the lens.
+
+### Checking from the command line
+
+`viem-dlc-solidity check` compiles every lens under the given directories (the current one by
+default) without a bundler and without running anything. It prints each error in tsc's format and
+exits with 1 if any file failed. `--print` also prints the Solidity of each lens, for debugging.
+
+```bash
+pnpm exec viem-dlc-solidity check --print src
+```
+
+```
+ok  QuoteLens  src/lens.ts  442 bytes
+src/broken.ts:8:18 - error: Return argument type uint256 is not implicitly convertible to expected type (type of first return variable) uint128.
+12 files scanned, 1 lenses compiled, 1 files failed
+```
+
+The command is optional: a build or a test run already compiles every lens it loads.
+
 ## Utilities
 
 Exported from `@morpho-org/viem-dlc/utils`:
