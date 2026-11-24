@@ -275,11 +275,14 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       }
       case "MemberExpression": {
         const object = unwrap(node.object as Span);
-        if (!node.computed && is(object, "Identifier") && !isLocal(object.name)) {
-          const base = valueOfName(m, object.name, m, object);
-          if (base.kind === "namespace" || base.kind === "package") {
-            const value = staticValue(m, node);
-            if (value) use(uses, asReference(value, m, node), node);
+        // A path through namespaces, such as `math.mulDivDown` or `lib.math.mulDivDown`, is one name.
+        let root = object;
+        while (is(root, "MemberExpression") && !root.computed) root = unwrap(root.object);
+        if (!node.computed && is(root, "Identifier") && !isLocal(root.name)) {
+          const base = valueOfName(m, root.name, m, root);
+          const value = base.kind === "namespace" || base.kind === "package" ? staticValue(m, node) : undefined;
+          if (value) {
+            use(uses, asReference(value, m, node), node);
             return;
           }
         }
