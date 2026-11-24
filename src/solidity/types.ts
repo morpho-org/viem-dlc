@@ -12,6 +12,7 @@ declare const WIDTH: unique symbol;
 declare const NOMINAL: unique symbol;
 declare const IFACE: unique symbol;
 declare const FIELDS: unique symbol;
+declare const ELEMENT: unique symbol;
 declare const IMMUTABLE: unique symbol;
 
 // ---- the width lattice -----------------------------------------------------------------------------
@@ -306,10 +307,14 @@ export interface SigBuilder<I extends readonly SolType[], M extends Mutability> 
 }
 
 // ---- body types ----------------------------------------------------------------------------------------
-/** Only what a Solidity array can do: index and length. */
+/**
+ * Only what a Solidity array can do: index and length. It carries its element type, so a JavaScript array
+ * literal is not one: an array is made with `array(T, n)`.
+ */
 export interface SolArray<B> {
   [index: number]: B;
   readonly length: number;
+  readonly [ELEMENT]: B;
 }
 export type StructBody<F> = { -readonly [K in keyof F]: Out<F[K]> };
 export type StructInput<F> = { readonly [K in keyof F]: In<F[K]> };

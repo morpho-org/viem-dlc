@@ -219,6 +219,8 @@ export const refused = internal(view(Query).returns(uint256), (q) => {
   board.holdings[0] = { holder: q.token, balance: 0n, value: 0n, share: 0n };
   // @ts-expect-error a bare object is not passed where a struct is expected
   FixedPoint.mulWad(pointNorm({ x: 1n, y: 2n }), WAD);
+  // @ts-expect-error an array is made with array(T, n), not from a literal
+  board.holdings = [new Holding()];
   // @ts-expect-error an array type names one element type
   array([address, uint256], 2n);
   // @ts-expect-error the options of a call name its gas
