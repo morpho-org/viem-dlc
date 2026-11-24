@@ -96,6 +96,9 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     return imported === "*" ? { kind: "namespace", module: from } : exportedValue(from, imported, user, at);
   };
 
+  /** The exports being looked up, as `file\0name`: modules may export each other's names in a circle. */
+  const exporting = new Set<string>();
+
   const hasExport = (
     m: SourceModule,
     name: string,
@@ -103,7 +106,8 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     at: Span,
     seen = new Set<SourceModule>(),
   ): boolean => {
-    if (seen.has(m)) return false;
+    // A module already being asked for this name is where the search came from.
+    if (seen.has(m) || exporting.has(`${m.file}\0${name}`)) return false;
     seen.add(m);
     if (m.exports.has(name)) return true;
     return m.starExports.some(
@@ -116,22 +120,33 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
 
   /** The value `from` exports as `name`. `user` and `at` are where it is asked for, for errors. */
   const exportedValue = (from: SourceModule, name: string, user: SourceModule, at: Span): Value => {
-    const entry = from.exports.get(name);
-    if (entry?.kind === "local") return valueOfName(from, entry.local, user, at);
-    if (entry?.kind === "reexport") return importedValue(from, entry.source, entry.imported, user, at);
-    if (entry?.kind === "default")
-      return error(user, at, "a default export that is an expression cannot be used by a lens; export it under a name");
-    for (const source of from.starExports) {
-      if (source === SOLIDITY_SPECIFIER || source === YUL_SPECIFIER) {
-        const pkg = source === SOLIDITY_SPECIFIER ? "solidity" : "yul";
-        if (pkg === "yul" || isElementaryTypeName(name) || DECLARATION_BUILTINS.has(name) || BODY_BUILTINS.has(name))
-          return packageExport(pkg, name, user, at);
-        continue;
+    const key = `${from.file}\0${name}`;
+    if (exporting.has(key)) return error(user, at, `"${name}" is exported by ${from.file} in terms of itself`);
+    exporting.add(key);
+    try {
+      const entry = from.exports.get(name);
+      if (entry?.kind === "local") return valueOfName(from, entry.local, user, at);
+      if (entry?.kind === "reexport") return importedValue(from, entry.source, entry.imported, user, at);
+      if (entry?.kind === "default")
+        return error(
+          user,
+          at,
+          "a default export that is an expression cannot be used by a lens; export it under a name",
+        );
+      for (const source of from.starExports) {
+        if (source === SOLIDITY_SPECIFIER || source === YUL_SPECIFIER) {
+          const pkg = source === SOLIDITY_SPECIFIER ? "solidity" : "yul";
+          if (pkg === "yul" || isElementaryTypeName(name) || DECLARATION_BUILTINS.has(name) || BODY_BUILTINS.has(name))
+            return packageExport(pkg, name, user, at);
+          continue;
+        }
+        const next = target(from, source, user, at);
+        if (hasExport(next, name, user, at)) return exportedValue(next, name, user, at);
       }
-      const next = target(from, source, user, at);
-      if (hasExport(next, name, user, at)) return exportedValue(next, name, user, at);
+      return error(user, at, `"${name}" is not exported by ${from.file}`);
+    } finally {
+      exporting.delete(key);
     }
-    return error(user, at, `"${name}" is not exported by ${from.file}`);
   };
 
   /** The value of the module-level name `name` of `m`. `user` and `at` are where it is used. */
@@ -318,6 +333,10 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       case "VariableDeclaration":
         for (const declarator of node.declarations as AnyNode[])
           if (declarator.init) scan(m, declarator.init as AnyNode, scopes, uses);
+        return;
+      // A type declared inside a body is only TypeScript, and names nothing a lens uses.
+      case "TSTypeAliasDeclaration":
+      case "TSInterfaceDeclaration":
         return;
       default:
         for (const child of children(node)) scan(m, child, scopes, uses);
