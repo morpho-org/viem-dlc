@@ -1,6 +1,6 @@
-// The whole surface on made-up contracts: a price feed, an ERC-20 and some fixed-point arithmetic. Nothing
-// here is run or compiled to Solidity. tsc accepting the file is the test, so it holds one use of every
-// construct a lens body may contain.
+// The whole surface on made-up contracts: a price feed, an ERC-20 and some fixed-point arithmetic. It holds
+// one use of every construct a lens body may contain. tsc accepting the file is one test, and
+// ../surface.test.ts is the other: it builds the lens below with the transform and solc. Nothing here is run.
 import {
   abi,
   address,
@@ -8,6 +8,7 @@ import {
   assembly,
   block,
   bool,
+  bytes,
   bytes32,
   codeSize,
   contract,
@@ -22,9 +23,11 @@ import {
   revert,
   Struct,
   staticcall,
+  string,
   uint8,
   uint64,
   uint128,
+  uint160,
   uint256,
   view,
 } from "@morpho-org/viem-dlc/solidity";
@@ -64,6 +67,10 @@ const QUOTE_DECIMALS = immutable(uint8);
 const mulDiv = internal(pure(uint256, uint256, uint256).returns(uint256), (x, y, d) => (x * y) / d);
 const min = internal(pure(uint256, uint256).returns(uint256), (a, b) => (a < b ? a : b));
 
+// An address and a bytes32 convert through the integers, as in Solidity.
+const toWord = internal(pure(address).returns(bytes32), (account) => bytes32(uint256(uint160(account))));
+const toAccount = internal(pure(bytes32).returns(address), (word) => address(uint160(uint256(word))));
+
 const log2 = internal(pure(uint256).returns(uint256), (x) => {
   let n = 0n;
   while (x > 1n) {
@@ -91,31 +98,33 @@ export const FixedPoint = library("FixedPoint", {
   mulWad: pure(uint256, uint256).returns(uint256),
   powWad: pure(uint256, uint256).returns(uint256),
 }).implementation({
-  mulWad: (x, y) => mulDiv(x, y, WAD),
+  mulWad: (x, y) => (x * y) / WAD,
   powWad(base, exponent) {
     let result = uint256(WAD);
-    for (let i = 0n; i < exponent; i++) result = mulDiv(result, base, WAD);
+    for (let i = 0n; i < exponent; i++) result = FixedPoint.mulWad(result, base);
     return result;
   },
 });
 
 // ---- typed Yul --------------------------------------------------------------------------------------------------
 // A block that returns a word is a uint256, or the type named first.
-const decimalsOrZero = internal(view(address).returns(uint256), (token) =>
-  assembly("memory-safe", () => {
+const decimalsOrZero = internal(view(address).returns(uint256), (token) => {
+  const decimals = assembly("memory-safe", () => {
     yul.mstore(0x00, yul.shl(224, DECIMALS_SELECTOR));
     const ok = yul.and(yul.staticcall(30000, token, 0x00, 0x04, 0x00, 0x20), yul.gt(yul.returndatasize(), 0x1f));
     return yul.mul(ok, yul.mload(0x00));
-  }),
-);
-const pairId = internal(pure(address, uint256).returns(bytes32), (token, index) =>
-  assembly(bytes32, "memory-safe", () => {
+  });
+  return decimals;
+});
+const pairId = internal(pure(address, uint256).returns(bytes32), (token, index) => {
+  const id = assembly(bytes32, "memory-safe", () => {
     const larger = (a: bigint, b: bigint) => yul.xor(a, yul.mul(yul.xor(a, b), yul.gt(b, a)));
     yul.mstore(0x00, token);
     yul.mstore(0x20, larger(index, 1n));
     return yul.keccak256(0x00, 0x40);
-  }),
-);
+  });
+  return id;
+});
 
 // ---- the lens ---------------------------------------------------------------------------------------------------
 export const PriceBoard = contract(
@@ -147,11 +156,12 @@ export const PriceBoard = contract(
     o.updatedAt = updatedAt;
     o.stale = block.timestamp - updatedAt > STALE_AFTER;
 
-    // A block that returns nothing assigns the locals declared around it.
+    // A block that returns nothing assigns the locals declared around it. It reads a local, not a field.
+    const token = q.token;
     let decimals = 0n;
     let size = 0n;
     assembly("memory-safe", () => {
-      size = yul.extcodesize(q.token);
+      size = yul.extcodesize(token);
       decimals = yul.mload(0x40);
     });
     decimals = size === 0n || codeSize(q.token) === 0n ? 0n : decimalsOrZero(q.token);
@@ -181,7 +191,7 @@ export const PriceBoard = contract(
     const supply = IERC20(token, { gas: gasleft() / 2n }).totalSupply();
     // A low-level read: the success flag and the returned bytes.
     const [ok, data] = staticcall(token, abi.encode(holder), { gas: 30000n });
-    if (!ok || keccak256(data) === pairId(token, 0n)) revert();
+    if (!ok || keccak256(data) === pairId(token, 0n) || toAccount(toWord(holder)) !== holder) revert();
     // A struct is built from all its fields, or as its zero value and then assigned.
     return new Holding({
       holder,
@@ -198,6 +208,16 @@ export const PriceBoard = contract(
 });
 
 // What the editor refuses in a body.
+class Point extends Struct({ x: uint256, y: uint256 }) {}
+const pointNorm = internal(pure(Point).returns(uint256), (p) => p.x + p.y);
+// @ts-expect-error an array type names one element type, in a struct as anywhere
+export class Pairs extends Struct({ pairs: [address, uint256] }) {}
+// @ts-expect-error a struct has at least one field
+export class Nothing extends Struct({}) {}
+// @ts-expect-error an immutable holds a value type, and a string is not one
+export const NAME = immutable(string);
+// @ts-expect-error an immutable holds a value type, and bytes is not one
+export const TAG = immutable(bytes);
 export const refused = internal(view(Query).returns(uint256), (q) => {
   const board = new Board();
   // @ts-expect-error a uint256 is not a uint64 without a conversion
@@ -208,6 +228,26 @@ export const refused = internal(view(Query).returns(uint256), (q) => {
   FEED.latest(1n);
   // @ts-expect-error a struct is built from its own fields
   board.holdings[0] = new Holding({ owner: q.token });
+  // @ts-expect-error a struct is built with new, not from a bare object
+  board.holdings[0] = { holder: q.token, balance: 0n, value: 0n, share: 0n };
+  // @ts-expect-error a bare object is not passed where a struct is expected
+  FixedPoint.mulWad(pointNorm({ x: 1n, y: 2n }), WAD);
+  // @ts-expect-error an array is made with array(T, n), not from a literal
+  board.holdings = [new Holding()];
+  // @ts-expect-error an array type names one element type
+  array([address, uint256], 2n);
+  // @ts-expect-error the options of a call name its gas
+  IERC20(q.token, {}).totalSupply();
+  // @ts-expect-error a handle converts only to its own interface: IERC20(address(FEED))
+  IERC20(FEED);
+  // @ts-expect-error a low-level call is made on an address: address(FEED)
+  staticcall(FEED, "0x");
+  // @ts-expect-error only an address has code: address(FEED)
+  codeSize(FEED);
+  // @ts-expect-error an assembly block names its flag
+  assembly(() => yul.pop(0));
+  // @ts-expect-error a block that is a value names its flag after its type
+  assembly(bytes32, () => yul.mload(0x40));
   // @ts-expect-error a Holding is not a Board
   const other: Board = new Holding();
   return other.total;

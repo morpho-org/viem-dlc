@@ -1,9 +1,9 @@
 /**
  * `@morpho-org/viem-dlc/solidity/yul`: the opcodes a typed-Yul block calls.
  *
- * An `assembly(() => { … })` block is compiled to Yul and means what Yul means, wrapping arithmetic and
- * right-to-left argument evaluation included. These are stubs: they give the editor types and throw
- * when called. No opcode that writes state (`sstore`, `tstore`, `call`, `delegatecall`, `create`,
+ * An `assembly("memory-safe", () => { … })` block is compiled to Yul and means what Yul means, wrapping
+ * arithmetic and right-to-left argument evaluation included. These are stubs: they give the editor types
+ * and throw when called. No opcode that writes state (`sstore`, `tstore`, `call`, `delegatecall`, `create`,
  * `log0`…, `selfdestruct`) is exported, so a lens cannot be written to change state.
  */
 import type { Yul } from "./types.js";

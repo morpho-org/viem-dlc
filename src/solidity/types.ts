@@ -12,6 +12,7 @@ declare const WIDTH: unique symbol;
 declare const NOMINAL: unique symbol;
 declare const IFACE: unique symbol;
 declare const FIELDS: unique symbol;
+declare const ELEMENT: unique symbol;
 declare const IMMUTABLE: unique symbol;
 
 // ---- the width lattice -----------------------------------------------------------------------------
@@ -259,15 +260,15 @@ export interface Token<S extends Elementary = Elementary> {
   readonly [TYPE]: S;
 }
 export interface IntToken<S extends IntegerName> extends Token<S> {
-  /** Solidity's conversion, spelled the same: `uint64(block.timestamp)`. */
-  (value: bigint | number | bytes32): Bodies[S];
+  /** Solidity's conversion, spelled the same: `uint64(block.timestamp)`. An address converts to `uint160` only. */
+  (value: bigint | number | bytes32 | (S extends "uint160" ? address : never)): Bodies[S];
 }
 export interface AddressToken extends Token<"address"> {
   // biome-ignore lint/suspicious/noExplicitAny: any interface handle converts to an address
-  (value: bigint | number | address | Address | bytes32 | Handle<any>): address;
+  (value: bigint | number | address | Address | Handle<any>): address;
 }
 export interface Bytes32Token extends Token<"bytes32"> {
-  (value: bigint | number | Hex | address): bytes32;
+  (value: bigint | number | Hex): bytes32;
 }
 
 // ---- declarations ------------------------------------------------------------------------------------
@@ -278,7 +279,7 @@ export interface StructFields {
 /** `class Position extends Struct({ … }) {}`: a named type, and `new Position()` is its zero value. */
 // biome-ignore lint/suspicious/noExplicitAny: the default has to admit every field set
 export interface StructClass<F extends StructFields = any> {
-  new (init?: StructInput<F>): StructBody<F> & { readonly [FIELDS]?: F };
+  new (init?: StructInput<F>): StructBody<F> & { readonly [FIELDS]: F };
   readonly [FIELDS]: F;
 }
 export interface IfaceTag<F extends Record<string, Sig> = Record<string, Sig>> {
@@ -286,7 +287,7 @@ export interface IfaceTag<F extends Record<string, Sig> = Record<string, Sig>> {
 }
 /** A Solidity type as a lens names it: an elementary type, a struct class, an interface, or `[T]` for `T[]`. */
 // biome-ignore lint/suspicious/noExplicitAny: an interface of any function set is a type
-export type SolType = Token | IfaceTag<any> | StructClass | readonly SolType[];
+export type SolType = Token | IfaceTag<any> | StructClass | readonly [SolType];
 
 /** A lens only reads, so no other mutability can be declared. */
 export type Mutability = "view" | "pure";
@@ -306,10 +307,14 @@ export interface SigBuilder<I extends readonly SolType[], M extends Mutability> 
 }
 
 // ---- body types ----------------------------------------------------------------------------------------
-/** Only what a Solidity array can do: index and length. */
+/**
+ * Only what a Solidity array can do: index and length. It carries its element type, so a JavaScript array
+ * literal is not one: an array is made with `array(T, n)`.
+ */
 export interface SolArray<B> {
   [index: number]: B;
   readonly length: number;
+  readonly [ELEMENT]: B;
 }
 export type StructBody<F> = { -readonly [K in keyof F]: Out<F[K]> };
 export type StructInput<F> = { readonly [K in keyof F]: In<F[K]> };
@@ -331,8 +336,8 @@ export type In<T> =
     ? Inputs[S]
     : T extends IfaceTag<infer F>
       ? Handle<F>
-      : T extends StructClass<infer F>
-        ? InstanceType<T> | StructInput<F>
+      : T extends StructClass
+        ? InstanceType<T>
         : T extends readonly (infer U)[]
           ? SolArray<Out<U>>
           : never;
@@ -353,15 +358,18 @@ export type Returns<T extends readonly unknown[]> = T extends readonly []
 
 /** What a call may be given besides its arguments: `IPriceFeed(feed, { gas: 100_000 })`. */
 export interface CallOptions {
-  gas?: bigint | number;
+  gas: bigint | number;
 }
 export type Handle<F extends Record<string, Sig>> = {
   readonly [K in keyof F]: (...args: InArgs<F[K]["inputs"]>) => Returned<F[K]["outputs"]>;
 };
-/** An interface value: call it on an address to get a handle; its members give selectors and calldata. */
+/**
+ * An interface value: call it on an address to get a handle; its members give selectors and calldata.
+ * Solidity converts a handle only to its own interface, so a handle of another interface goes through
+ * its address: `I(address(handle))`.
+ */
 export type Iface<F extends Record<string, Sig>> = IfaceTag<F> &
-  // biome-ignore lint/suspicious/noExplicitAny: any interface handle converts to another interface
-  ((at: address | Address | Handle<any>, options?: CallOptions) => Handle<F>) & {
+  ((at: address | Address | Handle<F>, options?: CallOptions) => Handle<F>) & {
     readonly [K in keyof F]: { readonly selector: bytes4; encode(...args: InArgs<F[K]["inputs"]>): bytes };
   };
 
@@ -405,11 +413,12 @@ export type AbiOf<Fns extends Record<string, Sig>> = readonly {
 export type Impl<F extends Record<string, Sig>> = {
   [K in keyof F]: (...args: OutArgs<F[K]["inputs"]>) => Returns<F[K]["outputs"]>;
 };
+/** What an immutable may hold: a value type. Solidity has no immutable `bytes` or `string`. */
+// biome-ignore lint/suspicious/noExplicitAny: an immutable may hold an interface of any function set
+export type ImmutableType = Token<Exclude<Elementary, "bytes" | "string">> | IfaceTag<any>;
 /** What `immutable(T)` returns: a value of T inside bodies, carrying its declaration for `contract`. */
-// biome-ignore lint/suspicious/noExplicitAny: an immutable may hold an interface of any function set
-export type Immutable<T extends Token | IfaceTag<any>> = Out<T> & { readonly [IMMUTABLE]: T };
-// biome-ignore lint/suspicious/noExplicitAny: an immutable may hold an interface of any function set
-export type Immutables = Record<string, { readonly [IMMUTABLE]: Token | IfaceTag<any> }>;
+export type Immutable<T extends ImmutableType> = Out<T> & { readonly [IMMUTABLE]: T };
+export type Immutables = Record<string, { readonly [IMMUTABLE]: ImmutableType }>;
 export type ImmutableTypes<Im extends Immutables> = { readonly [K in keyof Im]: Im[K][typeof IMMUTABLE] };
 export type Library<F extends Record<string, Sig>> = Handle<F> & { readonly kind: "library" };
 
@@ -422,9 +431,7 @@ export type ImmutableValue<T> =
         ? boolean
         : S extends "address"
           ? Address
-          : S extends "string"
-            ? string
-            : Hex
+          : Hex
     : Address;
 /** The shape viem's deployless calls take, and viem-dlc's lens reader passes on. */
 export interface DeploylessCall<A> {
@@ -508,15 +515,12 @@ type YulType = Bytes32Token | Token<"bytes"> | Token<"string">;
  * A block that ends in `return word` is a value: a uint256, or the type named first (the word is then
  * the bytes32 itself, or the memory pointer of the string or bytes). The type is an argument and not a
  * type parameter because a type parameter is erased before the transform reads the source. A block
- * with no `return` is a statement.
+ * with no `return` is a statement. Every block is `"memory-safe"`, and says so.
  */
 export interface Assembly {
   <T extends YulType>(type: T, flag: "memory-safe", block: () => bigint): Out<T>;
-  <T extends YulType>(type: T, block: () => bigint): Out<T>;
   (flag: "memory-safe", block: () => bigint): uint256;
-  (block: () => bigint): uint256;
   (flag: "memory-safe", block: () => void): void;
-  (block: () => void): void;
 }
 
 // ---- built-ins -----------------------------------------------------------------------------------------------

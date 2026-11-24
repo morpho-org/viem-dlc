@@ -103,9 +103,15 @@ export const opaque = internal(pure(Widths), (w) => {
   // @ts-expect-error a bytes32 cannot be compared with an integer
   const zero = w.word === 0n;
 
-  // A conversion goes between them, spelled as in Solidity.
+  // A conversion goes between them, spelled as in Solidity: an address and a bytes32 meet at the integers.
+  w.account = solidity.address(solidity.uint160(uint256(w.word)));
+  w.word = solidity.bytes32(uint256(solidity.uint160(w.account)));
+  // @ts-expect-error a bytes32 does not convert to an address directly
   w.account = solidity.address(w.word);
+  // @ts-expect-error an address does not convert to a bytes32 directly
   w.word = solidity.bytes32(w.account);
+  // @ts-expect-error an address converts to uint160 and to no other integer
+  w.u256 = uint256(w.account);
   w.account = solidity.address(0);
   w.u256 = uint256(w.word);
   return [next, zero] as unknown as undefined;

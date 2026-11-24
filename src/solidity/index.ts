@@ -20,9 +20,9 @@ import type {
   DeploylessCall,
   Handle,
   Iface,
-  IfaceTag,
   Immutable,
   Immutables,
+  ImmutableType,
   ImmutableTypes,
   Impl,
   InArgs,
@@ -38,7 +38,6 @@ import type {
   SolType,
   StructClass,
   StructFields,
-  Token,
   Tokens,
 } from "./types.js";
 
@@ -207,9 +206,9 @@ export type bool = Types.bool;
 // ---- declarations ----------------------------------------------------------------------------------------
 /**
  * `class Position extends Struct({ … }) {}`: the class is the declaration, the type of a value inside
- * a body, and the Solidity name. `new Position()` is the zero value.
+ * a body, and the Solidity name. `new Position()` is the zero value. A struct has at least one field.
  */
-export function Struct<F extends StructFields>(_fields: F): StructClass<F> {
+export function Struct<F extends StructFields>(_fields: keyof F extends never ? never : F): StructClass<F> {
   return class {
     constructor() {
       bodyOnly<() => never>("new on a struct")();
@@ -247,8 +246,7 @@ export const internal = <S extends Sig>(
  * `const FEED = immutable(IPriceFeed)`: a module-level name that helpers and entry points both use. It is
  * listed once on the contract, which fixes its constructor position and its name in `with({ … })`.
  */
-// biome-ignore lint/suspicious/noExplicitAny: an immutable may hold an interface of any function set
-export const immutable = <T extends Token | IfaceTag<any>>(_type: T): Immutable<T> => Object.freeze({}) as Immutable<T>;
+export const immutable = <T extends ImmutableType>(_type: T): Immutable<T> => Object.freeze({}) as Immutable<T>;
 
 /** A library in the same Solidity file: `library('Name', { … }).implementation({ … })`. */
 export const library = <const N extends string, F extends Record<string, Sig>>(
@@ -369,14 +367,12 @@ export const array = bodyOnly<<T extends SolType>(of: T, length: bigint | number
 export const staticcall =
   bodyOnly<
     (
-      // biome-ignore lint/suspicious/noExplicitAny: any interface handle is a call target
-      target: Types.address | Handle<any>,
+      target: Types.address,
       data: Types.bytes | Hex,
       options?: CallOptions,
     ) => [success: boolean, returndata: Types.bytes]
   >("staticcall(…)");
 /** `a.code.length` */
-// biome-ignore lint/suspicious/noExplicitAny: any interface handle has code
-export const codeSize = bodyOnly<(account: Types.address | Handle<any>) => Types.uint256>("codeSize(…)");
+export const codeSize = bodyOnly<(account: Types.address) => Types.uint256>("codeSize(…)");
 /** `assembly ("memory-safe") { … }`, with opcodes imported from `@morpho-org/viem-dlc/solidity/yul`. */
 export const assembly = bodyOnly<Assembly>("assembly(…)");

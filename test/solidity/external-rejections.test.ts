@@ -261,7 +261,11 @@ describe("rejections: built-ins", () => {
 
   it("an opcode outside assembly", async () => {
     const head = 'import { add } from "@morpho-org/viem-dlc/solidity/yul";';
-    await refuses(lens("add(x, 1n);\n    return x;", { head }), "a lens body cannot call add", "add(x, 1n)");
+    await refuses(
+      lens("add(x, 1n);\n    return x;", { head }),
+      "add(…) is an opcode, and an opcode is called inside an assembly block",
+      "add(x, 1n)",
+    );
     await refuses(lens("const y = add(x, 1n);\n    return y;", { head }), NOT_COPIED, "add(x, 1n)");
   });
 

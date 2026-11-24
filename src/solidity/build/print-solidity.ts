@@ -26,15 +26,16 @@
  * contract with its immutables, its entry points in declared order, and its helpers. Each kind is in the
  * order of {@link ResolvedLens.declarations}.
  *
- * A construct no lens may contain stops the build through `fail`, at its TypeScript position. Typed Yul
- * is the one construct this file does not print yet: `assembly(…)` stops the build through `notImplemented`.
+ * A construct no lens may contain stops the build through `fail`, at its TypeScript position. An assembly
+ * block is handed to the Yul printer, which writes it into the same source unit.
  */
 import type { Span } from "oxc-parser";
 
 import { type AnyNode, children, is, keyName, unwrap } from "./ast.js";
 import { isElementaryTypeName } from "./builtins.js";
-import { fail, notImplemented } from "./errors.js";
+import { fail } from "./errors.js";
 import { Writer } from "./position-map.js";
+import { printYul } from "./print-yul.js";
 import type {
   ConstantDeclaration,
   InterfaceDeclaration,
@@ -348,10 +349,16 @@ class Printer {
         case "VariableDeclaration":
           this.#locals(node);
           return;
-        case "ExpressionStatement":
-          this.#effect(node.expression as Span);
+        case "ExpressionStatement": {
+          const expression = this.#strip(node.expression as Span);
+          if (this.#isAssembly(expression)) {
+            this.#assembly(expression);
+            return;
+          }
+          this.#effect(expression);
           out.write(";");
           return;
+        }
         case "ReturnStatement":
           if (!node.argument) {
             out.write("return;");
@@ -439,8 +446,13 @@ class Printer {
         if (!is(init, "VariableDeclaration")) {
           this.#effect(init);
           out.write(";");
-        } else if (init.declarations.length === 1) this.#locals(init);
-        else this.#fail(init, "a for loop declares one local");
+        } else if (init.declarations.length !== 1) this.#fail(init, "a for loop declares one local");
+        else if (init.declarations[0]?.init && this.#isAssembly(this.#strip(init.declarations[0].init)))
+          this.#fail(
+            init.declarations[0].init,
+            "an assembly block is not the initializer of a for loop's local: declare the local before the loop",
+          );
+        else this.#locals(init);
       });
     else out.write(";");
     if (node.test) {
@@ -582,6 +594,10 @@ class Printer {
         continue;
       }
       if (!is(id, "Identifier")) this.#fail(id, "a local must be a plain name");
+      if (this.#isAssembly(init)) {
+        this.#assembly(init, id.name);
+        continue;
+      }
       const type = this.typeOf(init);
       out.write(`${located(type, "memory")} ${id.name}`);
       // `new Position()` is the zero value, which a Solidity declaration has without an initializer.
@@ -1044,7 +1060,10 @@ class Printer {
         out.write(".code.length");
         return;
       }
-      if (name === "assembly") notImplemented(this.#module, node, "assembly(…)");
+      if (this.#isAssembly(node))
+        this.#fail(node, "an assembly block is a statement, or the initializer of a local as in const x = assembly(…)");
+      if (reference.module === "yul")
+        this.#fail(node, `${name}(…) is an opcode, and an opcode is called inside an assembly block`);
       this.#fail(node, `a lens body cannot call ${name}`);
     }
 
@@ -1197,6 +1216,58 @@ class Printer {
       unicode ||= code > 0x7f;
     }
     return `${unicode ? "unicode" : ""}"${text}"`;
+  }
+
+  // ---- assembly -----------------------------------------------------------------------------------------------------
+  #isAssembly(node: AnyNode): boolean {
+    return is(node, "CallExpression") && this.#isBuiltin(unwrap(node.callee), "assembly");
+  }
+
+  /**
+   * `assembly("memory-safe", () => { … })`: an assembly block, printed by the Yul printer. A block that
+   * ends in `return word` is the initializer of the local `local`: the local is declared first, as a
+   * uint256 or as the type named first, and the block assigns it.
+   */
+  #assembly(call: AnyNode, local?: string): void {
+    const out = this.#out;
+    const parts = (call.arguments as Span[]).map(unwrap);
+    const named = parts.length === 3 ? parts[0] : undefined;
+    const [flag, block] = parts.slice(named ? 1 : 0);
+    if (
+      parts.length < 2 ||
+      parts.length > 3 ||
+      !is(flag, "Literal") ||
+      flag.value !== "memory-safe" ||
+      (!is(block, "ArrowFunctionExpression") && !is(block, "FunctionExpression"))
+    )
+      this.#fail(
+        call,
+        'an assembly block is written assembly("memory-safe", () => { … }), or assembly(T, "memory-safe", () => { … }) to name the type of its value',
+      );
+    if (named && local === undefined)
+      this.#fail(named, "a type is named only for an assembly block that is the initializer of a local");
+    if (local !== undefined) {
+      const reference = named && this.#lens.references.get(named);
+      const type: TypeRef = !named
+        ? UINT256
+        : reference?.kind === "builtin" && reference.module === "solidity" && isElementaryTypeName(reference.name)
+          ? { kind: "elementary", name: reference.name }
+          : this.#fail(named, "the type of an assembly block's value is an elementary type, such as bytes32 or string");
+      out.write(`${located(type, "memory")} ${local};`);
+      this.#declare(local, type);
+      out.line();
+    }
+    out.node({ module: this.#module, node: call }, () => {
+      out.write('assembly ("memory-safe") ');
+      printYul({
+        block,
+        module: this.#module,
+        references: this.#lens.references,
+        result: local,
+        locals: new Set(this.#scopes.flatMap((scope) => [...scope.keys()])),
+        writer: out,
+      });
+    });
   }
 
   // ---- scopes -------------------------------------------------------------------------------------------------------
