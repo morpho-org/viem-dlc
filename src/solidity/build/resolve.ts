@@ -319,6 +319,10 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
         for (const declarator of node.declarations as AnyNode[])
           if (declarator.init) scan(m, declarator.init as AnyNode, scopes, uses);
         return;
+      // A type declared inside a body is only TypeScript, and names nothing a lens uses.
+      case "TSTypeAliasDeclaration":
+      case "TSInterfaceDeclaration":
+        return;
       default:
         for (const child of children(node)) scan(m, child, scopes, uses);
     }
