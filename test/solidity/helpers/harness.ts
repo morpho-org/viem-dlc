@@ -108,11 +108,14 @@ export function compileSolidity(solidity: string, contractName: string): Compile
 const IGNORED_AST_KEYS = new Set([
   "id",
   "src",
+  "nativeSrc",
   "nameLocation",
   "nameLocations",
   "memberLocation",
   "scope",
   "referencedDeclaration",
+  // The same reference, as an assembly block's `externalReferences` spell it.
+  "declaration",
   "overloadedDeclarations",
   "exportedSymbols",
   "linearizedBaseContracts",
