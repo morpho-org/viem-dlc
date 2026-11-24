@@ -11,17 +11,21 @@
  * carries the versions that decide the output, because Turbopack's persistent cache keys a loader's
  * result on its options and not on the loader's own code.
  *
- * Not yet exercised by a test in this repository.
+ * Next with webpack is not supported: no rule is added for it, and a webpack build stops at once rather
+ * than serve lenses that were never compiled.
  */
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
+const versionIn = (manifest: string | URL): string =>
+  (JSON.parse(readFileSync(manifest, "utf8")) as { version: string }).version;
+
 /** `next start` also loads the Next configuration, on machines where the build-time compiler is absent. */
 const versionOf = (name: string): string => {
   try {
-    return (JSON.parse(readFileSync(require.resolve(`${name}/package.json`), "utf8")) as { version: string }).version;
+    return versionIn(require.resolve(`${name}/package.json`));
   } catch {
     return "absent";
   }
@@ -45,12 +49,22 @@ export function withSolidity<C extends NextConfigLike>(config: C = {} as C): C {
             {
               loader: "@morpho-org/viem-dlc/solidity/next/loader",
               options: {
-                cacheKey: [versionOf("@morpho-org/viem-dlc"), versionOf("solc"), versionOf("oxc-parser")].join("+"),
+                cacheKey: [
+                  // This package's own manifest, which its `exports` do not expose to `require.resolve`.
+                  versionIn(new URL("../../../../package.json", import.meta.url)),
+                  versionOf("solc"),
+                  versionOf("oxc-parser"),
+                ].join("+"),
               },
             },
           ],
         },
       },
+    },
+    webpack() {
+      throw new Error(
+        "@morpho-org/viem-dlc/solidity/next compiles lenses with Turbopack only, and this build runs webpack. Build without --webpack.",
+      );
     },
   };
 }

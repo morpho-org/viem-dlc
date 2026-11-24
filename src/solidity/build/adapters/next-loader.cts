@@ -1,8 +1,6 @@
 /**
- * `@morpho-org/viem-dlc/solidity/next/loader`: the Turbopack (and webpack) loader behind `withSolidity`.
+ * `@morpho-org/viem-dlc/solidity/next/loader`: the loader behind `withSolidity`, run by Turbopack.
  * CommonJS, because that is how a loader is loaded; the core is ESM and is imported on first use.
- *
- * Not yet exercised by a test in this repository.
  */
 import path = require("node:path");
 
