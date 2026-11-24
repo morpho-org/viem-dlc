@@ -48,7 +48,7 @@ describe("Next with Turbopack, beyond the shared suite", { timeout: 240_000 }, (
   beforeAll(async () => {
     project = new Project("next");
     if (requireAnvil()) evm = await startAnvil();
-  });
+  }, 60_000);
   afterAll(async () => {
     await server?.stop();
     evm?.stop();

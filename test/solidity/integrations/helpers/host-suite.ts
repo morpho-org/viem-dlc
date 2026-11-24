@@ -8,11 +8,10 @@
  *   application module ran, and the working tree is as it was;
  * - solc hidden: a warm cache builds, a cold one fails and names the lens;
  * - staleness: an edit to only a helper file, or to only `solidity.config.json`, changes the bytecode
- *   served, in a second cold run and in watch mode;
+ *   served, in a second cold run, in watch mode, and in watch mode started again after an edit it did
+ *   not see;
  * - every kind of solc diagnostic, at its TypeScript file, line and column.
  */
-import fs from "node:fs";
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { DIAGNOSTIC_CASES, expectedLine } from "./cases.js";
@@ -45,11 +44,14 @@ const COMPILER = /\bsolc\b|soljson/;
 const PARSER = /oxc[-_]parser|oxc[-_]resolver|\bparseSync\b/;
 const LENS_SOURCE = /mulDivDown|lensHelperProduct|lensBodyQuote/;
 
+/** For a test and for the first run: a cold Next build among other test files takes a while. */
+const TIMEOUT = 240_000;
+
 const HELPER = "src/lib/math.ts";
 const CONFIG = "solidity.config.json";
 
 export function describeHost(host: Host): void {
-  describe(host.name, { timeout: 240_000 }, () => {
+  describe(host.name, { timeout: TIMEOUT }, () => {
     let project: Project;
     let first: Run;
     let lens: BuiltFixtureLens;
@@ -71,7 +73,7 @@ export function describeHost(host: Host): void {
       project = new Project(host.template);
       lens = await project.expectedLens();
       first = await host.run(project);
-    });
+    }, TIMEOUT);
     afterAll(() => project?.remove());
 
     describe("the first run", () => {
@@ -83,18 +85,18 @@ export function describeHost(host: Host): void {
       });
 
       const { output } = host;
-      it.skipIf(!output)("writes output with no compiler, no parser and no lens source", () => {
-        if (!output) return;
-        const search = (pattern: RegExp) => project.search(pattern, output.directories, output.caches);
-        // The search finds what it looks for: the sources hold all three, and the output holds the lens.
-        expect(project.search(LENS_SOURCE, ["src"])).not.toEqual([]);
-        expect(project.search(COMPILER, ["node_modules/@morpho-org"])).not.toEqual([]);
-        expect(project.search(PARSER, ["node_modules/@morpho-org"])).not.toEqual([]);
-        expect(search(/0x60[0-9a-f]{64}/)).not.toEqual([]);
-        expect(search(COMPILER)).toEqual([]);
-        expect(search(PARSER)).toEqual([]);
-        expect(search(LENS_SOURCE)).toEqual([]);
-      });
+      if (output)
+        it("writes output with no compiler, no parser and no lens source", () => {
+          const search = (pattern: RegExp) => project.search(pattern, output.directories, output.caches);
+          // The search finds what it looks for: the sources hold all three, and the output holds the lens.
+          expect(project.search(LENS_SOURCE, ["src"])).not.toEqual([]);
+          expect(project.search(COMPILER, ["node_modules/@morpho-org"])).not.toEqual([]);
+          expect(project.search(PARSER, ["node_modules/@morpho-org"])).not.toEqual([]);
+          expect(search(/0x60[0-9a-f]{64}/)).not.toEqual([]);
+          expect(search(COMPILER)).toEqual([]);
+          expect(search(PARSER)).toEqual([]);
+          expect(search(LENS_SOURCE)).toEqual([]);
+        });
 
       it("runs no application module", () => {
         expect(project.importLog()).toBe("");
@@ -140,36 +142,42 @@ export function describeHost(host: Host): void {
       });
 
       const { watch: startWatch } = host;
-      it.skipIf(!startWatch)(
-        "in watch mode, after editing only a helper file, then only solidity.config.json",
-        async () => {
-          if (!startWatch) return;
+      if (startWatch)
+        it("in watch mode, after a helper edit, a solidity.config.json edit, and a helper edit made while stopped", async () => {
           project.restore();
-          const watch = await startWatch(project);
+          let watch = await startWatch(project);
+          const serves = async (want: string, after: string) =>
+            waitFor(
+              async () => ((await watch.served()) === want ? want : undefined),
+              `the host to serve the lens ${after}`,
+              watch.output,
+            );
+          /** Makes one edit, checks it changes what must be served, and returns what that is. */
+          const editAndExpect = async (file: string, from: string, to: string, before: string) => {
+            project.edit(file, from, to);
+            const after = (await expected()).served;
+            expect(after).not.toBe(before);
+            return after;
+          };
           try {
-            const serves = async (want: string, after: string) =>
-              waitFor(
-                async () => ((await watch.served()) === want ? want : undefined),
-                `the host to serve the lens ${after}`,
-                watch.output,
-              );
             const initial = (await expected()).served;
             await serves(initial, "as first built");
 
-            project.edit(HELPER, "return lensHelperProduct / d;", "return lensHelperProduct / d + 2n;");
-            const afterHelper = (await expected()).served;
-            expect(afterHelper).not.toBe(initial);
+            const afterHelper = await editAndExpect(HELPER, "/ d;", "/ d + 2n;", initial);
             await serves(afterHelper, "after the helper edit");
 
-            project.edit(CONFIG, '"enabled": true', '"enabled": false');
-            const afterConfig = (await expected()).served;
-            expect(afterConfig).not.toBe(afterHelper);
+            const afterConfig = await editAndExpect(CONFIG, '"enabled": true', '"enabled": false', afterHelper);
             await serves(afterConfig, "after the configuration edit");
+
+            // Whatever the host kept on disk while it ran must not outlive an edit it did not see.
+            await watch.stop();
+            const afterRestart = await editAndExpect(HELPER, "/ d + 2n;", "/ d + 3n;", afterConfig);
+            watch = await startWatch(project);
+            await serves(afterRestart, "after an edit made while it was stopped");
           } finally {
             await watch.stop();
           }
-        },
-      );
+        });
     });
 
     describe("reports what solc reports, at the TypeScript position", () => {
@@ -184,9 +192,10 @@ export function describeHost(host: Host): void {
       }
     });
 
-    it("has still run no application module, after every run above", () => {
+    it("after every run above: still no application module run, and no file touched but the ones edited here", () => {
       expect(project.importLog()).toBe("");
-      expect(fs.existsSync(project.file("imported.log"))).toBe(false);
+      expect(["src/lens.ts", HELPER, CONFIG]).toEqual(expect.arrayContaining(project.changedFiles()));
+      expect(IGNORED).toEqual(expect.arrayContaining(project.ignoredEntries()));
     });
   });
 }
