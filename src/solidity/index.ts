@@ -20,9 +20,9 @@ import type {
   DeploylessCall,
   Handle,
   Iface,
-  IfaceTag,
   Immutable,
   Immutables,
+  ImmutableType,
   ImmutableTypes,
   Impl,
   InArgs,
@@ -38,7 +38,6 @@ import type {
   SolType,
   StructClass,
   StructFields,
-  Token,
   Tokens,
 } from "./types.js";
 
@@ -207,9 +206,9 @@ export type bool = Types.bool;
 // ---- declarations ----------------------------------------------------------------------------------------
 /**
  * `class Position extends Struct({ … }) {}`: the class is the declaration, the type of a value inside
- * a body, and the Solidity name. `new Position()` is the zero value.
+ * a body, and the Solidity name. `new Position()` is the zero value. A struct has at least one field.
  */
-export function Struct<F extends StructFields>(_fields: F): StructClass<F> {
+export function Struct<F extends StructFields>(_fields: keyof F extends never ? never : F): StructClass<F> {
   return class {
     constructor() {
       bodyOnly<() => never>("new on a struct")();
@@ -247,8 +246,7 @@ export const internal = <S extends Sig>(
  * `const FEED = immutable(IPriceFeed)`: a module-level name that helpers and entry points both use. It is
  * listed once on the contract, which fixes its constructor position and its name in `with({ … })`.
  */
-// biome-ignore lint/suspicious/noExplicitAny: an immutable may hold an interface of any function set
-export const immutable = <T extends Token | IfaceTag<any>>(_type: T): Immutable<T> => Object.freeze({}) as Immutable<T>;
+export const immutable = <T extends ImmutableType>(_type: T): Immutable<T> => Object.freeze({}) as Immutable<T>;
 
 /** A library in the same Solidity file: `library('Name', { … }).implementation({ … })`. */
 export const library = <const N extends string, F extends Record<string, Sig>>(

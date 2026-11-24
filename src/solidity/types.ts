@@ -260,15 +260,15 @@ export interface Token<S extends Elementary = Elementary> {
   readonly [TYPE]: S;
 }
 export interface IntToken<S extends IntegerName> extends Token<S> {
-  /** Solidity's conversion, spelled the same: `uint64(block.timestamp)`. */
-  (value: bigint | number | bytes32): Bodies[S];
+  /** Solidity's conversion, spelled the same: `uint64(block.timestamp)`. An address converts to `uint160` only. */
+  (value: bigint | number | bytes32 | (S extends "uint160" ? address : never)): Bodies[S];
 }
 export interface AddressToken extends Token<"address"> {
   // biome-ignore lint/suspicious/noExplicitAny: any interface handle converts to an address
-  (value: bigint | number | address | Address | bytes32 | Handle<any>): address;
+  (value: bigint | number | address | Address | Handle<any>): address;
 }
 export interface Bytes32Token extends Token<"bytes32"> {
-  (value: bigint | number | Hex | address): bytes32;
+  (value: bigint | number | Hex): bytes32;
 }
 
 // ---- declarations ------------------------------------------------------------------------------------
@@ -363,10 +363,13 @@ export interface CallOptions {
 export type Handle<F extends Record<string, Sig>> = {
   readonly [K in keyof F]: (...args: InArgs<F[K]["inputs"]>) => Returned<F[K]["outputs"]>;
 };
-/** An interface value: call it on an address to get a handle; its members give selectors and calldata. */
+/**
+ * An interface value: call it on an address to get a handle; its members give selectors and calldata.
+ * Solidity converts a handle only to its own interface, so a handle of another interface goes through
+ * its address: `I(address(handle))`.
+ */
 export type Iface<F extends Record<string, Sig>> = IfaceTag<F> &
-  // biome-ignore lint/suspicious/noExplicitAny: any interface handle converts to another interface
-  ((at: address | Address | Handle<any>, options?: CallOptions) => Handle<F>) & {
+  ((at: address | Address | Handle<F>, options?: CallOptions) => Handle<F>) & {
     readonly [K in keyof F]: { readonly selector: bytes4; encode(...args: InArgs<F[K]["inputs"]>): bytes };
   };
 
@@ -410,11 +413,12 @@ export type AbiOf<Fns extends Record<string, Sig>> = readonly {
 export type Impl<F extends Record<string, Sig>> = {
   [K in keyof F]: (...args: OutArgs<F[K]["inputs"]>) => Returns<F[K]["outputs"]>;
 };
+/** What an immutable may hold: a value type. Solidity has no immutable `bytes` or `string`. */
+// biome-ignore lint/suspicious/noExplicitAny: an immutable may hold an interface of any function set
+export type ImmutableType = Token<Exclude<Elementary, "bytes" | "string">> | IfaceTag<any>;
 /** What `immutable(T)` returns: a value of T inside bodies, carrying its declaration for `contract`. */
-// biome-ignore lint/suspicious/noExplicitAny: an immutable may hold an interface of any function set
-export type Immutable<T extends Token | IfaceTag<any>> = Out<T> & { readonly [IMMUTABLE]: T };
-// biome-ignore lint/suspicious/noExplicitAny: an immutable may hold an interface of any function set
-export type Immutables = Record<string, { readonly [IMMUTABLE]: Token | IfaceTag<any> }>;
+export type Immutable<T extends ImmutableType> = Out<T> & { readonly [IMMUTABLE]: T };
+export type Immutables = Record<string, { readonly [IMMUTABLE]: ImmutableType }>;
 export type ImmutableTypes<Im extends Immutables> = { readonly [K in keyof Im]: Im[K][typeof IMMUTABLE] };
 export type Library<F extends Record<string, Sig>> = Handle<F> & { readonly kind: "library" };
 
@@ -427,9 +431,7 @@ export type ImmutableValue<T> =
         ? boolean
         : S extends "address"
           ? Address
-          : S extends "string"
-            ? string
-            : Hex
+          : Hex
     : Address;
 /** The shape viem's deployless calls take, and viem-dlc's lens reader passes on. */
 export interface DeploylessCall<A> {

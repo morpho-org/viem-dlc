@@ -8,6 +8,7 @@ import {
   assembly,
   block,
   bool,
+  bytes,
   bytes32,
   codeSize,
   contract,
@@ -22,9 +23,11 @@ import {
   revert,
   Struct,
   staticcall,
+  string,
   uint8,
   uint64,
   uint128,
+  uint160,
   uint256,
   view,
 } from "@morpho-org/viem-dlc/solidity";
@@ -63,6 +66,10 @@ const QUOTE_DECIMALS = immutable(uint8);
 // ---- helpers: expression bodies, loops and locals -------------------------------------------------------------
 const mulDiv = internal(pure(uint256, uint256, uint256).returns(uint256), (x, y, d) => (x * y) / d);
 const min = internal(pure(uint256, uint256).returns(uint256), (a, b) => (a < b ? a : b));
+
+// An address and a bytes32 convert through the integers, as in Solidity.
+const toWord = internal(pure(address).returns(bytes32), (account) => bytes32(uint256(uint160(account))));
+const toAccount = internal(pure(bytes32).returns(address), (word) => address(uint160(uint256(word))));
 
 const log2 = internal(pure(uint256).returns(uint256), (x) => {
   let n = 0n;
@@ -184,7 +191,7 @@ export const PriceBoard = contract(
     const supply = IERC20(token, { gas: gasleft() / 2n }).totalSupply();
     // A low-level read: the success flag and the returned bytes.
     const [ok, data] = staticcall(token, abi.encode(holder), { gas: 30000n });
-    if (!ok || keccak256(data) === pairId(token, 0n)) revert();
+    if (!ok || keccak256(data) === pairId(token, 0n) || toAccount(toWord(holder)) !== holder) revert();
     // A struct is built from all its fields, or as its zero value and then assigned.
     return new Holding({
       holder,
@@ -205,6 +212,12 @@ class Point extends Struct({ x: uint256, y: uint256 }) {}
 const pointNorm = internal(pure(Point).returns(uint256), (p) => p.x + p.y);
 // @ts-expect-error an array type names one element type, in a struct as anywhere
 export class Pairs extends Struct({ pairs: [address, uint256] }) {}
+// @ts-expect-error a struct has at least one field
+export class Nothing extends Struct({}) {}
+// @ts-expect-error an immutable holds a value type, and a string is not one
+export const NAME = immutable(string);
+// @ts-expect-error an immutable holds a value type, and bytes is not one
+export const TAG = immutable(bytes);
 export const refused = internal(view(Query).returns(uint256), (q) => {
   const board = new Board();
   // @ts-expect-error a uint256 is not a uint64 without a conversion
@@ -225,6 +238,8 @@ export const refused = internal(view(Query).returns(uint256), (q) => {
   array([address, uint256], 2n);
   // @ts-expect-error the options of a call name its gas
   IERC20(q.token, {}).totalSupply();
+  // @ts-expect-error a handle converts only to its own interface: IERC20(address(FEED))
+  IERC20(FEED);
   // @ts-expect-error a low-level call is made on an address: address(FEED)
   staticcall(FEED, "0x");
   // @ts-expect-error only an address has code: address(FEED)
