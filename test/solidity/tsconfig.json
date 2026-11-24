@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["node"],
+    // The Node-hook fixture is run by Node itself, which wants the extension it finds on disk.
+    "allowImportingTsExtensions": true,
+    // Lens modules import the package by name, as a consumer does; here the name is the source.
+    "paths": {
+      "@morpho-org/viem-dlc/solidity": ["../../src/solidity/index.ts"],
+      "@morpho-org/viem-dlc/solidity/yul": ["../../src/solidity/yul.ts"],
+      "@morpho-org/viem-dlc/solidity/build": ["../../src/solidity/build/index.ts"],
+      "@morpho-org/viem-dlc/solidity/vite": ["../../src/solidity/build/adapters/vite.ts"]
+    }
+  },
+  "include": ["."]
+}
