@@ -26,22 +26,24 @@
  * contract with its immutables, its entry points in declared order, and its helpers. Each kind is in the
  * order of {@link ResolvedLens.declarations}.
  *
- * This version prints what the first vertical slice needs. A construct the design defines and this file
- * does not print yet stops the build through `notImplemented`; a construct no lens may contain stops it
- * through `fail`.
+ * A construct no lens may contain stops the build through `fail`, at its TypeScript position. Typed Yul
+ * is the one construct this file does not print yet: `assembly(…)` stops the build through `notImplemented`.
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, is, keyName, unwrap } from "./ast.js";
+import { type AnyNode, children, is, keyName, unwrap } from "./ast.js";
 import { isElementaryTypeName } from "./builtins.js";
 import { fail, notImplemented } from "./errors.js";
 import { Writer } from "./position-map.js";
 import type {
   ConstantDeclaration,
+  InterfaceDeclaration,
+  LibraryDeclaration,
   PrintedLens,
   Reference,
   ResolvedFunction,
   ResolvedLens,
+  ResolvedSignature,
   SourceModule,
   StructDeclaration,
   TypeRef,
@@ -91,6 +93,27 @@ const ERASED_STATEMENTS = new Set(["EmptyStatement", "TSTypeAliasDeclaration", "
 const UINT256: TypeRef = { kind: "elementary", name: "uint256" };
 const BOOL: TypeRef = { kind: "elementary", name: "bool" };
 const STRING: TypeRef = { kind: "elementary", name: "string" };
+const BYTES: TypeRef = { kind: "elementary", name: "bytes" };
+const BYTES4: TypeRef = { kind: "elementary", name: "bytes4" };
+const BYTES32: TypeRef = { kind: "elementary", name: "bytes32" };
+
+/** Built-ins that are called in Solidity exactly as they are written. */
+const SAME_CALL = new Set(["require", "revert", "gasleft", "keccak256"]);
+/** The return types the package's built-in functions declare. */
+const BUILTIN_OUTPUTS: ReadonlyMap<string, readonly TypeRef[]> = new Map([
+  ["gasleft", [UINT256]],
+  ["keccak256", [BYTES32]],
+  ["codeSize", [UINT256]],
+  ["staticcall", [BOOL, BYTES]],
+]);
+
+const THIS = "in a lens, this only calls an entry point: this.f(…)";
+const INTERFACE_MEMBER =
+  "an interface is used as I(address) for a handle, I.f.selector for a selector, or I.f.encode(…) for calldata";
+const HANDLE =
+  "a handle is written I(address). The options of a call are written where the call is made: I(address, { gas: … }).f(…)";
+const TRY =
+  "the block of a try holds one external call, bare or assigned: try { x = feed.f(a) } catch { … }, with no finally";
 const ADDRESS: TypeRef = { kind: "elementary", name: "address" };
 
 /** `'0x…'` with 40 hexadecimal digits is an address literal, and with any other even number a hex literal. */
@@ -113,6 +136,10 @@ const isReferenceType = (type: TypeRef): boolean =>
 const located = (type: TypeRef, location: "memory" | "calldata"): string =>
   isReferenceType(type) ? `${typeName(type)} ${location}` : typeName(type);
 
+/** The `returns (…)` of a signature, or nothing when it returns nothing. A return value is `memory`. */
+const returns = (signature: ResolvedSignature): string =>
+  signature.outputs.length ? ` returns (${signature.outputs.map((type) => located(type, "memory")).join(", ")})` : "";
+
 class Printer {
   readonly #lens: ResolvedLens;
   readonly #out = new Writer();
@@ -120,6 +147,8 @@ class Printer {
   #module: SourceModule;
   /** The locals in scope, innermost last, each with the type it was declared with. */
   #scopes: Map<string, TypeRef>[] = [];
+  /** True while a library's functions are printed: they are outside the contract, and cannot reach into it. */
+  #inLibrary = false;
 
   constructor(lens: ResolvedLens) {
     this.#lens = lens;
@@ -130,14 +159,9 @@ class Printer {
     const out = this.#out;
     const { declarations } = this.#lens;
     out.write(SOLIDITY_HEADER);
-    for (const declaration of declarations) {
-      if (declaration.kind === "struct") this.#struct(declaration);
-      else if (declaration.kind === "interface")
-        notImplemented(declaration.module, declaration.node, "an interface declaration");
-      else if (declaration.kind === "library")
-        notImplemented(declaration.module, declaration.node, "a library declaration");
-      else if (declaration.kind === "immutable") notImplemented(declaration.module, declaration.node, "an immutable");
-    }
+    for (const declaration of declarations) if (declaration.kind === "struct") this.#struct(declaration);
+    for (const declaration of declarations) if (declaration.kind === "interface") this.#interface(declaration);
+    for (const declaration of declarations) if (declaration.kind === "library") this.#library(declaration);
     out.line();
     out.node({ module: this.#lens.module, node: this.#lens.site.node }, () => {
       out.write(`contract ${this.#lens.name} {`);
@@ -148,6 +172,10 @@ class Printer {
           first = false;
           out.line();
         };
+        if (this.#lens.immutables.length) {
+          separate();
+          this.#immutables();
+        }
         for (const entry of this.#lens.entries) {
           separate();
           this.#function(entry, "external");
@@ -183,6 +211,87 @@ class Printer {
     out.write("\n");
   }
 
+  /** An interface: its functions as declared, with unnamed parameters. Every one is `view` or `pure`. */
+  #interface(declaration: InterfaceDeclaration): void {
+    const out = this.#out;
+    out.line();
+    out.node({ module: declaration.module, node: declaration.node }, () => {
+      out.write(`interface ${declaration.name} {`);
+      out.indented(() => {
+        for (const { name, signature } of declaration.functions) {
+          out.line();
+          out.node(signature.origin, () => {
+            const inputs = signature.inputs.map((type) => located(type, "calldata")).join(", ");
+            out.write(`function ${name}(${inputs}) external ${signature.mutability}${returns(signature)};`);
+          });
+        }
+      });
+      out.line();
+      out.write("}");
+    });
+    out.write("\n");
+  }
+
+  /** A library in the same file. Its functions are internal, so a call to one is a jump and not a call. */
+  #library(library: LibraryDeclaration): void {
+    const out = this.#out;
+    out.line();
+    out.node({ module: library.module, node: library.node }, () => {
+      out.write(`library ${library.name} {`);
+      this.#inLibrary = true;
+      out.indented(() => {
+        for (const [index, fn] of library.functions.entries()) {
+          if (index) out.write("\n");
+          out.line();
+          this.#function(fn, "internal");
+        }
+      });
+      this.#inLibrary = false;
+      out.line();
+      out.write("}");
+    });
+    out.write("\n");
+  }
+
+  /**
+   * The immutables and the constructor that sets them, in the order the contract lists them. A constructor
+   * parameter is its immutable's name followed by `_`, repeated until no declaration of the lens has that name.
+   */
+  #immutables(): void {
+    const out = this.#out;
+    const taken = new Set([
+      this.#lens.name,
+      ...this.#lens.entries.map((entry) => entry.name),
+      ...this.#lens.declarations.map((declaration) => declaration.name),
+    ]);
+    const immutables = this.#lens.immutables.map(({ declaration }) => {
+      let parameter = `${declaration.name}_`;
+      while (taken.has(parameter)) parameter += "_";
+      taken.add(parameter);
+      return { declaration, parameter, origin: { module: declaration.module, node: declaration.node } };
+    });
+    for (const [index, { declaration, origin }] of immutables.entries()) {
+      if (index) out.line();
+      out.node(origin, () => out.write(`${typeName(declaration.type)} immutable ${declaration.name};`));
+    }
+    out.write("\n");
+    out.line();
+    out.write("constructor(");
+    for (const [index, { declaration, parameter, origin }] of immutables.entries()) {
+      if (index) out.write(", ");
+      out.node(origin, () => out.write(`${located(declaration.type, "memory")} ${parameter}`));
+    }
+    out.write(") {");
+    out.indented(() => {
+      for (const { declaration, parameter, origin } of immutables) {
+        out.line();
+        out.node(origin, () => out.write(`${declaration.name} = ${parameter};`));
+      }
+    });
+    out.line();
+    out.write("}");
+  }
+
   #function(fn: ResolvedFunction, visibility: "external" | "internal"): void {
     const out = this.#out;
     const { signature, body } = fn;
@@ -206,10 +315,7 @@ class Printer {
         );
         this.#declare(parameter.name, type);
       }
-      out.write(`) ${visibility} ${signature.mutability}`);
-      if (signature.outputs.length)
-        out.write(` returns (${signature.outputs.map((type) => located(type, "memory")).join(", ")})`);
-      out.write(" {");
+      out.write(`) ${visibility} ${signature.mutability}${returns(signature)} {`);
       out.indented(() => {
         const block = body.body as AnyNode | null;
         if (!block) this.#fail(body, "a lens function needs a body");
@@ -284,7 +390,7 @@ class Printer {
           out.write(node.type === "BreakStatement" ? "break;" : "continue;");
           return;
         case "TryStatement":
-          notImplemented(this.#module, node, "try/catch");
+          this.#try(node);
           return;
         default:
           this.#fail(node, `a lens body cannot contain this statement (${node.type})`);
@@ -397,6 +503,70 @@ class Printer {
     out.write("}");
   }
 
+  /**
+   * `try { x = feed.f(a) } catch { … }` is `try feed.f(a) returns (T r) { x = r; } catch { … }`: Solidity's
+   * try takes one external call, so the block holds exactly one, bare or assigned. T is the type the called
+   * function declares. The returned value is named `r`, with `_` appended while the assigned target names an
+   * `r` of its own.
+   */
+  #try(node: AnyNode): void {
+    const out = this.#out;
+    const handler = node.handler as AnyNode | null;
+    if (!handler || node.finalizer) this.#fail(node, TRY);
+    if (handler.param) this.#fail(handler.param as Span, "catch binds nothing in a lens: write catch { … }");
+    const block = node.block as AnyNode;
+    const statements = (block.body as AnyNode[]).filter((statement) => !ERASED_STATEMENTS.has(statement.type));
+    const [statement] = statements;
+    const expression =
+      statements.length === 1 && is(statement, "ExpressionStatement") ? this.#strip(statement.expression) : undefined;
+    const assignment = is(expression, "AssignmentExpression") ? expression : undefined;
+    const call = assignment ? this.#strip(assignment.right) : expression;
+    if (!call || !this.#isExternalCall(call) || (assignment && assignment.operator !== "=")) this.#fail(block, TRY);
+    out.write("try ");
+    this.#expression(call);
+    if (assignment) {
+      const target = unwrap(assignment.left);
+      const [type, ...rest] = this.#outputs(call) ?? [];
+      if (!type || rest.length)
+        this.#fail(
+          call,
+          "a try assigns the one value its call returns, so the call must be to a declared function with exactly one return value",
+        );
+      const names = new Set<string>();
+      const collect = (part: AnyNode): void => {
+        if (is(part, "Identifier")) names.add(part.name);
+        else if (is(part, "MemberExpression") && !part.computed) collect(part.object as AnyNode);
+        else for (const child of children(part)) collect(child);
+      };
+      collect(target);
+      let returned = "r";
+      while (names.has(returned)) returned += "_";
+      out.write(` returns (${located(type, "memory")} ${returned}) {`);
+      out.indented(() => {
+        out.line();
+        out.node({ module: this.#module, node: assignment }, () => {
+          this.#expression(target, true);
+          out.write(` = ${returned};`);
+        });
+      });
+    } else out.write(" {");
+    out.line();
+    out.write("} catch ");
+    this.#block(handler.body as AnyNode);
+  }
+
+  /** True for a call that leaves the contract: through a handle, or through `this`. */
+  #isExternalCall(node: AnyNode): boolean {
+    if (!is(node, "CallExpression")) return false;
+    const callee = unwrap(node.callee);
+    if (!is(callee, "MemberExpression") || callee.computed || this.#lens.references.has(callee)) return false;
+    const object = this.#strip(callee.object);
+    if (is(object, "ThisExpression")) return true;
+    if (this.#interfaceFunction(object)) return false;
+    const named = this.#lens.references.get(object);
+    return !(named?.kind === "builtin" || (named?.kind === "declaration" && named.declaration.kind === "library"));
+  }
+
   /** `const x = e` and `let x = e`: `T x = e;`, with T copied from the initializer. */
   #locals(node: AnyNode): void {
     const out = this.#out;
@@ -496,11 +666,18 @@ class Printer {
       return undefined;
     }
     if (is(node, "MemberExpression")) {
-      const object = this.#declaredType(this.#strip(node.object));
-      if (node.computed) return object?.kind === "array" ? object.element : undefined;
-      if (object?.kind === "array") return node.property.name === "length" ? UINT256 : undefined;
+      const inner = this.#strip(node.object);
+      if (node.computed) {
+        const indexed = this.#declaredType(inner);
+        return indexed?.kind === "array" ? indexed.element : undefined;
+      }
+      const { name } = node.property;
+      if (this.#isBuiltin(inner, "block")) return name === "timestamp" || name === "number" ? UINT256 : undefined;
+      if (this.#interfaceFunction(inner)) return name === "selector" ? BYTES4 : undefined;
+      const object = this.#declaredType(inner);
+      if (object?.kind === "array") return name === "length" ? UINT256 : undefined;
       if (object?.kind !== "struct") return undefined;
-      return object.declaration.fields.find((field) => field.name === node.property.name)?.type;
+      return object.declaration.fields.find((field) => field.name === name)?.type;
     }
     if (is(node, "CallExpression")) {
       const [output, ...rest] = this.#outputs(node) ?? [];
@@ -514,17 +691,68 @@ class Printer {
   }
 
   /**
-   * The return types a call declares in the source, or undefined when it declares none there. A
-   * conversion returns the type it names, and `array(T, n)` an array of `T`.
+   * The one answer to "what types does this call return", read from the declaration of what is called:
+   * a helper, a library function, an interface function, an entry point through `this`, or a built-in.
+   * A conversion returns the type it names, `array(T, n)` an array of `T`, and `abi.decode` the types it
+   * lists. Undefined where the source declares none.
    */
   #outputs(node: AnyNode): readonly TypeRef[] | undefined {
-    const callee = this.#lens.references.get(unwrap(node.callee as Span));
-    if (callee?.kind === "declaration")
-      return callee.declaration.kind === "helper" ? callee.declaration.signature.outputs : undefined;
-    if (callee?.module !== "solidity") return undefined;
-    if (isElementaryTypeName(callee.name)) return [{ kind: "elementary", name: callee.name }];
-    if (callee.name === "array") return [{ kind: "array", element: this.#arrayOf(node).element }];
-    return undefined;
+    const callee = unwrap(node.callee as Span);
+    const reference = this.#lens.references.get(callee);
+    if (reference?.kind === "declaration") {
+      const { declaration } = reference;
+      if (declaration.kind === "helper") return declaration.signature.outputs;
+      return declaration.kind === "interface" ? [{ kind: "interface", declaration }] : undefined;
+    }
+    if (reference) {
+      if (reference.module !== "solidity") return undefined;
+      if (isElementaryTypeName(reference.name)) return [{ kind: "elementary", name: reference.name }];
+      if (reference.name === "array") return [{ kind: "array", element: this.#arrayOf(node).element }];
+      return BUILTIN_OUTPUTS.get(reference.name);
+    }
+    if (!is(callee, "MemberExpression") || callee.computed) return undefined;
+    const object = this.#strip(callee.object);
+    const { name } = callee.property;
+    const declared = (functions: readonly { name: string; signature: ResolvedSignature }[], owner: string) =>
+      functions.find((fn) => fn.name === name)?.signature.outputs ??
+      this.#fail(callee, `${owner} declares no function "${name}"`);
+    if (is(object, "ThisExpression")) return declared(this.#lens.entries, `contract ${this.#lens.name}`);
+    const named = this.#lens.references.get(object);
+    if (named?.kind === "declaration" && named.declaration.kind === "library")
+      return declared(named.declaration.functions, `library ${named.declaration.name}`);
+    if (this.#isBuiltin(object, "abi")) {
+      if (name === "encode") return [BYTES];
+      const list = name === "decode" ? (node.arguments as Span[])[1] : undefined;
+      const types = list && unwrap(list);
+      return is(types, "ArrayExpression") ? this.#types(types) : undefined;
+    }
+    if (this.#interfaceFunction(object)) return name === "encode" ? [BYTES] : undefined;
+    const receiver = this.#declaredType(object);
+    return receiver?.kind === "interface"
+      ? declared(receiver.declaration.functions, `interface ${receiver.declaration.name}`)
+      : undefined;
+  }
+
+  /** True when a node names the package's built-in `name`. */
+  #isBuiltin(node: AnyNode, name: string): boolean {
+    const reference = this.#lens.references.get(node);
+    return reference?.kind === "builtin" && reference.module === "solidity" && reference.name === name;
+  }
+
+  /** `I.f`, where I is an interface: the function a selector or an encoded call names. */
+  #interfaceFunction(node: AnyNode): { interface: InterfaceDeclaration; name: string } | undefined {
+    if (!is(node, "MemberExpression") || node.computed) return undefined;
+    const reference = this.#lens.references.get(this.#strip(node.object));
+    return reference?.kind === "declaration" && reference.declaration.kind === "interface"
+      ? { interface: reference.declaration, name: node.property.name }
+      : undefined;
+  }
+
+  /** The types an array literal lists, as `abi.decode` names what it reads: `[uint128, address]`. */
+  #types(list: AnyNode): TypeRef[] {
+    return (list.elements as (Span | null)[]).map((element) =>
+      element ? this.#namedType(element) : this.#fail(list, "a list of types has no holes"),
+    );
   }
 
   /** The parts of `array(T, n)`: the element type it names, and its length. */
@@ -618,11 +846,24 @@ class Printer {
           out.write("]");
           return;
         }
-        if (is(node.object as AnyNode, "ThisExpression")) notImplemented(this.#module, node, "this");
+        const object = this.#strip(node.object as Span);
+        if (is(object, "ThisExpression")) this.#fail(node, THIS);
         const property = (node.property as { name: string }).name;
-        const object = this.#lens.references.get(unwrap(node.object as Span));
-        if (object?.kind === "builtin") notImplemented(this.#module, node, `${object.name}.${property}`);
-        this.#expression(node.object as Span, true);
+        const named = this.#lens.references.get(object);
+        if (named?.kind === "builtin") {
+          if (!this.#isBuiltin(object, "block") || (property !== "timestamp" && property !== "number"))
+            this.#fail(node, `a lens cannot read ${named.name}.${property}`);
+          out.write(`block.${property}`);
+          return;
+        }
+        // `I.f.selector`. An interface or one of its functions means nothing else as a value.
+        const fn = this.#interfaceFunction(object);
+        if (fn || this.#interfaceFunction(node)) {
+          if (!fn || property !== "selector") this.#fail(node, INTERFACE_MEMBER);
+          out.write(`${fn.interface.name}.${fn.name}.selector`);
+          return;
+        }
+        this.#expression(object, true);
         out.write(`.${property}`);
         return;
       }
@@ -680,7 +921,7 @@ class Printer {
         this.#structLiteral(node);
         return;
       case "ThisExpression":
-        notImplemented(this.#module, node, "this");
+        this.#fail(node, THIS);
         return;
       case "Identifier":
         this.#fail(node, `"${node.name}" is used before it is declared`);
@@ -718,10 +959,18 @@ class Printer {
   #named(node: AnyNode, reference: Reference): void {
     if (reference.kind === "builtin" && reference.module === "global")
       this.#fail(node, `${reference.name} is written as a call: ${reference.name}(x), which prints as x`);
-    if (reference.kind === "builtin") notImplemented(this.#module, node, `${reference.name} as a value`);
+    if (reference.kind === "builtin") this.#fail(node, `"${reference.name}" cannot be used as a value here`);
     const { declaration } = reference;
     if (declaration.kind === "constant") this.#constant(declaration);
-    else if (declaration.kind === "immutable") this.#out.write(declaration.name);
+    else if (declaration.kind === "immutable") {
+      if (this.#inLibrary) this.#outsideLibrary(node, declaration.name);
+      if (!this.#lens.immutables.some((listed) => listed.declaration === declaration))
+        this.#fail(
+          node,
+          `"${declaration.name}" is not listed in the immutables of ${this.#lens.name}: contract(name, functions, { immutables: { ${declaration.name} } })`,
+        );
+      this.#out.write(declaration.name);
+    } else if (declaration.kind === "interface") this.#fail(node, INTERFACE_MEMBER);
     else this.#fail(node, `"${declaration.name}" is a ${declaration.kind} and cannot be used as a value here`);
   }
 
@@ -740,39 +989,173 @@ class Printer {
   #call(node: AnyNode): void {
     const out = this.#out;
     const callee = unwrap(node.callee as Span);
+    const args = node.arguments as AnyNode[];
     const reference = this.#lens.references.get(callee);
-    if (reference?.kind === "builtin" && reference.module === "solidity" && reference.name === "array") {
+    // `array(T, n)` is `new T[](n)`.
+    if (this.#isBuiltin(callee, "array")) {
       const { element, length } = this.#arrayOf(node);
       out.write(`new ${typeName(element)}[](`);
       this.#expression(length);
       out.write(")");
       return;
     }
-    // A helper is called by its name. A type name called is Solidity's conversion, and require and
-    // revert are spelled the same.
-    const name =
-      reference?.kind === "declaration"
-        ? reference.declaration.kind === "helper"
-          ? reference.declaration.name
-          : notImplemented(this.#module, node, `calling a ${reference.declaration.kind}`)
-        : reference?.module === "solidity" &&
-            (isElementaryTypeName(reference.name) || reference.name === "require" || reference.name === "revert")
-          ? reference.name
-          : reference
-            ? notImplemented(this.#module, node, `${reference.name}(…)`)
-            : is(callee, "MemberExpression")
-              ? notImplemented(this.#module, node, "a call through an interface, a library or this")
-              : this.#fail(
-                  node,
-                  "a lens body can call helpers, interface functions, library functions and the package's built-ins",
-                );
-    out.write(`${name}(`);
-    for (const [index, argument] of (node.arguments as AnyNode[]).entries()) {
+    for (const argument of args)
       if (is(argument, "SpreadElement")) this.#fail(argument, "a call cannot spread its arguments");
+
+    if (reference?.kind === "declaration") {
+      // A helper is called by its name, and an interface called on an address is the conversion to a handle.
+      const { declaration } = reference;
+      if (declaration.kind === "interface") {
+        if (args.length !== 1) this.#fail(node, HANDLE);
+      } else if (declaration.kind !== "helper")
+        this.#fail(
+          node,
+          `"${declaration.name}" is ${declaration.kind === "immutable" ? "an" : "a"} ${declaration.kind} and cannot be called`,
+        );
+      else if (this.#inLibrary) this.#outsideLibrary(node, declaration.name);
+      out.write(declaration.name);
+      this.#arguments(args);
+      return;
+    }
+    if (reference) {
+      const { name } = reference;
+      // A type name called is Solidity's conversion; require, revert, gasleft and keccak256 are spelled the same.
+      if (reference.module === "solidity" && (isElementaryTypeName(name) || SAME_CALL.has(name))) {
+        out.write(name);
+        this.#arguments(args);
+        return;
+      }
+      if (this.#isBuiltin(callee, "staticcall")) {
+        const [target, data, options] = args;
+        if (!target || !data || args.length > 3)
+          this.#fail(node, "staticcall takes the target, the calldata and, optionally, { gas: … }");
+        this.#expression(target, true);
+        out.write(".staticcall");
+        if (options) this.#options(options);
+        out.write("(");
+        this.#expression(data);
+        out.write(")");
+        return;
+      }
+      if (this.#isBuiltin(callee, "codeSize")) {
+        const [account] = args;
+        if (!account || args.length !== 1) this.#fail(node, "codeSize takes one account");
+        this.#expression(account, true);
+        out.write(".code.length");
+        return;
+      }
+      if (name === "assembly") notImplemented(this.#module, node, "assembly(…)");
+      this.#fail(node, `a lens body cannot call ${name}`);
+    }
+
+    if (!is(callee, "MemberExpression") || callee.computed)
+      this.#fail(
+        node,
+        "a lens body can call helpers, interface functions, library functions and the package's built-ins",
+      );
+    const object = this.#strip(callee.object);
+    const { name } = callee.property;
+    if (is(object, "ThisExpression")) {
+      out.write(`this.${name}`);
+      this.#arguments(args);
+      return;
+    }
+    const named = this.#lens.references.get(object);
+    if (named?.kind === "declaration" && named.declaration.kind === "library") {
+      out.write(`${named.declaration.name}.${name}`);
+      this.#arguments(args);
+      return;
+    }
+    if (named?.kind === "builtin") {
+      if (!this.#isBuiltin(object, "abi") || (name !== "encode" && name !== "decode"))
+        this.#fail(node, `a lens cannot call ${named.name}.${name}`);
+      if (name === "encode") {
+        out.write("abi.encode");
+        this.#arguments(args);
+        return;
+      }
+      // `abi.decode(data, [uint128, uint128])` is `abi.decode(data, (uint128, uint128))`.
+      const [data, list] = args;
+      const types = list && unwrap(list);
+      if (!data || !is(types, "ArrayExpression") || args.length !== 2)
+        this.#fail(
+          node,
+          "abi.decode takes the data and the types to read, listed in place: abi.decode(data, [uint256])",
+        );
+      out.write("abi.decode(");
+      this.#expression(data);
+      out.write(", ");
+      out.node({ module: this.#module, node: types }, () =>
+        out.write(`(${this.#types(types).map(typeName).join(", ")})`),
+      );
+      out.write(")");
+      return;
+    }
+    const fn = this.#interfaceFunction(object);
+    if (fn) {
+      // `I.f.encode(a, b)` is `abi.encodeCall(I.f, (a, b))`.
+      if (name !== "encode") this.#fail(node, INTERFACE_MEMBER);
+      out.write(`abi.encodeCall(${fn.interface.name}.${fn.name}, `);
+      this.#arguments(args);
+      out.write(")");
+      return;
+    }
+    // A call through a handle. Gas given where the handle is made is printed where Solidity takes it, after
+    // the function's name: `I(a, { gas: g }).f(x)` is `I(a).f{gas: g}(x)`.
+    const made = is(object, "CallExpression") ? this.#lens.references.get(unwrap(object.callee)) : undefined;
+    const [address, options, ...rest] = is(object, "CallExpression") ? (object.arguments as AnyNode[]) : [];
+    if (made?.kind === "declaration" && made.declaration.kind === "interface" && address && options && !rest.length) {
+      out.node({ module: this.#module, node: object }, () => {
+        out.write(`${made.declaration.name}(`);
+        this.#expression(address);
+        out.write(")");
+      });
+      out.write(`.${name}`);
+      this.#options(options);
+    } else {
+      this.#expression(object, true);
+      out.write(`.${name}`);
+    }
+    this.#arguments(args);
+  }
+
+  #arguments(args: readonly AnyNode[]): void {
+    const out = this.#out;
+    out.write("(");
+    for (const [index, argument] of args.entries()) {
       if (index) out.write(", ");
       this.#expression(argument);
     }
     out.write(")");
+  }
+
+  /** `{ gas: g }`, the one option a call has, printed between the function and its arguments: `{gas: g}`. */
+  #options(raw: Span): void {
+    const out = this.#out;
+    const node = unwrap(raw);
+    const [property, ...rest] = is(node, "ObjectExpression") ? node.properties : [];
+    if (
+      !is(property, "Property") ||
+      rest.length ||
+      property.computed ||
+      property.method ||
+      property.kind !== "init" ||
+      keyName(property.key) !== "gas"
+    )
+      this.#fail(node, "the options of a call are written { gas: … }");
+    out.node({ module: this.#module, node: property }, () => {
+      out.write("{gas: ");
+      this.#expression(property.value);
+      out.write("}");
+    });
+  }
+
+  /** A library is printed outside the contract, where the contract's helpers and immutables do not exist. */
+  #outsideLibrary(node: Span, name: string): never {
+    return this.#fail(
+      node,
+      `a library function cannot use "${name}": a helper declared with internal(…) and an immutable belong to the contract. A library can use its own functions and other libraries`,
+    );
   }
 
   /** Respells a literal. This is spelling, not arithmetic: no value is computed. */
