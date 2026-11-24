@@ -1,0 +1,58 @@
+/**
+ * Located errors. Everything the transform refuses, and everything solc refuses, reaches the author as
+ * a file, a line and a column of TypeScript.
+ */
+import type { Span } from "oxc-parser";
+
+import type { LensDiagnostic, SourceModule, SourcePosition } from "./types.js";
+
+/** The 1-based line and column of an offset into a module's text. */
+export const positionOf = (module: SourceModule, offset: number): SourcePosition => {
+  const { lineStarts } = module;
+  let low = 0;
+  let high = lineStarts.length - 1;
+  while (low < high) {
+    const mid = (low + high + 1) >> 1;
+    if ((lineStarts[mid] ?? 0) <= offset) low = mid;
+    else high = mid - 1;
+  }
+  return { file: module.file, line: low + 1, column: offset - (lineStarts[low] ?? 0) + 1 };
+};
+
+/** `lens.ts:41:17 - error: Type uint256 is not implicitly convertible to expected type uint128.` */
+export const formatDiagnostic = (diagnostic: LensDiagnostic): string =>
+  `${diagnostic.file}:${diagnostic.line}:${diagnostic.column} - ${diagnostic.severity}: ${diagnostic.message}`;
+
+/** Thrown by every stage. An adapter reports `diagnostics` through its host's own error channel. */
+export class LensError extends Error {
+  override readonly name = "LensError";
+  readonly diagnostics: readonly LensDiagnostic[];
+
+  constructor(diagnostics: readonly LensDiagnostic[]) {
+    super(diagnostics.map(formatDiagnostic).join("\n"));
+    this.diagnostics = diagnostics;
+  }
+}
+
+/** Builds a transform diagnostic at a node. */
+export const diagnosticAt = (module: SourceModule, node: Span, message: string, lens?: string): LensDiagnostic => ({
+  ...positionOf(module, node.start),
+  severity: "error",
+  source: "transform",
+  message,
+  ...(lens === undefined ? {} : { lens }),
+});
+
+/** Stops the build with one error at a node. */
+export function fail(module: SourceModule, node: Span, message: string, lens?: string): never {
+  throw new LensError([diagnosticAt(module, node, message, lens)]);
+}
+
+/**
+ * Stops the build at a construct the design defines but this version does not print yet. Distinct from
+ * {@link fail}, which is for what a lens may never contain: search for `notImplemented(` to find the
+ * work that is left.
+ */
+export function notImplemented(module: SourceModule, node: Span, what: string): never {
+  return fail(module, node, `${what} is not implemented yet in @morpho-org/viem-dlc/solidity.`);
+}

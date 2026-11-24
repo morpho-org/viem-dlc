@@ -8,7 +8,8 @@
     "cache",
     "eth_getLogs",
     "deployless",
-    "lens"
+    "lens",
+    "solidity"
   ],
   "author": "Morpho Association <contact@morpho.org>",
   "contributors": [
@@ -36,6 +37,41 @@
       "types": "./dist/chains/index.d.ts",
       "import": "./dist/chains/index.js",
       "default": "./dist/chains/index.js"
+    },
+    "./solidity": {
+      "types": "./dist/solidity/index.d.ts",
+      "import": "./dist/solidity/index.js",
+      "default": "./dist/solidity/index.js"
+    },
+    "./solidity/yul": {
+      "types": "./dist/solidity/yul.d.ts",
+      "import": "./dist/solidity/yul.js",
+      "default": "./dist/solidity/yul.js"
+    },
+    "./solidity/build": {
+      "types": "./dist/solidity/build/index.d.ts",
+      "import": "./dist/solidity/build/index.js",
+      "default": "./dist/solidity/build/index.js"
+    },
+    "./solidity/vite": {
+      "types": "./dist/solidity/build/adapters/vite.d.ts",
+      "import": "./dist/solidity/build/adapters/vite.js",
+      "default": "./dist/solidity/build/adapters/vite.js"
+    },
+    "./solidity/next": {
+      "types": "./dist/solidity/build/adapters/next.d.ts",
+      "import": "./dist/solidity/build/adapters/next.js",
+      "default": "./dist/solidity/build/adapters/next.js"
+    },
+    "./solidity/next/loader": {
+      "types": "./dist/solidity/build/adapters/next-loader.d.cts",
+      "require": "./dist/solidity/build/adapters/next-loader.cjs",
+      "default": "./dist/solidity/build/adapters/next-loader.cjs"
+    },
+    "./solidity/register": {
+      "types": "./dist/solidity/build/adapters/register.d.ts",
+      "import": "./dist/solidity/build/adapters/register.js",
+      "default": "./dist/solidity/build/adapters/register.js"
     },
     "./stores": {
       "types": "./dist/stores/index.d.ts",
@@ -73,12 +109,15 @@
       "default": "./dist/utils/deployless/index.js"
     }
   },
+  "bin": {
+    "viem-dlc-solidity": "./dist/solidity/build/adapters/cli.js"
+  },
   "scripts": {
     "format": "pnpm exec biome format --write",
     "lint": "pnpm exec biome lint --write",
     "build": "tsc",
     "build:Envelope": "solc --optimize --optimize-runs=1 --strict-assembly --bin src/utils/deployless/Envelope.yul | awk '/Binary representation:/{getline;n=length($0)/2;sub(/62bbbbbb/,sprintf(\"62%06x\",n));print \"0x\"$0}'",
-    "typecheck": "tsc --project tsconfig.json --noEmit --incremental",
+    "typecheck": "tsc --project tsconfig.json --noEmit --incremental && tsc --project test/solidity/tsconfig.json",
     "pretest": "pnpm build",
     "test": "vitest run",
     "test:forge": "forge test --root test/forge",
@@ -93,6 +132,9 @@
   "peerDependencies": {
     "@upstash/redis": "^1.0.0",
     "@vercel/blob": "^2.3.0",
+    "oxc-parser": ">=0.152.0",
+    "oxc-resolver": "^11.0.0",
+    "solc": "^0.8.0",
     "viem": "^2.43.0"
   },
   "peerDependenciesMeta": {
@@ -101,6 +143,15 @@
     },
     "@vercel/blob": {
       "optional": true
+    },
+    "oxc-parser": {
+      "optional": true
+    },
+    "oxc-resolver": {
+      "optional": true
+    },
+    "solc": {
+      "optional": true
     }
   },
   "devDependencies": {
@@ -108,6 +159,9 @@
     "@types/node": "25.2.0",
     "@upstash/redis": "1.39.0",
     "@vercel/blob": "^2.6.1",
+    "oxc-parser": "0.159.0",
+    "oxc-resolver": "11.24.2",
+    "solc": "0.8.36",
     "tsx": "4.23.1",
     "typescript": "7.0.2",
     "viem": "2.57.5",
