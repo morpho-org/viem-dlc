@@ -446,8 +446,13 @@ class Printer {
         if (!is(init, "VariableDeclaration")) {
           this.#effect(init);
           out.write(";");
-        } else if (init.declarations.length === 1) this.#locals(init);
-        else this.#fail(init, "a for loop declares one local");
+        } else if (init.declarations.length !== 1) this.#fail(init, "a for loop declares one local");
+        else if (init.declarations[0]?.init && this.#isAssembly(this.#strip(init.declarations[0].init)))
+          this.#fail(
+            init.declarations[0].init,
+            "an assembly block is not the initializer of a for loop's local: declare the local before the loop",
+          );
+        else this.#locals(init);
       });
     else out.write(";");
     if (node.test) {

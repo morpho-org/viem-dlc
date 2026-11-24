@@ -290,6 +290,12 @@ const atTheBlock: readonly Case[] = [
     "an assembly block is a statement, or the initializer of a local",
   ],
   [
+    "a block that initializes the local of a for loop",
+    lens('for (let i = assembly("memory-safe", () => mload(0x40)); i < x; i++) {}\n    return x;'),
+    'assembly("memory-safe"',
+    "an assembly block is not the initializer of a for loop's local: declare the local before the loop",
+  ],
+  [
     "an opcode called outside a block",
     lens("return add(x, 1n);"),
     "add(x",
