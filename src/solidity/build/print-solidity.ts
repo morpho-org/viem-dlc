@@ -31,6 +31,7 @@ import { type AnyNode, is, unwrap } from "./ast.js";
 import { isElementaryTypeName } from "./builtins.js";
 import { fail, notImplemented } from "./errors.js";
 import { Writer } from "./position-map.js";
+import { printYul } from "./print-yul.js";
 import type {
   ConstantDeclaration,
   PrintedLens,
@@ -227,6 +228,10 @@ class Printer {
           return;
         case "ExpressionStatement": {
           const expression = unwrap(node.expression as Span);
+          if (this.#isAssembly(expression)) {
+            this.#assembly(expression);
+            return;
+          }
           if (!["AssignmentExpression", "UpdateExpression", "CallExpression"].includes(expression.type))
             this.#fail(expression, "this expression is not a statement: a statement assigns or calls");
           this.#expression(expression);
@@ -324,6 +329,10 @@ class Printer {
       if (!declarator.init)
         this.#fail(declarator, "a local needs an initializer; a local with none is written with its zero value");
       const init = unwrap(declarator.init as Span);
+      if (this.#isAssembly(init)) {
+        this.#assembly(init, id.name);
+        continue;
+      }
       const type = this.typeOf(init);
       out.write(`${located(type, "memory")} ${id.name}`);
       // `new Position()` is the zero value, which a Solidity declaration has without an initializer.
@@ -517,6 +526,10 @@ class Printer {
     const out = this.#out;
     const callee = unwrap(node.callee as Span);
     const reference = this.#lens.references.get(callee);
+    if (this.#isAssembly(node))
+      this.#fail(node, "an assembly block is a statement, or the initializer of a local as in const x = assembly(…)");
+    if (reference?.kind === "builtin" && reference.module === "yul")
+      this.#fail(node, `${reference.name}(…) is an opcode, and an opcode is called inside an assembly block`);
     // A helper is called by its name. A type name called is Solidity's conversion, and require and
     // revert are spelled the same.
     const name =
@@ -563,6 +576,60 @@ class Printer {
       return notImplemented(this.#module, node, "a string literal outside printable ASCII");
     }
     return this.#fail(node, "a lens has no such literal");
+  }
+
+  // ---- assembly -----------------------------------------------------------------------------------------------------
+  #isAssembly(node: AnyNode): boolean {
+    if (!is(node, "CallExpression")) return false;
+    const callee = this.#lens.references.get(unwrap(node.callee));
+    return callee?.kind === "builtin" && callee.module === "solidity" && callee.name === "assembly";
+  }
+
+  /**
+   * `assembly("memory-safe", () => { … })`: an assembly block, printed by the Yul printer. A block that
+   * ends in `return word` is the initializer of the local `local`: the local is declared first, as a
+   * uint256 or as the type named first, and the block assigns it.
+   */
+  #assembly(call: AnyNode, local?: string): void {
+    const out = this.#out;
+    const parts = (call.arguments as Span[]).map(unwrap);
+    const named = parts.length === 3 ? parts[0] : undefined;
+    const [flag, block] = parts.slice(named ? 1 : 0);
+    if (
+      parts.length < 2 ||
+      parts.length > 3 ||
+      !is(flag, "Literal") ||
+      flag.value !== "memory-safe" ||
+      (!is(block, "ArrowFunctionExpression") && !is(block, "FunctionExpression"))
+    )
+      this.#fail(
+        call,
+        'an assembly block is written assembly("memory-safe", () => { … }), or assembly(T, "memory-safe", () => { … }) to name the type of its value',
+      );
+    if (named && local === undefined)
+      this.#fail(named, "a type is named only for an assembly block that is the initializer of a local");
+    if (local !== undefined) {
+      const reference = named && this.#lens.references.get(named);
+      const type: TypeRef = !named
+        ? UINT256
+        : reference?.kind === "builtin" && reference.module === "solidity" && isElementaryTypeName(reference.name)
+          ? { kind: "elementary", name: reference.name }
+          : this.#fail(named, "the type of an assembly block's value is an elementary type, such as bytes32 or string");
+      out.write(`${located(type, "memory")} ${local};`);
+      this.#declare(local, type);
+      out.line();
+    }
+    out.node({ module: this.#module, node: call }, () => {
+      out.write('assembly ("memory-safe") ');
+      printYul({
+        block,
+        module: this.#module,
+        references: this.#lens.references,
+        result: local,
+        locals: new Set(this.#scopes.flatMap((scope) => [...scope.keys()])),
+        writer: out,
+      });
+    });
   }
 
   // ---- scopes -------------------------------------------------------------------------------------------------------
