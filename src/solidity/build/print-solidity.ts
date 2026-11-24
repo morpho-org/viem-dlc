@@ -9,8 +9,13 @@
  *   declarations ({@link Printer.typeOf}). An initializer with no declared type, such as arithmetic,
  *   is a located error asking for a conversion.
  * - **Data location.** A reference-type parameter of an external function is `calldata`. Everything
- *   else is `memory`.
- * - **The spelling of a literal.** `0n` is `0`, `60_000` is `60000`, `'text'` is `"text"`.
+ *   else is `memory`: locals, helper parameters and return values.
+ * - **The spelling of a literal.** `0n` is `0`, `60_000` is `60000`, `'text'` is `"text"`, a string
+ *   outside ASCII is a `unicode"…"` literal, `'0x313ce567'` is `hex"313ce567"`, and a `'0x…'` of 40
+ *   digits is an address literal.
+ *
+ * What is only TypeScript is erased before anything is read: annotations, generics, `as`, `satisfies`,
+ * `!`, a `this` parameter, and a type declared in a body. `Number(x)` and `BigInt(x)` print as `x`.
  *
  * An operator is printed as the same operator. Parentheses come from the tree and never from the source
  * text, so a module prints the same from `.ts` and from built `.js`: an operator that is an operand of
@@ -21,9 +26,8 @@
  * contract with its immutables, its entry points in declared order, and its helpers. Each kind is in the
  * order of {@link ResolvedLens.declarations}.
  *
- * This version prints what the first vertical slice needs. A construct the design defines and this file
- * does not print yet stops the build through `notImplemented`; a construct no lens may contain stops it
- * through `fail`.
+ * A construct no lens may contain stops the build through `fail`, at its TypeScript position. Typed Yul
+ * is the one construct this file does not print yet: `assembly(…)` stops the build through `notImplemented`.
  */
 import type { Span } from "oxc-parser";
 
@@ -83,6 +87,9 @@ const OPERATORS = new Set([
   "UpdateExpression",
 ]);
 
+/** Statements that print as nothing: the empty statement, and a type declared in a body, which is only TypeScript. */
+const ERASED_STATEMENTS = new Set(["EmptyStatement", "TSTypeAliasDeclaration", "TSInterfaceDeclaration"]);
+
 const UINT256: TypeRef = { kind: "elementary", name: "uint256" };
 const BOOL: TypeRef = { kind: "elementary", name: "bool" };
 const STRING: TypeRef = { kind: "elementary", name: "string" };
@@ -99,8 +106,6 @@ const BUILTIN_OUTPUTS: ReadonlyMap<string, readonly TypeRef[]> = new Map([
   ["codeSize", [UINT256]],
   ["staticcall", [BOOL, BYTES]],
 ]);
-/** Built-ins another part of the printer is to print. Every other built-in has no form as a plain call. */
-const CALLS_NOT_PRINTED_YET = new Set(["array", "assembly", "Number", "BigInt"]);
 
 const THIS = "in a lens, this only calls an entry point: this.f(…)";
 const INTERFACE_MEMBER =
@@ -109,6 +114,11 @@ const HANDLE =
   "a handle is written I(address). The options of a call are written where the call is made: I(address, { gas: … }).f(…)";
 const TRY =
   "the block of a try holds one external call, bare or assigned: try { x = feed.f(a) } catch { … }, with no finally";
+const ADDRESS: TypeRef = { kind: "elementary", name: "address" };
+
+/** `'0x…'` with 40 hexadecimal digits is an address literal, and with any other even number a hex literal. */
+const ADDRESS_LITERAL = /^0x[0-9a-fA-F]{40}$/;
+const HEX_LITERAL = /^0x(?:[0-9a-fA-F]{2})*$/;
 
 const typeName = (type: TypeRef): string =>
   type.kind === "elementary"
@@ -287,14 +297,16 @@ class Printer {
     const { signature, body } = fn;
     this.#module = fn.module;
     this.#scopes = [new Map()];
-    if (body.params.length !== signature.inputs.length)
+    // A `this` parameter is a TypeScript annotation, and is erased with the others.
+    const params = body.params.filter((parameter) => !(is(parameter, "Identifier") && parameter.name === "this"));
+    if (params.length !== signature.inputs.length)
       this.#fail(
         body,
-        `"${fn.name}" declares ${signature.inputs.length} parameters and its implementation takes ${body.params.length}`,
+        `"${fn.name}" declares ${signature.inputs.length} parameters and its implementation takes ${params.length}`,
       );
     out.node({ module: fn.module, node: body }, () => {
       out.write(`function ${fn.name}(`);
-      for (const [index, parameter] of body.params.entries()) {
+      for (const [index, parameter] of params.entries()) {
         const type = signature.inputs[index] as TypeRef;
         if (!is(parameter, "Identifier")) this.#fail(parameter, "a parameter must be a plain name");
         if (index) out.write(", ");
@@ -314,8 +326,10 @@ class Printer {
         // An arrow function with an expression body: `(x, y, d) => (x * y) / d`.
         out.line();
         out.node({ module: fn.module, node: block }, () => {
-          if (signature.outputs.length) out.write("return ");
-          this.#expression(block);
+          if (signature.outputs.length) {
+            out.write("return ");
+            this.#returned(block);
+          } else this.#effect(block);
           out.write(";");
         });
       });
@@ -327,30 +341,24 @@ class Printer {
   // ---- statements ------------------------------------------------------------------------------------------
   #statement(node: AnyNode): void {
     const out = this.#out;
-    if (is(node, "EmptyStatement")) return;
+    if (ERASED_STATEMENTS.has(node.type)) return;
     out.line();
     out.node({ module: this.#module, node }, () => {
       switch (node.type) {
         case "VariableDeclaration":
           this.#locals(node);
           return;
-        case "ExpressionStatement": {
-          const expression = unwrap(node.expression as Span);
-          if (!["AssignmentExpression", "UpdateExpression", "CallExpression"].includes(expression.type))
-            this.#fail(expression, "this expression is not a statement: a statement assigns or calls");
-          this.#expression(expression);
+        case "ExpressionStatement":
+          this.#effect(node.expression as Span);
           out.write(";");
           return;
-        }
         case "ReturnStatement":
           if (!node.argument) {
             out.write("return;");
             return;
           }
-          if (is(unwrap(node.argument as Span), "ArrayExpression"))
-            notImplemented(this.#module, node, "returning several values");
           out.write("return ");
-          this.#expression(node.argument as AnyNode);
+          this.#returned(node.argument as Span);
           out.write(";");
           return;
         case "IfStatement":
@@ -360,13 +368,26 @@ class Printer {
           this.#block(node);
           return;
         case "WhileStatement":
+          out.write("while (");
+          this.#expression(node.test as Span);
+          out.write(")");
+          this.#nested(node.body as AnyNode);
+          return;
         case "DoWhileStatement":
+          out.write("do");
+          this.#nested(node.body as AnyNode);
+          if (is(node.body as AnyNode, "BlockStatement")) out.write(" ");
+          else out.line();
+          out.write("while (");
+          this.#expression(node.test as Span);
+          out.write(");");
+          return;
         case "ForStatement":
-          notImplemented(this.#module, node, "a loop");
+          this.#for(node);
           return;
         case "BreakStatement":
         case "ContinueStatement":
-          notImplemented(this.#module, node, "break and continue");
+          out.write(node.type === "BreakStatement" ? "break;" : "continue;");
           return;
         case "TryStatement":
           this.#try(node);
@@ -375,6 +396,65 @@ class Printer {
           this.#fail(node, `a lens body cannot contain this statement (${node.type})`);
       }
     });
+  }
+
+  /** An expression in statement position: one that assigns or calls. */
+  #effect(raw: Span): void {
+    const expression = this.#strip(raw);
+    if (!["AssignmentExpression", "UpdateExpression", "CallExpression"].includes(expression.type))
+      this.#fail(expression, "this expression is not a statement: a statement assigns or calls");
+    this.#expression(expression);
+  }
+
+  /** What a `return` returns: an expression, or `[a, b]` as the tuple `(a, b)`. */
+  #returned(raw: Span): void {
+    const out = this.#out;
+    const node = this.#strip(raw);
+    if (!is(node, "ArrayExpression")) {
+      this.#expression(node);
+      return;
+    }
+    if (node.elements.length < 2)
+      this.#fail(node, "several values are returned as return [a, b]; one value is returned without the brackets");
+    out.node({ module: this.#module, node }, () => {
+      out.write("(");
+      for (const [index, element] of node.elements.entries()) {
+        if (!element || is(element, "SpreadElement"))
+          this.#fail(element ?? node, "every value of return [a, b] is an expression");
+        if (index) out.write(", ");
+        this.#expression(element);
+      }
+      out.write(")");
+    });
+  }
+
+  /** `for (init; test; update)`, each part where it is written. The init declares one local or is a statement. */
+  #for(node: AnyNode): void {
+    const out = this.#out;
+    const init = node.init as AnyNode | null;
+    this.#scopes.push(new Map());
+    out.write("for (");
+    if (init)
+      out.node({ module: this.#module, node: init }, () => {
+        if (!is(init, "VariableDeclaration")) {
+          this.#effect(init);
+          out.write(";");
+        } else if (init.declarations.length === 1) this.#locals(init);
+        else this.#fail(init, "a for loop declares one local");
+      });
+    else out.write(";");
+    if (node.test) {
+      out.write(" ");
+      this.#expression(node.test as Span);
+    }
+    out.write(";");
+    if (node.update) {
+      out.write(" ");
+      this.#effect(node.update as Span);
+    }
+    out.write(")");
+    this.#nested(node.body as AnyNode);
+    this.#scopes.pop();
   }
 
   /** `if` and `else`, on the current line. An `else if` continues the line of its `else`. */
@@ -397,12 +477,14 @@ class Printer {
     } else this.#nested(alternate);
   }
 
-  /** The body of an `if` or `else`: a block where one is written, and a single statement where it is not. */
+  /** The body of an `if`, an `else` or a loop: a block where one is written, and a single statement where it is not. */
   #nested(node: AnyNode): void {
     if (is(node, "BlockStatement")) {
       this.#out.write(" ");
       this.#block(node);
-    } else {
+    } else if (ERASED_STATEMENTS.has(node.type))
+      this.#fail(node, "the body of an if or a loop is a statement or a block: an empty one is written {}");
+    else {
       this.#scopes.push(new Map());
       this.#out.indented(() => this.#statement(node));
       this.#scopes.pop();
@@ -433,12 +515,12 @@ class Printer {
     if (!handler || node.finalizer) this.#fail(node, TRY);
     if (handler.param) this.#fail(handler.param as Span, "catch binds nothing in a lens: write catch { … }");
     const block = node.block as AnyNode;
-    const statements = (block.body as AnyNode[]).filter((statement) => !is(statement, "EmptyStatement"));
+    const statements = (block.body as AnyNode[]).filter((statement) => !ERASED_STATEMENTS.has(statement.type));
     const [statement] = statements;
     const expression =
-      statements.length === 1 && is(statement, "ExpressionStatement") ? unwrap(statement.expression) : undefined;
+      statements.length === 1 && is(statement, "ExpressionStatement") ? this.#strip(statement.expression) : undefined;
     const assignment = is(expression, "AssignmentExpression") ? expression : undefined;
-    const call = assignment ? unwrap(assignment.right) : expression;
+    const call = assignment ? this.#strip(assignment.right) : expression;
     if (!call || !this.#isExternalCall(call) || (assignment && assignment.operator !== "=")) this.#fail(block, TRY);
     out.write("try ");
     this.#expression(call);
@@ -478,7 +560,7 @@ class Printer {
     if (!is(node, "CallExpression")) return false;
     const callee = unwrap(node.callee);
     if (!is(callee, "MemberExpression") || callee.computed || this.#lens.references.has(callee)) return false;
-    const object = unwrap(callee.object);
+    const object = this.#strip(callee.object);
     if (is(object, "ThisExpression")) return true;
     if (this.#interfaceFunction(object)) return false;
     const named = this.#lens.references.get(object);
@@ -492,11 +574,14 @@ class Printer {
     for (const [index, declarator] of (node.declarations as AnyNode[]).entries()) {
       if (index) out.line();
       const id = declarator.id as AnyNode;
-      if (is(id, "ArrayPattern")) notImplemented(this.#module, declarator, "declaring several locals from one call");
-      if (!is(id, "Identifier")) this.#fail(id, "a local must be a plain name");
       if (!declarator.init)
         this.#fail(declarator, "a local needs an initializer; a local with none is written with its zero value");
-      const init = unwrap(declarator.init as Span);
+      const init = this.#strip(declarator.init as Span);
+      if (is(id, "ArrayPattern")) {
+        this.#tuple(id, init);
+        continue;
+      }
+      if (!is(id, "Identifier")) this.#fail(id, "a local must be a plain name");
       const type = this.typeOf(init);
       out.write(`${located(type, "memory")} ${id.name}`);
       // `new Position()` is the zero value, which a Solidity declaration has without an initializer.
@@ -509,6 +594,37 @@ class Printer {
     }
   }
 
+  /** `const [a, , c] = f(x)`: `(T a, , U c) = f(x);`, each type the one `f` declares for that value. */
+  #tuple(pattern: AnyNode, init: AnyNode): void {
+    const out = this.#out;
+    const outputs = is(init, "CallExpression") ? this.#outputs(init) : undefined;
+    if (!outputs)
+      this.#fail(
+        init,
+        "several locals are declared from one call whose return types are declared, as in const [a, b] = f(x)",
+      );
+    const elements = pattern.elements as (AnyNode | null)[];
+    if (elements.length !== outputs.length)
+      this.#fail(
+        pattern,
+        `this pattern has ${elements.length} places and the call returns ${outputs.length} values: a value that is not used is left as a hole, as in [a, , c]`,
+      );
+    const declared: [string, TypeRef][] = [];
+    out.write("(");
+    for (const [index, element] of elements.entries()) {
+      if (index) out.write(", ");
+      if (!element) continue;
+      if (!is(element, "Identifier")) this.#fail(element, "a local must be a plain name");
+      const type = outputs[index] as TypeRef;
+      out.node({ module: this.#module, node: element }, () => out.write(`${located(type, "memory")} ${element.name}`));
+      declared.push([element.name, type]);
+    }
+    out.write(") = ");
+    this.#expression(init);
+    out.write(";");
+    for (const [name, type] of declared) this.#declare(name, type);
+  }
+
   // ---- the type of a local ------------------------------------------------------------------------------------
   /**
    * The type an expression already has in the source, or a located error when it has none. This is the
@@ -516,9 +632,15 @@ class Printer {
    * of arithmetic is asked of the author as a conversion.
    */
   typeOf(raw: Span): TypeRef {
-    const node = unwrap(raw);
+    const node = this.#strip(raw);
     const known = this.#declaredType(node);
     if (known) return known;
+    const outputs = is(node, "CallExpression") ? this.#outputs(node) : undefined;
+    if (outputs)
+      this.#fail(
+        node,
+        `a local takes one value and this call returns ${outputs.length}. Several values are declared together, as in const [a, b] = f(x)`,
+      );
     return this.#fail(
       node,
       "this local's type cannot be copied from its initializer: name the type with a conversion, for example uint256(…)",
@@ -529,7 +651,9 @@ class Printer {
     if (is(node, "Literal")) {
       if (typeof node.value === "bigint" || typeof node.value === "number") return UINT256;
       if (typeof node.value === "boolean") return BOOL;
-      if (typeof node.value === "string") return STRING;
+      // A hex literal has no one type in Solidity: it converts to bytes4, to bytes32 and to bytes.
+      if (typeof node.value === "string")
+        return ADDRESS_LITERAL.test(node.value) ? ADDRESS : HEX_LITERAL.test(node.value) ? undefined : STRING;
       return undefined;
     }
     if (is(node, "Identifier") || this.#lens.references.has(node)) {
@@ -542,12 +666,16 @@ class Printer {
       return undefined;
     }
     if (is(node, "MemberExpression")) {
-      if (node.computed) return undefined;
-      const inner = unwrap(node.object);
+      const inner = this.#strip(node.object);
+      if (node.computed) {
+        const indexed = this.#declaredType(inner);
+        return indexed?.kind === "array" ? indexed.element : undefined;
+      }
       const { name } = node.property;
       if (this.#isBuiltin(inner, "block")) return name === "timestamp" || name === "number" ? UINT256 : undefined;
       if (this.#interfaceFunction(inner)) return name === "selector" ? BYTES4 : undefined;
       const object = this.#declaredType(inner);
+      if (object?.kind === "array") return name === "length" ? UINT256 : undefined;
       if (object?.kind !== "struct") return undefined;
       return object.declaration.fields.find((field) => field.name === name)?.type;
     }
@@ -555,12 +683,7 @@ class Printer {
       const [output, ...rest] = this.#outputs(node) ?? [];
       return rest.length ? undefined : output;
     }
-    if (is(node, "NewExpression")) {
-      const callee = this.#lens.references.get(unwrap(node.callee));
-      return callee?.kind === "declaration" && callee.declaration.kind === "struct"
-        ? { kind: "struct", declaration: callee.declaration }
-        : undefined;
-    }
+    if (is(node, "NewExpression")) return { kind: "struct", declaration: this.#constructed(node) };
     if (is(node, "BinaryExpression")) return COMPARISON.has(node.operator) ? BOOL : undefined;
     if (is(node, "LogicalExpression")) return LOGICAL.has(node.operator) ? BOOL : undefined;
     if (is(node, "UnaryExpression")) return node.operator === "!" ? BOOL : undefined;
@@ -568,9 +691,10 @@ class Printer {
   }
 
   /**
-   * The return types a call declares, read from the declaration of what is called: a helper, a library
-   * function, an interface function, an entry point through `this`, a built-in, or a conversion, which
-   * returns the type it names. Undefined where the source declares none.
+   * The one answer to "what types does this call return", read from the declaration of what is called:
+   * a helper, a library function, an interface function, an entry point through `this`, or a built-in.
+   * A conversion returns the type it names, `array(T, n)` an array of `T`, and `abi.decode` the types it
+   * lists. Undefined where the source declares none.
    */
   #outputs(node: AnyNode): readonly TypeRef[] | undefined {
     const callee = unwrap(node.callee as Span);
@@ -582,12 +706,12 @@ class Printer {
     }
     if (reference) {
       if (reference.module !== "solidity") return undefined;
-      return isElementaryTypeName(reference.name)
-        ? [{ kind: "elementary", name: reference.name }]
-        : BUILTIN_OUTPUTS.get(reference.name);
+      if (isElementaryTypeName(reference.name)) return [{ kind: "elementary", name: reference.name }];
+      if (reference.name === "array") return [{ kind: "array", element: this.#arrayOf(node).element }];
+      return BUILTIN_OUTPUTS.get(reference.name);
     }
     if (!is(callee, "MemberExpression") || callee.computed) return undefined;
-    const object = unwrap(callee.object);
+    const object = this.#strip(callee.object);
     const { name } = callee.property;
     const declared = (functions: readonly { name: string; signature: ResolvedSignature }[], owner: string) =>
       functions.find((fn) => fn.name === name)?.signature.outputs ??
@@ -618,17 +742,36 @@ class Printer {
   /** `I.f`, where I is an interface: the function a selector or an encoded call names. */
   #interfaceFunction(node: AnyNode): { interface: InterfaceDeclaration; name: string } | undefined {
     if (!is(node, "MemberExpression") || node.computed) return undefined;
-    const reference = this.#lens.references.get(unwrap(node.object));
+    const reference = this.#lens.references.get(this.#strip(node.object));
     return reference?.kind === "declaration" && reference.declaration.kind === "interface"
       ? { interface: reference.declaration, name: node.property.name }
       : undefined;
   }
 
-  /** A type named inside a body, as `abi.decode` names what it reads. */
-  #type(raw: Span): TypeRef {
+  /** The types an array literal lists, as `abi.decode` names what it reads: `[uint128, address]`. */
+  #types(list: AnyNode): TypeRef[] {
+    return (list.elements as (Span | null)[]).map((element) =>
+      element ? this.#namedType(element) : this.#fail(list, "a list of types has no holes"),
+    );
+  }
+
+  /** The parts of `array(T, n)`: the element type it names, and its length. */
+  #arrayOf(node: AnyNode): { element: TypeRef; length: AnyNode } {
+    const [element, length, ...rest] = node.arguments as AnyNode[];
+    if (!element || !length || rest.length || is(element, "SpreadElement") || is(length, "SpreadElement"))
+      return this.#fail(node, "an array is made with array(T, n): its element type and its length");
+    return { element: this.#namedType(element), length };
+  }
+
+  /** A type written as a value: an elementary type, a struct class, an interface, or `[T]`. */
+  #namedType(raw: Span): TypeRef {
     const node = unwrap(raw);
-    if (is(node, "ArrayExpression") && node.elements.length === 1)
-      return { kind: "array", element: this.#types(node)[0] as TypeRef };
+    if (is(node, "ArrayExpression")) {
+      const [element] = node.elements;
+      if (node.elements.length !== 1 || !element || is(element, "SpreadElement"))
+        return this.#fail(node, "an array type is written [T], with one element type");
+      return { kind: "array", element: this.#namedType(element) };
+    }
     const reference = this.#lens.references.get(node);
     if (reference?.kind === "builtin" && reference.module === "solidity" && isElementaryTypeName(reference.name))
       return { kind: "elementary", name: reference.name };
@@ -640,17 +783,35 @@ class Printer {
     return this.#fail(node, "this is not a type. A type is an elementary type, a struct class, an interface, or [T]");
   }
 
-  /** The types an array literal lists: `[uint128, address]`. */
-  #types(list: AnyNode): TypeRef[] {
-    return (list.elements as (Span | null)[]).map((element) =>
-      element ? this.#type(element) : this.#fail(list, "a list of types has no holes"),
-    );
+  /** The struct a `new` builds. */
+  #constructed(node: AnyNode): StructDeclaration {
+    const callee = this.#lens.references.get(unwrap(node.callee as Span));
+    if (callee?.kind !== "declaration" || callee.declaration.kind !== "struct")
+      return this.#fail(node, "new builds a struct: new T({ … }), or new T() for the zero value of a local");
+    return callee.declaration;
   }
 
   // ---- expressions ------------------------------------------------------------------------------------------------
+  /**
+   * Strips what prints as nothing: parentheses, TypeScript's wrappers, and `Number(x)` and `BigInt(x)`,
+   * which print as `x`. They exist because tsc wants a `number` where an index is held in a bigint.
+   */
+  #strip(raw: Span): AnyNode {
+    let node = unwrap(raw);
+    while (is(node, "CallExpression")) {
+      const callee = this.#lens.references.get(unwrap(node.callee));
+      if (callee?.kind !== "builtin" || callee.module !== "global") break;
+      const [argument, ...rest] = node.arguments;
+      if (!argument || rest.length || is(argument, "SpreadElement"))
+        return this.#fail(node, `${callee.name}(x) takes one argument, and prints as x`);
+      node = unwrap(argument);
+    }
+    return node;
+  }
+
   /** Prints an expression. As an operand of an operator, an operator is parenthesized. */
   #expression(raw: Span, operand = false): void {
-    const node = unwrap(raw);
+    const node = this.#strip(raw);
     const out = this.#out;
     const parenthesized = operand && OPERATORS.has(node.type);
     out.node({ module: this.#module, node }, () => {
@@ -678,8 +839,14 @@ class Printer {
 
     switch (node.type) {
       case "MemberExpression": {
-        if (node.computed) notImplemented(this.#module, node, "indexing");
-        const object = unwrap(node.object as Span);
+        if (node.computed) {
+          this.#expression(node.object as Span, true);
+          out.write("[");
+          this.#expression(node.property as Span);
+          out.write("]");
+          return;
+        }
+        const object = this.#strip(node.object as Span);
         if (is(object, "ThisExpression")) this.#fail(node, THIS);
         const property = (node.property as { name: string }).name;
         const named = this.#lens.references.get(object);
@@ -729,8 +896,15 @@ class Printer {
       case "AssignmentExpression": {
         if (!ASSIGNMENT.has(node.operator as string)) this.#fail(node, `a lens has no operator ${node.operator}`);
         const target = unwrap(node.left as Span);
-        if (is(target, "ArrayPattern")) notImplemented(this.#module, node, "assigning several values from one call");
-        this.#expression(target, true);
+        if (is(target, "ArrayPattern")) {
+          // `[r.a, , r.b] = f(x)`: the tuple `(r.a, , r.b) = f(x)`, a hole where a value is not used.
+          out.write("(");
+          for (const [index, element] of target.elements.entries()) {
+            if (index) out.write(", ");
+            if (element) this.#expression(element);
+          }
+          out.write(")");
+        } else this.#expression(target, true);
         out.write(` ${node.operator} `);
         this.#expression(node.right as Span);
         return;
@@ -744,20 +918,47 @@ class Printer {
         this.#call(node);
         return;
       case "NewExpression":
-        if ((node.arguments as unknown[]).length)
-          notImplemented(this.#module, node, "building a struct from its fields");
-        this.#fail(node, "new T() is the zero value of a local: write it as the initializer of a const or let");
+        this.#structLiteral(node);
         return;
       case "ThisExpression":
         this.#fail(node, THIS);
+        return;
+      case "Identifier":
+        this.#fail(node, `"${node.name}" is used before it is declared`);
         return;
       default:
         this.#fail(node, `a lens body cannot contain this expression (${node.type})`);
     }
   }
 
+  /** `new T({ a, b: e })`: `T({a: a, b: e})`, the fields by name and in the order written. */
+  #structLiteral(node: AnyNode): void {
+    const out = this.#out;
+    const struct = this.#constructed(node);
+    const [argument, ...rest] = node.arguments as AnyNode[];
+    if (!argument)
+      this.#fail(node, "new T() is the zero value of a local: write it as the initializer of a const or let");
+    const fields = unwrap(argument);
+    if (rest.length || !is(fields, "ObjectExpression"))
+      this.#fail(node, "a struct is built from an object literal of its fields: new T({ a, b })");
+    out.write(`${struct.name}({`);
+    for (const [index, property] of fields.properties.entries()) {
+      const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
+      if (name === undefined || !is(property, "Property") || property.kind !== "init" || property.method)
+        this.#fail(property, "a field of a struct literal is written name: value, or the name alone");
+      if (index) out.write(", ");
+      out.node({ module: this.#module, node: property }, () => {
+        out.write(`${name}: `);
+        this.#expression(property.value);
+      });
+    }
+    out.write("})");
+  }
+
   /** A name that resolved to a module-level declaration or a package export, used as a value. */
   #named(node: AnyNode, reference: Reference): void {
+    if (reference.kind === "builtin" && reference.module === "global")
+      this.#fail(node, `${reference.name} is written as a call: ${reference.name}(x), which prints as x`);
     if (reference.kind === "builtin") this.#fail(node, `"${reference.name}" cannot be used as a value here`);
     const { declaration } = reference;
     if (declaration.kind === "constant") this.#constant(declaration);
@@ -789,10 +990,18 @@ class Printer {
     const out = this.#out;
     const callee = unwrap(node.callee as Span);
     const args = node.arguments as AnyNode[];
+    const reference = this.#lens.references.get(callee);
+    // `array(T, n)` is `new T[](n)`.
+    if (this.#isBuiltin(callee, "array")) {
+      const { element, length } = this.#arrayOf(node);
+      out.write(`new ${typeName(element)}[](`);
+      this.#expression(length);
+      out.write(")");
+      return;
+    }
     for (const argument of args)
       if (is(argument, "SpreadElement")) this.#fail(argument, "a call cannot spread its arguments");
 
-    const reference = this.#lens.references.get(callee);
     if (reference?.kind === "declaration") {
       // A helper is called by its name, and an interface called on an address is the conversion to a handle.
       const { declaration } = reference;
@@ -835,7 +1044,7 @@ class Printer {
         out.write(".code.length");
         return;
       }
-      if (CALLS_NOT_PRINTED_YET.has(name)) notImplemented(this.#module, node, `${name}(…)`);
+      if (name === "assembly") notImplemented(this.#module, node, "assembly(…)");
       this.#fail(node, `a lens body cannot call ${name}`);
     }
 
@@ -844,7 +1053,7 @@ class Printer {
         node,
         "a lens body can call helpers, interface functions, library functions and the package's built-ins",
       );
-    const object = unwrap(callee.object);
+    const object = this.#strip(callee.object);
     const { name } = callee.property;
     if (is(object, "ThisExpression")) {
       out.write(`this.${name}`);
@@ -962,12 +1171,32 @@ class Printer {
       return this.#fail(node, "an integer literal is written in decimal or in hexadecimal");
     }
     if (typeof value === "string") {
-      if (/^0x[0-9a-fA-F]{40}$/.test(value)) return value;
-      if (/^0x(?:[0-9a-fA-F]{2})*$/.test(value)) return `hex"${value.slice(2)}"`;
-      if (/^[\x20-\x7e]*$/.test(value)) return JSON.stringify(value);
-      return notImplemented(this.#module, node, "a string literal outside printable ASCII");
+      if (ADDRESS_LITERAL.test(value)) return value;
+      if (HEX_LITERAL.test(value)) return `hex"${value.slice(2)}"`;
+      return this.#string(node, value);
     }
     return this.#fail(node, "a lens has no such literal");
+  }
+
+  /**
+   * A string literal. Printable ASCII is written as it is. A quote, a backslash, a control character
+   * and a Unicode line break are escaped, because Solidity's scanner takes none of them raw, and a
+   * literal that holds anything outside ASCII is a `unicode"…"` literal.
+   */
+  #string(node: AnyNode, value: string): string {
+    let text = "";
+    let unicode = false;
+    for (const character of value) {
+      const code = character.codePointAt(0) as number;
+      if (code >= 0xd800 && code <= 0xdfff)
+        this.#fail(node, "a string literal is well-formed Unicode: this one holds half of a surrogate pair");
+      if (character === '"' || character === "\\") text += `\\${character}`;
+      else if (code < 0x20 || code === 0x7f) text += `\\x${code.toString(16).padStart(2, "0")}`;
+      else if (code === 0x85 || code === 0x2028 || code === 0x2029) text += `\\u${code.toString(16).padStart(4, "0")}`;
+      else text += character;
+      unicode ||= code > 0x7f;
+    }
+    return `${unicode ? "unicode" : ""}"${text}"`;
   }
 
   // ---- scopes -------------------------------------------------------------------------------------------------------

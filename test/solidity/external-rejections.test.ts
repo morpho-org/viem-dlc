@@ -302,6 +302,11 @@ describe("rejections: try and catch", () => {
     await refuses(attempt("{ x = FEED.price(feed); }", "catch (error) {}"), "catch binds nothing in a lens", "error)");
   });
 
+  it("a local of the catch block, read after the block", async () => {
+    const code = attempt("{ x = FEED.price(feed); }", "catch { const fallen = 1n; x = fallen; }\n    x += fallen;");
+    await refuses(code, '"fallen" is not a module-level name', "fallen;\n    return");
+  });
+
   it.each([
     ["nothing", "{ ; }"],
     ["two statements", "{ x = FEED.price(feed); x = FEED.price(feed); }"],
@@ -350,7 +355,18 @@ describe("rejections: the type of a local initialized by a call", () => {
   });
 
   it.each([
-    ["a call that returns two values", "FEED.latest(feed)"],
+    ["an interface function", "FEED.latest(feed)"],
+    ["staticcall", "staticcall(feed, data)"],
+    ["abi.decode", "abi.decode(data, [uint256, address])"],
+  ])("%s that returns two values is not one local", async (_, initializer) => {
+    await refuses(
+      lens(`const y = ${initializer};\n    return x;`),
+      "a local takes one value and this call returns 2. Several values are declared together",
+      initializer,
+    );
+  });
+
+  it.each([
     ["a call through something with no declared type", "(x > 0n ? FEED : IFeed(feed)).price(feed)"],
     ["a function of an interface", "IFeed.price"],
     ["a member of a function of an interface other than its selector", "IFeed.price.length"],
