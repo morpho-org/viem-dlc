@@ -31,13 +31,13 @@ export const IGNORED = [".next/", "dist/", "next-env.d.ts", "node_modules/"];
 const COMPILE_CACHE = "node_modules/.cache/viem-dlc-solidity";
 
 /** The entry script of a devDependency's command, to run with `node`. */
-export const bin = (name: string): string => {
+export const bin = (name: string, command = name): string => {
   const dir = path.join(ROOT, "node_modules", name);
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as {
     bin: string | Record<string, string>;
   };
-  const entry = typeof manifest.bin === "string" ? manifest.bin : manifest.bin[name];
-  if (!entry) throw new Error(`${name} has no command named ${name}`);
+  const entry = typeof manifest.bin === "string" ? manifest.bin : manifest.bin[command];
+  if (!entry) throw new Error(`${name} has no command named ${command}`);
   return path.join(dir, entry);
 };
 
