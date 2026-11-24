@@ -701,6 +701,197 @@ const pairs = {
       { functionName: "ignored", args: [token] },
     ],
   },
+  "several locals declared from one call": {
+    ts: `
+      import {
+        abi, address, bool, bytes, contract, iface, library, pure, staticcall, Struct, uint64, uint256, view,
+      } from "@morpho-org/viem-dlc/solidity";
+
+      const IToken = iface({ balanceOf: view(address).returns(uint256) });
+      const IFeed = iface({ latest: view(address).returns(uint256, uint64) });
+
+      const Division = library("Division", { divMod: pure(uint256, uint256).returns(uint256, uint256) }).implementation({
+        divMod: (a, b) => [a / b, a % b],
+      });
+
+      class Reading extends Struct({ ok: bool, balance: uint256, price: uint256, updatedAt: uint64 }) {}
+
+      export const TupleLens = contract("TupleLens", {
+        probe: view(address, address).returns(bool, uint256),
+        latest: view(IFeed, address).returns(uint256, uint64),
+        age: view(address, address, uint64).returns(uint64),
+        decoded: pure(bytes).returns(address, uint256),
+        divMod: pure(uint256, uint256).returns(uint256, uint256),
+        again: view(uint256, uint256).returns(uint256),
+        read: view(address, IFeed, address).returns(Reading),
+      }).implementation({
+        probe(token, holder) {
+          const [ok, data] = staticcall(token, IToken.balanceOf.encode(holder));
+          if (!ok) return [false, 0n];
+          return [true, abi.decode(data, [uint256])];
+        },
+        latest(feed, token) {
+          const [price, updatedAt] = feed.latest(token);
+          return [price, updatedAt];
+        },
+        age(feed, token, at) {
+          const [, updatedAt] = IFeed(feed).latest(token);
+          return at - updatedAt;
+        },
+        decoded(data) {
+          const [amount, owner] = abi.decode(data, [uint256, address]);
+          return [owner, amount];
+        },
+        divMod(a, b) {
+          const [quotient, remainder] = Division.divMod(a, b);
+          return [quotient, remainder];
+        },
+        again(a, b) {
+          const [quotient, remainder] = this.divMod(a, b);
+          return quotient + remainder;
+        },
+        read(token, feed, holder) {
+          const o = new Reading();
+          const [ok, data] = staticcall(token, IToken.balanceOf.encode(holder), { gas: 50_000 });
+          o.ok = ok;
+          if (ok) o.balance = abi.decode(data, [uint256]);
+          [o.price, o.updatedAt] = feed.latest(token);
+          return o;
+        },
+      });
+    `,
+    solidity: `
+      struct Reading {
+          bool ok;
+          uint256 balance;
+          uint256 price;
+          uint64 updatedAt;
+      }
+
+      interface IToken {
+          function balanceOf(address) external view returns (uint256);
+      }
+
+      interface IFeed {
+          function latest(address) external view returns (uint256, uint64);
+      }
+
+      library Division {
+          function divMod(uint256 a, uint256 b) internal pure returns (uint256, uint256) {
+              return (a / b, a % b);
+          }
+      }
+
+      contract TupleLens {
+          function probe(address token, address holder) external view returns (bool, uint256) {
+              (bool ok, bytes memory data) = token.staticcall(abi.encodeCall(IToken.balanceOf, (holder)));
+              if (!ok) return (false, 0);
+              return (true, abi.decode(data, (uint256)));
+          }
+
+          function latest(IFeed feed, address token) external view returns (uint256, uint64) {
+              (uint256 price, uint64 updatedAt) = feed.latest(token);
+              return (price, updatedAt);
+          }
+
+          function age(address feed, address token, uint64 at) external view returns (uint64) {
+              (, uint64 updatedAt) = IFeed(feed).latest(token);
+              return at - updatedAt;
+          }
+
+          function decoded(bytes calldata data) external pure returns (address, uint256) {
+              (uint256 amount, address owner) = abi.decode(data, (uint256, address));
+              return (owner, amount);
+          }
+
+          function divMod(uint256 a, uint256 b) external pure returns (uint256, uint256) {
+              (uint256 quotient, uint256 remainder) = Division.divMod(a, b);
+              return (quotient, remainder);
+          }
+
+          function again(uint256 a, uint256 b) external view returns (uint256) {
+              (uint256 quotient, uint256 remainder) = this.divMod(a, b);
+              return quotient + remainder;
+          }
+
+          function read(address token, IFeed feed, address holder) external view returns (Reading memory) {
+              Reading memory o;
+              (bool ok, bytes memory data) = token.staticcall{gas: 50000}(abi.encodeCall(IToken.balanceOf, (holder)));
+              o.ok = ok;
+              if (ok) o.balance = abi.decode(data, (uint256));
+              (o.price, o.updatedAt) = feed.latest(token);
+              return o;
+          }
+      }
+    `,
+    calls: ({ token, feed, broken, empty }) => [
+      { functionName: "probe", args: [token, HOLDER] },
+      { functionName: "probe", args: [broken, HOLDER] },
+      // A call to an account with no code succeeds with no data, and decoding nothing reverts.
+      { functionName: "probe", args: [empty, HOLDER] },
+      { functionName: "latest", args: [feed, token] },
+      { functionName: "latest", args: [broken, token] },
+      { functionName: "age", args: [feed, token, 1_700_000_100n] },
+      { functionName: "age", args: [feed, token, 5n] },
+      { functionName: "decoded", args: [encodeAbiParameters(parseAbiParameters("uint256, address"), [7n, HOLDER])] },
+      { functionName: "decoded", args: ["0x1234"] },
+      { functionName: "divMod", args: [17n, 5n] },
+      { functionName: "divMod", args: [1n, 0n] },
+      { functionName: "again", args: [17n, 5n] },
+      { functionName: "again", args: [1n, 0n] },
+      { functionName: "read", args: [token, feed, HOLDER] },
+      { functionName: "read", args: [broken, feed, HOLDER] },
+      { functionName: "read", args: [token, broken, HOLDER] },
+    ],
+  },
+  "a catch block with locals of its own": {
+    ts: `
+      import { address, contract, iface, uint256, view } from "@morpho-org/viem-dlc/solidity";
+
+      const IFeed = iface({ price: view(address).returns(uint256) });
+
+      export const CatchLens = contract("CatchLens", {
+        priceOr: view(IFeed, address, uint256).returns(uint256),
+      }).implementation({
+        priceOr(feed, token, otherwise) {
+          let price = 0n;
+          try {
+            price = feed.price(token);
+          } catch {
+            const doubled = uint256(otherwise * 2n);
+            const other = uint256(doubled + 1n);
+            price = other;
+          }
+          const other = uint256(price + 1n);
+          return other;
+        },
+      });
+    `,
+    solidity: `
+      interface IFeed {
+          function price(address) external view returns (uint256);
+      }
+
+      contract CatchLens {
+          function priceOr(IFeed feed, address token, uint256 otherwise) external view returns (uint256) {
+              uint256 price = 0;
+              try feed.price(token) returns (uint256 r) {
+                  price = r;
+              } catch {
+                  uint256 doubled = uint256(otherwise * 2);
+                  uint256 other = uint256(doubled + 1);
+                  price = other;
+              }
+              uint256 other = uint256(price + 1);
+              return other;
+          }
+      }
+    `,
+    calls: ({ token, feed, broken }) => [
+      { functionName: "priceOr", args: [feed, token, 9n] },
+      { functionName: "priceOr", args: [broken, token, 9n] },
+    ],
+  },
 } satisfies Record<string, ExternalPair>;
 
 describe("fixture pairs: the outside world", () => {
@@ -799,6 +990,45 @@ describe("fixture pairs: the outside world", () => {
       expect(flag(`probeCapped(${token}, ${HOLDER}, 10)`)).toBe(0n);
       expect(BigInt(outcomes.get(`size(${token})`)?.data ?? 0)).toBeGreaterThan(0n);
       expect(BigInt(outcomes.get(`size(${empty})`)?.data ?? 1)).toBe(0n);
+    });
+
+    it("several locals declared from one call", async () => {
+      const outcomes = await run("several locals declared from one call");
+      const { token, feed, broken, empty } = mocks;
+      const words = (key: string) =>
+        (outcomes.get(key)?.data ?? "0x")
+          .slice(2)
+          .match(/.{64}/g)
+          ?.map((word) => BigInt(`0x${word}`));
+      const balance = BigInt(HOLDER) % 1000n;
+      const price = (BigInt(token) % 1_000_000n) + 1n;
+      expect(words(`probe(${token}, ${HOLDER})`)).toEqual([1n, balance]);
+      expect(words(`probe(${broken}, ${HOLDER})`)).toEqual([0n, 0n]);
+      expect(outcomes.get(`probe(${empty}, ${HOLDER})`)?.status).toBe("revert");
+      expect(words(`latest(${feed}, ${token})`)).toEqual([price, 1_700_000_000n]);
+      expect(outcomes.get(`latest(${broken}, ${token})`)?.data.slice(0, 10)).toBe("0x08c379a0");
+      expect(words(`age(${feed}, ${token}, 1700000100)`)).toEqual([100n]);
+      expect(outcomes.get(`age(${feed}, ${token}, 5)`)?.data.slice(0, 10)).toBe("0x4e487b71");
+      expect(outcomes.get("decoded(0x1234)")?.status).toBe("revert");
+      expect(words("divMod(17, 5)")).toEqual([3n, 2n]);
+      expect(outcomes.get("divMod(1, 0)")?.data.slice(0, 10)).toBe("0x4e487b71");
+      expect(words("again(17, 5)")).toEqual([5n]);
+      expect(outcomes.get("again(1, 0)")?.data.slice(0, 10)).toBe("0x4e487b71");
+      expect(words(`read(${token}, ${feed}, ${HOLDER})`)).toEqual([1n, balance, price, 1_700_000_000n]);
+      expect(words(`read(${broken}, ${feed}, ${HOLDER})`)).toEqual([
+        0n,
+        0n,
+        (BigInt(broken) % 1_000_000n) + 1n,
+        1_700_000_000n,
+      ]);
+      expect(outcomes.get(`read(${token}, ${broken}, ${HOLDER})`)?.status).toBe("revert");
+    });
+
+    it("a catch block with locals of its own", async () => {
+      const outcomes = await run("a catch block with locals of its own");
+      const { token, feed, broken } = mocks;
+      expect(BigInt(outcomes.get(`priceOr(${feed}, ${token}, 9)`)?.data ?? 0)).toBe((BigInt(token) % 1_000_000n) + 2n);
+      expect(BigInt(outcomes.get(`priceOr(${broken}, ${token}, 9)`)?.data ?? 0)).toBe(20n);
     });
   });
 });
