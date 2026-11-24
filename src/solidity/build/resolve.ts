@@ -547,6 +547,8 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
         const named = staticValue(module, unwrap(node));
         if (named?.kind !== "declaration" || named.declaration.kind !== "immutable")
           return error(module, node, `"${key}" must name a module-level immutable(…)`);
+        if (immutables.some((listed) => listed.declaration === named.declaration))
+          return error(module, node, `"${key}" lists an immutable the contract already lists`);
         references.set(unwrap(node), named);
         immutables.push({ key, declaration: named.declaration });
       }
