@@ -155,3 +155,35 @@ export const Lens = contract("Lens", {
     expect(solidity).toContain('return "0x123";');
   });
 });
+
+describe("a division in a constant a lens reads", () => {
+  const DIVISION = "a constant a lens reads cannot use /";
+  const lens = (expression: string) => `${IMPORTS}
+const SCALE = ${expression};
+export const Lens = contract("Lens", { f: pure().returns(uint256) }).implementation({
+  f: () => SCALE,
+});
+`;
+
+  it("is reported at the operator", async () => {
+    const code = lens("7n / 2n");
+    await expectRejection(code, { message: DIVISION, ...positionIn(code, "/ 2n") });
+  });
+
+  it("is reported at the operator after a block comment that holds a slash", async () => {
+    const code = lens("7n /* amounts */ / 2n");
+    await expectRejection(code, { message: DIVISION, ...positionIn(code, "/ 2n") });
+    const several = lens("7n /* a / b */ /* c */ / /* d / e */ 2n");
+    await expectRejection(several, { message: DIVISION, ...positionIn(several, "/ /* d") });
+  });
+
+  it("is reported at the operator after a line comment that holds a slash", async () => {
+    const code = lens("7n // per / unit\n  / 2n");
+    await expectRejection(code, { message: DIVISION, ...positionIn(code, "/ 2n") });
+  });
+
+  it("is reported at the operator between parenthesized operands", async () => {
+    const code = lens("(7n /* a / b */) / (2n)");
+    await expectRejection(code, { message: DIVISION, ...positionIn(code, "/ (2n)") });
+  });
+});

@@ -437,10 +437,13 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     }
     if (is(node, "BinaryExpression")) {
       if (node.operator === "/") {
-        const at = m.code.indexOf("/", node.left.end);
+        // The operator is the one slash between the operands that is not in a comment.
+        const between = m.code.slice(node.left.end, node.right.start);
+        const comments = /\/\*[\s\S]*?\*\/|\/\/.*/g;
+        const at = node.left.end + between.replace(comments, (comment) => " ".repeat(comment.length)).indexOf("/");
         error(
           m,
-          at >= 0 && at < node.right.start ? { start: at, end: at + 1 } : node,
+          { start: at, end: at + 1 },
           "a constant a lens reads cannot use /: solc divides literals exactly and JavaScript's BigInt truncates, so the constant would mean two different values. Divide inside the body, where the division is Solidity's",
         );
       }
