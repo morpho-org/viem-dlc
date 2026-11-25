@@ -871,6 +871,7 @@ not to one registered after it:
   resolve hook with `module.registerHooks`. A hook registered before it is followed, an alias
   included. While one registered after it exists, every import a lens reads through is an error
   that says so, because that hook could send the application's import to another file.
+- Hooks added with `module.register` are followed in either order.
 - A resolve hook the build cannot see is not supported: one registered through a reference to
   `registerHooks` that was taken before the register module loaded. A lens may then read another
   file than the application imports.

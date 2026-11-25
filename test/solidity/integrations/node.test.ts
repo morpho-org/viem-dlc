@@ -143,6 +143,14 @@ export const HookedLens = contract("HookedLens", { rate: pure().returns(uint256)
 registerHooks({ resolve: (specifier, context, nextResolve) => nextResolve(${redirect}, context) });
 `,
       );
+      project.write(
+        "hooked/alias-off-thread.mjs",
+        'import { register } from "node:module";\n\nregister("./alias-off-thread-hooks.mjs", import.meta.url);\n',
+      );
+      project.write(
+        "hooked/alias-off-thread-hooks.mjs",
+        `export const resolve = (specifier, context, nextResolve) => nextResolve(${redirect}, context);\n`,
+      );
     };
     /** The lens the script printed returns, when executed, the value the script's own import gave: 29. */
     const expectFollowed = async (imports: readonly string[]) => {
@@ -169,6 +177,12 @@ registerHooks({ resolve: (specifier, context, nextResolve) => nextResolve(${redi
       expect(run.output).toContain(
         `LensError: ${project.file("hooked/lens.ts")}:${line}:${column} - error: cannot tell which file "./units.js" names: a resolve hook was registered with registerHooks after @morpho-org/viem-dlc/solidity/register, and can send this import to another file than a lens would read. Register @morpho-org/viem-dlc/solidity/register last: put its --import after the others.`,
       );
+    });
+
+    it.skipIf(!requireAnvil())("added with module.register, is followed in either order", async () => {
+      writeHooked();
+      await expectFollowed(["./hooked/alias-off-thread.mjs", REGISTER]);
+      await expectFollowed([REGISTER, "./hooked/alias-off-thread.mjs"]);
     });
   });
 
