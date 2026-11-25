@@ -3,10 +3,10 @@
  * class means the same read from its TypeScript and from the JavaScript made of it. A member that is there
  * when the module runs is refused.
  */
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { describePairs } from "./helpers/core.js";
-import { expectRejection, positionIn } from "./helpers/harness.js";
+import { buildSnippet, expectRejection, positionIn } from "./helpers/harness.js";
 
 const lens = (members: string) => `import { contract, pure, Struct, uint256 } from "@morpho-org/viem-dlc/solidity";
 class Item extends Struct({ count: uint256 }) {${members}}
@@ -55,4 +55,39 @@ describe("a struct class with a member that is there when the module runs", () =
         source: "transform",
       });
     });
+});
+
+// A struct class goes from the module with the lens once nothing else reads it. A decorator is code that
+// runs when the class is declared, and would go with it.
+describe("a struct class with a decorator", () => {
+  const registered = (
+    declaration: string,
+  ) => `import { contract, pure, Struct, uint256 } from "@morpho-org/viem-dlc/solidity";
+let registrations = 0;
+function register(_value: unknown) { registrations++; }
+${declaration} {}
+export const observed = () => registrations;
+export const Lens = contract("Lens", { run: pure(Item).returns(uint256) }).implementation({
+  run(item) { return item.count; },
+});
+`;
+
+  it.each([
+    ["a decorator", "@register\nclass Item extends Struct({ count: uint256 })"],
+    ["a decorator that is called", "@(() => register)()\nclass Item extends Struct({ count: uint256 })"],
+    ["a decorator before its export", "@register\nexport class Item extends Struct({ count: uint256 })"],
+    ["a decorator after its export", "export @register class Item extends Struct({ count: uint256 })"],
+  ])("refuses %s, at the decorator", async (_what, declaration) => {
+    const code = registered(declaration);
+    await expectRejection(code, {
+      message: "a struct class has no decorator",
+      ...positionIn(code, declaration.slice(declaration.indexOf("@"))),
+      source: "transform",
+    });
+  });
+
+  it("builds the same class without one", async () => {
+    const built = await buildSnippet(registered("class Item extends Struct({ count: uint256 })"));
+    expect(built.lenses.map((lens) => lens.resolved.name)).toEqual(["Lens"]);
+  });
 });

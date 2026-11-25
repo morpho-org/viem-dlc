@@ -501,6 +501,15 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       if (!is(superClass, "CallExpression") || !isBuiltin(staticValue(m, unwrap(superClass.callee)), "Struct"))
         return error(m, key, `class "${binding.name}" does not extend Struct({ … })`);
       takes(m, superClass, 1, "Struct(…)");
+      // The rewrite removes the class with the lens once nothing else reads it, and a decorator is code
+      // that runs where the class is declared.
+      const [decorator] = binding.node.decorators;
+      if (decorator)
+        return error(
+          m,
+          decorator,
+          "a struct class has no decorator: the class goes from the module with the lens, and what the decorator does would go with it",
+        );
       // A member that is only a type is erased by a compiler, and is no member.
       const members = binding.node.body.body.filter(
         (member) => !is(member, "TSIndexSignature") && !(is(member, "PropertyDefinition") && member.declare),

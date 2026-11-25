@@ -872,7 +872,8 @@ Every integration runs the same transform, and holds to the same rules:
   and what only its body used goes with it: its helpers, structs and constants, and the imports
   nothing else uses. A module that holds JSX keeps all of them. JSX is compiled to calls of a factory
   that a pragma or a compiler option names, and the build does not read which of the module's names
-  that is.
+  that is. A struct class with a decorator stops the build, because removing the class would also
+  remove what the decorator does.
 - **Nothing is written into the source tree.** The only files written are the tool's own output and
   the cache described below.
 
