@@ -110,3 +110,44 @@ describePairs("names that export * does give", {
     calls: [{ functionName: "run" }],
   },
 });
+
+describe("a default export", () => {
+  it("refuses one that is computed, where it is imported", async () => {
+    const lens = reads('import N from "./provider.js";', "N");
+    await expectRejection(
+      { "lens.ts": lens, "provider.ts": "const N = 17n;\nexport default N * 1n;\n" },
+      {
+        message: "a default export that is an expression cannot be used by a lens; export it under a name",
+        ...positionIn(lens, "N from"),
+        source: "transform",
+      },
+    );
+  });
+});
+
+describePairs("a default export that is a name", {
+  "export default N": {
+    ts: {
+      "lens.ts": reads('import N from "./provider.js";', "N"),
+      "provider.ts": "const N = 17n;\nexport default N;\n",
+    },
+    solidity: RUN.replace("VALUE", "17"),
+    calls: [{ functionName: "run" }],
+  },
+  "export { N as default }": {
+    ts: {
+      "lens.ts": reads('import N from "./provider.js";', "N"),
+      "provider.ts": "const N = 17n;\nexport { N as default };\n",
+    },
+    solidity: RUN.replace("VALUE", "17"),
+    calls: [{ functionName: "run" }],
+  },
+  "a default export read off a namespace, written with a type": {
+    ts: {
+      "lens.ts": reads('import * as provider from "./provider.js";', "provider.default"),
+      "provider.ts": "const N = 17n;\nexport default N as bigint;\n",
+    },
+    solidity: RUN.replace("VALUE", "17"),
+    calls: [{ functionName: "run" }],
+  },
+});

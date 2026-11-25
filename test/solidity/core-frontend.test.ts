@@ -157,6 +157,7 @@ export default class DefaultClass {}
     expect(defaultOf("export default function named() {}")).toEqual({ kind: "local", local: "named" });
     expect(defaultOf("export default function () {}")).toBeUndefined();
     expect(defaultOf("export default 10n ** 18n;")).toMatchObject({ kind: "default" });
+    expect(defaultOf("const N = 1n;\nexport default N;")).toEqual({ kind: "local", local: "N" });
     expect(defaultOf("export default interface Shape { side: bigint }")).toBeUndefined();
   });
 
