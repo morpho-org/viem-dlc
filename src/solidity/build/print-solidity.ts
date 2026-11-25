@@ -519,8 +519,8 @@ class Printer {
   /**
    * `try { x = feed.f(a) } catch { … }` is `try feed.f(a) returns (T r) { x = r; } catch { … }`: Solidity's
    * try takes one external call, so the block holds exactly one, bare or assigned. T is the type the called
-   * function declares. The returned value is named `r`, with `_` appended while the assigned target names an
-   * `r` of its own.
+   * function declares. The returned value is named `r`, with `_` appended while the assigned target prints
+   * that name for something of its own.
    */
   #try(node: AnyNode): void {
     const out = this.#out;
@@ -545,9 +545,12 @@ class Printer {
           call,
           "a try assigns the one value its call returns, so the call must be to a declared function with exactly one return value",
         );
+      // The names the target prints: a declaration's Solidity name, which is not always the name written here.
       const names = new Set<string>();
       const collect = (part: AnyNode): void => {
-        if (is(part, "Identifier")) names.add(part.name);
+        const reference = this.#lens.references.get(part);
+        if (reference) names.add(reference.kind === "builtin" ? reference.name : reference.declaration.name);
+        else if (is(part, "Identifier")) names.add(part.name);
         else if (is(part, "MemberExpression") && !part.computed) collect(part.object as AnyNode);
         else for (const child of children(part)) collect(child);
       };

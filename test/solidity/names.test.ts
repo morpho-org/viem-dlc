@@ -526,3 +526,60 @@ describe("an immutable imported under another name", () => {
     });
   });
 });
+
+describe("the value a try returns, beside an assigned target that names an immutable", () => {
+  const evm = useEvm();
+  const pair: FixturePair = {
+    ts: {
+      "lens.ts": `${IMPORTS}
+        import { r as index } from "./slot.js";
+        export const Slots = contract(
+          "Slots",
+          { one: pure().returns(uint256), read: view().returns(uint256) },
+          { immutables: { index } },
+        ).implementation({
+          one() { return 1n; },
+          read() {
+            const slots = array(uint256, 2n);
+            try { slots[Number(index)] = this.one(); } catch {}
+            return slots[0];
+          },
+        });
+      `,
+      "slot.ts": `import { immutable, uint256 } from "${PACKAGE}";\nexport const r = immutable(uint256);\n`,
+    },
+    solidity: `
+      contract Slots {
+          uint256 immutable r;
+
+          constructor(uint256 r_) {
+              r = r_;
+          }
+
+          function one() external pure returns (uint256) {
+              return 1;
+          }
+
+          function read() external view returns (uint256) {
+              uint256[] memory slots = new uint256[](2);
+              try this.one() returns (uint256 r_) {
+                  slots[r] = r_;
+              } catch {}
+              return slots[0];
+          }
+      }
+    `,
+  };
+
+  it("the printed Solidity is the handwritten Solidity", async () => {
+    expectSameAst(await compilePair(pair));
+  });
+
+  it.skipIf(!requireAnvil())("both write the returned value at the immutable's index", async () => {
+    const word = (value: bigint) => ({ status: "success", data: `0x${value.toString(16).padStart(64, "0")}` });
+    const compiled = await compilePair(pair);
+    const read = [{ functionName: "read" }];
+    expect(await expectSameExecution(evm(), withConstructorArgs(compiled, [0n]), read)).toEqual([word(1n)]);
+    expect(await expectSameExecution(evm(), withConstructorArgs(compiled, [1n]), read)).toEqual([word(0n)]);
+  });
+});
