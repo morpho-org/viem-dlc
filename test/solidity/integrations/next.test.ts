@@ -86,6 +86,56 @@ describe("Next with Turbopack, beyond the shared suite", { timeout: 240_000 }, (
   });
 });
 
+describe("a Next build, beyond the shared suite", { timeout: 240_000 }, () => {
+  let project: Project;
+  beforeAll(() => {
+    project = new Project("next");
+  }, 60_000);
+  afterAll(() => project?.remove());
+
+  it("an application's own rule for the same files still runs, on a module with a lens and on one without", async () => {
+    project.restore();
+    // The application's loader marks a module, and says so when a lens was still in it.
+    project.write(
+      "mark-loader.cjs",
+      `module.exports = function (source) {
+  return source.replace(":unmarked", source.includes(".implementation(") ? ":marked before its lens was compiled" : ":marked");
+};
+`,
+    );
+    project.edit(
+      "next.config.mjs",
+      "turbopack: { root:",
+      `turbopack: {
+    rules: { "*.{ts,tsx}": { loaders: [fileURLToPath(new URL("./mark-loader.cjs", import.meta.url))] } },
+    root:`,
+    );
+    project.write(
+      "src/marked/lens.ts",
+      `${project.read("src/lens.ts").replace('"./lib/constants"', '"../lib/constants"')}\nexport const WITH_LENS = "with a lens:unmarked";\n`,
+    );
+    project.write("src/marked/plain.ts", 'export const WITHOUT_LENS = "without a lens:unmarked";\n');
+    project.write(
+      "src/app/api/marked/route.ts",
+      `import { QuoteLens, WITH_LENS } from "@/marked/lens";
+import { WITHOUT_LENS } from "@/marked/plain";
+
+export const dynamic = "force-static";
+
+export function GET() {
+  return Response.json({ bytecode: QuoteLens.bytecode, marks: [WITH_LENS, WITHOUT_LENS] });
+}
+`,
+    );
+    const built = await project.run([bin("next"), "build"]);
+    expect(built.ok, built.output).toBe(true);
+    expect(JSON.parse(project.read(".next/server/app/api/marked.body"))).toEqual({
+      bytecode: (await project.expectedLens()).bytecode,
+      marks: ["with a lens:marked", "without a lens:marked"],
+    });
+  });
+});
+
 describe("withSolidity", () => {
   const loaderOf = (config: ReturnType<typeof withSolidity>) => {
     const rule = config.turbopack?.rules?.["*.{ts,tsx}"] as
@@ -103,6 +153,32 @@ describe("withSolidity", () => {
     expect(config.turbopack?.root).toBe(ROOT);
     expect(Object.keys(config.turbopack?.rules ?? {})).toEqual(["*.svg", "*.{ts,tsx}"]);
     expect(loaderOf(config)?.loader).toBe("@morpho-org/viem-dlc/solidity/next/loader");
+  });
+
+  it.each([
+    {
+      kind: "the rule",
+      existing: { loaders: ["mark-loader"], as: "*.ts" },
+      kept: [{ loaders: ["mark-loader"], as: "*.ts" }],
+    },
+    {
+      kind: "the list of loaders",
+      existing: ["mark-loader", { loader: "other-loader", options: { mark: true } }],
+      kept: [{ loaders: ["mark-loader", { loader: "other-loader", options: { mark: true } }] }],
+    },
+    {
+      kind: "the list of rules",
+      existing: [{ condition: "browser", loaders: ["mark-loader"] }, { loaders: ["other-loader"] }],
+      kept: [{ condition: "browser", loaders: ["mark-loader"] }, { loaders: ["other-loader"] }],
+    },
+  ])("keeps $kind the application already has for the same files, after its own", ({ existing, kept }) => {
+    const rules = withSolidity({ turbopack: { rules: { "*.{ts,tsx}": existing } } }).turbopack?.rules?.["*.{ts,tsx}"];
+    expect(rules).toEqual([
+      expect.objectContaining({
+        loaders: [expect.objectContaining({ loader: "@morpho-org/viem-dlc/solidity/next/loader" })],
+      }),
+      ...kept,
+    ]);
   });
 
   it("keys Turbopack's cache on the versions that decide the output", async () => {

@@ -842,7 +842,8 @@ Every integration runs the same transform, and holds to the same rules:
   the cache described below.
 
 Next is supported with Turbopack. A webpack build of a configuration wrapped in `withSolidity` stops
-with an error, and webpack, esbuild and Bun have no integration yet.
+with an error, and webpack, esbuild and Bun have no integration yet. A loader rule the configuration
+already has for `*.{ts,tsx}` is kept, and runs after the lenses are compiled.
 
 ### `solidity.config.json`
 
