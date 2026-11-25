@@ -27,7 +27,7 @@ jobs:
           cache-dependency-path: |
             pnpm-lock.yaml
             playground/pnpm-lock.yaml
-          node-version: "24"
+          node-version: "24.22.3"
 
       - name: Install dependencies
         run: pnpm install

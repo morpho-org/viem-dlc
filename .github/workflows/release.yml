@@ -23,7 +23,7 @@ jobs:
         with:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-          node-version: "24"
+          node-version: "24.22.3"
           registry-url: "https://registry.npmjs.org"
 
       - name: Read local package version
