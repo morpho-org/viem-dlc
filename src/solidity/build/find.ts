@@ -15,6 +15,10 @@
  * The namespace itself is only ever the object of `namespace.name`, so no such read goes unseen, and
  * no module passes the package's names on with `export *`, which the parse refuses.
  *
+ * The package is loaded by an import declaration, which is where its `contract` is seen. A module that
+ * loads it when it runs, with `import("…")` or `require("…")`, can take `contract` from what that gives,
+ * so loading it that way is a located error whatever is done with the result.
+ *
  * A type alias or an interface named like the import is erased by a compiler, and hides nothing. A
  * declaration of the same name that may be a value, such as a namespace, leaves a use the scope analysis
  * cannot tell from the package's: that use is a located error too.
@@ -31,6 +35,28 @@ export const mentionsPackage = (code: string): boolean => MENTIONS_PACKAGE.test(
 
 const NOT_A_LENS =
   "contract is written in one expression with its implementation, as contract(name, functions).implementation({ … }): used in any other way, a lens is not compiled";
+
+const LOADED_AT_RUN_TIME = `this loads the package when the module runs, where a contract taken from it is not seen, and a lens written with it is not compiled. Import the package's names with an import declaration, as import { contract } from "${SOLIDITY_SPECIFIER}"`;
+
+/**
+ * The module a node loads when it runs, where the specifier is written in place: `import("…")`,
+ * `require("…")` and `import name = require("…")`. Undefined for any other node, and for a specifier
+ * that is computed.
+ */
+const loadedAtRunTime = (node: AnyNode): string | undefined => {
+  const written = is(node, "ImportExpression")
+    ? node.source
+    : is(node, "TSExternalModuleReference")
+      ? node.expression
+      : is(node, "CallExpression") && unwrap(node.callee).name === "require"
+        ? node.arguments[0]
+        : undefined;
+  const specifier = written && unwrap(written);
+  // A template without a substitution is a string. With one, the joined text holds what no specifier does.
+  return is(specifier, "TemplateLiteral")
+    ? specifier.quasis.map((quasi) => quasi.value.cooked).join("\0")
+    : keyName(specifier);
+};
 
 export function find(module: SourceModule): LensSite[] {
   const sites: LensSite[] = [];
@@ -106,6 +132,7 @@ export function find(module: SourceModule): LensSite[] {
   /** The reads of the package's namespace that are written `namespace.name`. */
   const namespaceReads = new Set<AnyNode>();
   walk(program, (node) => {
+    if (loadedAtRunTime(node) === SOLIDITY_SPECIFIER) fail(module, node, LOADED_AT_RUN_TIME);
     // `export { contract } from "…"` hands the package's contract to another module, where it is not found.
     if (is(node, "ExportNamedDeclaration") && node.source?.value === SOLIDITY_SPECIFIER && node.exportKind !== "type")
       for (const specifier of node.specifiers)

@@ -775,7 +775,9 @@ A lens is written in one expression, `contract(name, functions).implementation({
 `contract` imported from the package itself. Any other use of `contract` stops the build: a
 declaration kept in a variable and implemented later, or `contract` passed on, exported, re-exported
 with `export *`, or read off a namespace import in any way but `namespace.contract`, would leave a
-lens that is never compiled.
+lens that is never compiled. For the same reason a module takes the package's names from an import
+declaration: `import('@morpho-org/viem-dlc/solidity')` and `require('@morpho-org/viem-dlc/solidity')`
+stop the build where they are written.
 
 Every name is printed in Solidity as it is written, and none is changed. Two declarations of one lens
 cannot share a name, and none can have the name of the contract or of an entry point: the build stops

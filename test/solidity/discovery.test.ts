@@ -336,3 +336,70 @@ export const Lens = contract("Lens", { run: pure().returns(uint256) }).implement
     expect(await build(code, FILE, HOST, { cache: false })).toBeNull();
   });
 });
+
+describe("the package is loaded by an import declaration, and in no way that hides its contract", () => {
+  const LOADED = "loads the package when the module runs";
+  const BODY = '("Lens", { run: pure().returns(uint256) }).implementation({ run: () => 17n })';
+  const cases: readonly Case[] = [
+    [
+      "a dynamic import",
+      `const { contract, pure, uint256 } = await import("${PACKAGE}");
+export const Lens = contract${BODY};
+`,
+      'import("',
+    ],
+    [
+      "a dynamic import whose specifier is a template",
+      `const { contract, pure, uint256 } = await import(\`${PACKAGE}\`);
+export const Lens = contract${BODY};
+`,
+      "import(`",
+    ],
+    [
+      "a dynamic import whose specifier is spelled with an escape",
+      `const { contract, pure, uint256 } = await import("@morpho-org/viem-dlc/solidi\\u0074y");
+export const Lens = contract${BODY};
+`,
+      'import("',
+    ],
+    [
+      "a dynamic import that nothing is taken from",
+      `export const loading = import("${PACKAGE}");
+`,
+      'import("',
+    ],
+    [
+      "a require",
+      `const { contract, pure, uint256 } = require("${PACKAGE}");
+export const Lens = contract${BODY};
+`,
+      'require("',
+    ],
+    [
+      "an import that is assigned a require",
+      `import dsl = require("${PACKAGE}");
+export const Lens = dsl.contract("Lens", { run: dsl.pure().returns(dsl.uint256) }).implementation({ run: () => 17n });
+`,
+      'require("',
+    ],
+  ];
+  for (const [name, code, at] of cases)
+    it(`refuses ${name}`, async () => {
+      await expectRejection(code, { message: LOADED, ...positionIn(code, at), source: "transform" });
+      expect(() => transformSync(code, FILE, HOST, { cache: false })).toThrow(LensError);
+    });
+
+  it("leaves another module loaded that way, and the package named as a type, as they are", async () => {
+    const code = `import { contract, pure, uint256 } from "${PACKAGE}";
+type Dsl = typeof import("${PACKAGE}");
+export const other = import("./other.js");
+export const named = (name: string) => import(name);
+export const joined = import(\`${PACKAGE}/\${"yul"}\`);
+export const required = [require("node:fs"), require(), (0, eval)("require")("${PACKAGE}")];
+export const made = (make: Dsl["contract"]) => make;
+export const Lens = contract${BODY};
+`;
+    const built = await build(code, FILE, HOST, { cache: false });
+    expect(built?.lenses.map((lens) => lens.resolved.name)).toEqual(["Lens"]);
+  });
+});

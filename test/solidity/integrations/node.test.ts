@@ -216,6 +216,32 @@ console.log(JSON.stringify({ plain: plain.bytecode, escaped: escaped.bytecode })
     expect(check.output).toContain("2 lenses compiled, 0 files failed");
   });
 
+  // A contract taken from a dynamic import is one the build does not see. The import is an error where
+  // it is written, not a lens that throws on first use.
+  it("a dynamic import of the package is refused where it is written, by the hook and by the check command", async () => {
+    project.restore();
+    const lens = `const { contract, pure, uint256 } = await import("@morpho-org/viem-dlc/solidity");
+
+export const DynamicLens = contract("DynamicLens", { rate: pure().returns(uint256) }).implementation({ rate: () => 17n });
+`;
+    project.write("dynamic/lens.ts", lens);
+    project.write(
+      "dynamic/script.ts",
+      'import { DynamicLens } from "./lens.ts";\n\nconsole.log(DynamicLens.bytecode);\n',
+    );
+    const { line, column } = positionIn(lens, 'import("');
+    const refusal = `dynamic/lens.ts:${line}:${column} - error: this loads the package when the module runs`;
+
+    const hook = await project.run(["--import", "@morpho-org/viem-dlc/solidity/register", "dynamic/script.ts"]);
+    expect(hook.ok, hook.output).toBe(false);
+    expect(hook.output).toContain(`LensError: ${project.file(refusal)}`);
+
+    const check = await project.run([project.file(CLI), "check", "dynamic"]);
+    expect(check.ok, check.output).toBe(false);
+    expect(check.output).toContain(refusal);
+    expect(check.output).toContain("0 lenses compiled, 1 files failed");
+  });
+
   // Node loads no package.json a script's import is resolved through, so only the build can report it.
   it("an edit to only the package.json an import is resolved through restarts node --watch, which then serves the other file", async () => {
     project.restore();
