@@ -863,6 +863,18 @@ One limit comes from Next itself. With server fast refresh, `next dev` can keep 
 of a lens that has since been repaired (seen with Next 16.4). Restart the server, or run
 `next dev --no-server-fast-refresh`.
 
+One comes from Node. It runs the resolve hook registered last first, so the hook of
+`@morpho-org/viem-dlc/solidity/register` can put an import to the hooks registered before it and
+not to one registered after it:
+
+- Put `--import @morpho-org/viem-dlc/solidity/register` after every other `--import` that registers a
+  resolve hook with `module.registerHooks`. A hook registered before it is followed, an alias
+  included. While one registered after it exists, every import a lens reads through is an error
+  that says so, because that hook could send the application's import to another file.
+- A resolve hook the build cannot see is not supported: one registered through a reference to
+  `registerHooks` that was taken before the register module loaded. A lens may then read another
+  file than the application imports.
+
 ### `solidity.config.json`
 
 One file per repository pins the compiler, so a lens compiles the same way in a build and in a test.

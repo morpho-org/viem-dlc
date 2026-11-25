@@ -4,10 +4,12 @@
  */
 import path from "node:path";
 
+import { type Hex, toFunctionSelector } from "viem";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { build } from "../../../src/solidity/build/index.js";
 import { type Evm, requireAnvil, startAnvil } from "../helpers/anvil.js";
+import { positionIn } from "../helpers/harness.js";
 
 import { describeHost } from "./helpers/host-suite.js";
 import { lastPrintedBytecode, Project, waitFor } from "./helpers/project.js";
@@ -108,6 +110,65 @@ describe("the Node hook and the check command, beyond the shared suite", { timeo
       expect(check.ok, check.output).toBe(false);
       expect(check.output).toContain(`${line}\n`);
       expect(check.output).toContain("0 lenses compiled, 1 files failed");
+    });
+  });
+
+  // Node runs the newest resolve hook first. One registered before the build's is asked with the import
+  // itself; one registered after it sees only the build's own question, so the build cannot follow it.
+  describe("a resolve hook of the application's, which sends one import of the lens module to another file", () => {
+    const LENS = `import { contract, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
+import { RATE } from "./units.js";
+
+export { RATE };
+
+export const HookedLens = contract("HookedLens", { rate: pure().returns(uint256) }).implementation({
+  rate: () => RATE,
+});
+`;
+    const redirect = `specifier === "./units.js" && context.parentURL?.endsWith("/hooked/lens.ts") ? "./selected.js" : specifier`;
+    const REGISTER = "@morpho-org/viem-dlc/solidity/register";
+    const writeHooked = () => {
+      project.restore();
+      project.write("hooked/lens.ts", LENS);
+      project.write("hooked/units.js", "export const RATE = 17n;\n");
+      project.write("hooked/selected.js", "export const RATE = 29n;\n");
+      project.write(
+        "hooked/script.ts",
+        'import { HookedLens, RATE } from "./lens.ts";\n\nconsole.log(JSON.stringify({ bytecode: HookedLens.bytecode, imported: String(RATE) }));\n',
+      );
+      project.write(
+        "hooked/alias.mjs",
+        `import { registerHooks } from "node:module";
+
+registerHooks({ resolve: (specifier, context, nextResolve) => nextResolve(${redirect}, context) });
+`,
+      );
+    };
+    /** The lens the script printed returns, when executed, the value the script's own import gave: 29. */
+    const expectFollowed = async (imports: readonly string[]) => {
+      const run = await project.run([...imports.flatMap((module) => ["--import", module]), "hooked/script.ts"]);
+      expect(run.ok, run.output).toBe(true);
+      const reported = JSON.parse(run.output.slice(run.output.lastIndexOf("{"))) as { bytecode: Hex; imported: string };
+      expect(reported.imported).toBe("29");
+      const lens = await (evm as Evm).deploy(reported.bytecode);
+      const returned = await (evm as Evm).call(lens, toFunctionSelector("rate()"));
+      expect(returned.status).toBe("success");
+      expect(String(BigInt(returned.data))).toBe(reported.imported);
+    };
+
+    it.skipIf(!requireAnvil())("registered before the build's hook, is followed", async () => {
+      writeHooked();
+      await expectFollowed(["./hooked/alias.mjs", REGISTER]);
+    });
+
+    it("registered after the build's hook, is refused at the import, naming the order to use", async () => {
+      writeHooked();
+      const run = await project.run(["--import", REGISTER, "--import", "./hooked/alias.mjs", "hooked/script.ts"]);
+      expect(run.ok, run.output).toBe(false);
+      const { line, column } = positionIn(LENS, '"./units.js"');
+      expect(run.output).toContain(
+        `LensError: ${project.file("hooked/lens.ts")}:${line}:${column} - error: cannot tell which file "./units.js" names: a resolve hook was registered with registerHooks after @morpho-org/viem-dlc/solidity/register, and can send this import to another file than a lens would read. Register @morpho-org/viem-dlc/solidity/register last: put its --import after the others.`,
+      );
     });
   });
 
