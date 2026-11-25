@@ -267,8 +267,16 @@ export interface AddressToken extends Token<"address"> {
   // biome-ignore lint/suspicious/noExplicitAny: any interface handle converts to an address
   (value: bigint | number | address | Address | Handle<any>): address;
 }
+/**
+ * What converts to a fixed-size bytes type, as in Solidity: an integer of its size, a literal, a
+ * fixed-size bytes type of any size (a wider one is cut, a narrower one is padded), and `bytes`.
+ */
+type FixedBytesInput = bigint | number | Hex | bytes4 | bytes32 | bytes;
+export interface Bytes4Token extends Token<"bytes4"> {
+  (value: FixedBytesInput): bytes4;
+}
 export interface Bytes32Token extends Token<"bytes32"> {
-  (value: bigint | number | Hex): bytes32;
+  (value: FixedBytesInput): bytes32;
 }
 
 // ---- declarations ------------------------------------------------------------------------------------
@@ -528,7 +536,7 @@ export type Tokens = { [K in IntegerName]: IntToken<K> } & {
   address: AddressToken;
   bytes32: Bytes32Token;
   bool: Token<"bool">;
-  bytes4: Token<"bytes4">;
+  bytes4: Bytes4Token;
   bytes: Token<"bytes">;
   string: Token<"string">;
 };
