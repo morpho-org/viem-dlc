@@ -137,8 +137,6 @@ const pairs: Record<string, ExecutedPair> = {
   },
   "hex literals and address literals": {
     ts: `${IMPORTS}
-      const OWNER = "${OWNER}";
-
       export const HexLens = contract("HexLens", {
         selector: pure().returns(bytes4, bytes4),
         word: pure().returns(bytes32),
@@ -157,7 +155,7 @@ const pairs: Record<string, ExecutedPair> = {
         // With 40 digits it is an address literal, and a local declared from one is an address.
         owner() {
           const holder = "${OWNER}";
-          return [holder, OWNER];
+          return [holder, "${OWNER}"];
         },
         isOwner: (who) => who == "${OWNER}",
         // Anything else is a string: an odd number of digits, a digit that is not hexadecimal, a capital X.

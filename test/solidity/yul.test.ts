@@ -571,7 +571,7 @@ const pairs = {
 
         import { DECIMALS_SELECTOR } from "./selectors.js";
 
-        const SHIFT = 224;
+        const SHIFT = 224n;
         const MASK = 0xffn;
         const STEP = 60_000n;
 

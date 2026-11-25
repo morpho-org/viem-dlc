@@ -404,11 +404,24 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       return error(
         m,
         node,
-        `${what} cannot be part of a constant a lens reads. Such a constant is built only from literals, other such constants, and the operators + - * ** % << >> & | ^ ~`,
+        `${what} cannot be part of a constant a lens reads. Such a constant is built only from bigint literals, booleans, strings, other such constants, and the operators + - * ** % << >> & | ^ ~`,
       );
     }
     if (is(node, "Literal")) {
-      if (!["bigint", "number", "boolean", "string"].includes(typeof node.value)) refused("this literal");
+      // JavaScript and a lens both read the constant, so it holds only what means the same to both.
+      if (typeof node.value === "number")
+        error(
+          m,
+          node,
+          "a Number literal cannot be part of a constant a lens reads: JavaScript computes with Numbers as floats, and in 32 bits where it shifts, and solc computes exactly, so the constant would mean two different values. Write it as a bigint, with the n suffix",
+        );
+      if (typeof node.value === "string" && node.value.startsWith("0x"))
+        error(
+          m,
+          node,
+          "a string that starts with 0x cannot be a constant a lens reads: a body can read it as a hex literal or an address, and JavaScript reads it as text, so the constant would mean two different values. Write the literal in the body",
+        );
+      if (!["bigint", "boolean", "string"].includes(typeof node.value)) refused("this literal");
       return;
     }
     if (is(node, "Identifier") || is(node, "MemberExpression")) {
