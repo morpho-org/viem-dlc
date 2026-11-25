@@ -6,7 +6,7 @@
  * ```
  *
  * Every lens under the file's directory compiles with this version and these settings, in a build and
- * in a test alike. The file is read each time it is needed, never cached in memory, so an edit to it
+ * in a test alike. One setting is refused: an `evmVersion` older than Byzantium, which has no STATICCALL. The file is read each time it is needed, never cached in memory, so an edit to it
  * reaches the next compile.
  */
 import fs from "node:fs";
@@ -24,6 +24,21 @@ export class ConfigError extends Error {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** The EVM versions solc names that are older than Byzantium, the first with STATICCALL. */
+const BEFORE_STATICCALL: ReadonlySet<unknown> = new Set(["homestead", "tangerineWhistle", "spuriousDragon"]);
+
+/**
+ * Throws unless the settings compile for an EVM that has STATICCALL. solc makes a call to a `view`
+ * function a STATICCALL only where the target has one, and a CALL where it has none: below Byzantium,
+ * nothing holds a lens to reading. `where` names the configuration, for the error.
+ */
+export function requireStaticCall(settings: Readonly<Record<string, unknown>>, where: string): void {
+  if (BEFORE_STATICCALL.has(settings.evmVersion))
+    throw new ConfigError(
+      `${where}: "evmVersion": "${settings.evmVersion}" is older than "byzantium", the first EVM version with STATICCALL. A lens only reads because every call it makes is a STATICCALL, so "byzantium" is the oldest target it compiles for.`,
+    );
+}
+
 /** Reads the configuration file at `file`. */
 export function readConfig(file: string): SolidityConfig {
   let parsed: unknown;
@@ -37,12 +52,14 @@ export function readConfig(file: string): SolidityConfig {
     throw new ConfigError(`${file} must pin an exact compiler: { "solc": { "version": "0.8.36" } }`);
   if (solc.settings !== undefined && !isRecord(solc.settings))
     throw new ConfigError(`${file}: "solc.settings" must be an object of solc's standard-JSON settings`);
+  const settings = solc.settings ?? {};
+  requireStaticCall(settings, file);
   const root = path.dirname(file);
   return {
     path: file,
     root,
     cacheDir: path.join(root, "node_modules", ".cache", "viem-dlc-solidity"),
-    solc: { version: solc.version, settings: solc.settings ?? {} },
+    solc: { version: solc.version, settings },
   };
 }
 

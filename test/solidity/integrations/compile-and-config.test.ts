@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   build,
@@ -16,10 +16,11 @@ import {
   findConfig,
   LensError,
   readConfig,
+  runSolc,
   SOLIDITY_HEADER,
   type SolidityConfig,
 } from "../../../src/solidity/build/index.js";
-import { positionIn } from "../helpers/harness.js";
+import { buildSnippet, positionIn } from "../helpers/harness.js";
 
 const temporary: string[] = [];
 const temporaryDirectory = (): string => {
@@ -134,6 +135,182 @@ describe("solidity.config.json", () => {
     const dir = temporaryDirectory();
     const file = write(dir, { solc: { version: "0.8.36" } });
     expect((await buildIn(dir))?.dependencies).toEqual([file]);
+  });
+});
+
+/** The EVM versions solc 0.8 names, oldest first. STATICCALL arrived with Byzantium. */
+const BEFORE_BYZANTIUM = ["homestead", "tangerineWhistle", "spuriousDragon"];
+const SINCE_BYZANTIUM = [
+  "byzantium",
+  "constantinople",
+  "petersburg",
+  "istanbul",
+  "berlin",
+  "london",
+  "paris",
+  "cancun",
+];
+
+/** A lens whose one external call is to a `view` function of a declared interface. */
+const COUNTER_LENS = `import { address, contract, iface, uint256, view } from "@morpho-org/viem-dlc/solidity";
+
+const ICounter = iface({ count: view().returns(uint256) });
+
+export const CounterLens = contract("CounterLens", { read: view(address).returns(uint256) }).implementation({
+  read: (counter) => ICounter(counter).count(),
+});
+`;
+
+/** The opcodes that leave the frame of a lens or change state, counted in solc's listing of a runtime. */
+const countEffects = (opcodes: string) => {
+  const counts: Record<string, number> = {};
+  for (const opcode of ["STATICCALL", "CALL", "CALLCODE", "DELEGATECALL", "SSTORE", "TSTORE", "CREATE", "CREATE2"])
+    counts[opcode] = 0;
+  for (const opcode of ["SELFDESTRUCT", "LOG0", "LOG1", "LOG2", "LOG3", "LOG4"]) counts[opcode] = 0;
+  for (const opcode of opcodes.split(" ")) if (opcode in counts) counts[opcode] = (counts[opcode] ?? 0) + 1;
+  return counts;
+};
+
+describe("the EVM a lens is compiled for", () => {
+  const settingsFor = (evmVersion: string) => ({ optimizer: { enabled: true, runs: 200 }, evmVersion });
+  const REFUSED = (evmVersion: string) =>
+    `"evmVersion": "${evmVersion}" is older than "byzantium", the first EVM version with STATICCALL. A lens only reads because every call it makes is a STATICCALL, so "byzantium" is the oldest target it compiles for.`;
+
+  /** The deployed code solc gives the printed lens, as opcodes, and the creation code around it. */
+  const runtimeOf = (solidity: string, settings: Record<string, unknown>) => {
+    const output = runSolc(
+      {
+        language: "Solidity",
+        sources: { "CounterLens.sol": { content: solidity } },
+        settings: {
+          ...settings,
+          outputSelection: { "*": { "*": ["evm.bytecode.object", "evm.deployedBytecode.opcodes"] } },
+        },
+      },
+      "0.8.36",
+    ) as {
+      contracts: Record<
+        string,
+        Record<string, { evm: { bytecode: { object: string }; deployedBytecode: { opcodes: string } } }>
+      >;
+    };
+    const { evm } = output.contracts["CounterLens.sol"]?.CounterLens ?? {};
+    if (!evm) throw new Error(`solc gave no CounterLens: ${JSON.stringify(output)}`);
+    return { bytecode: `0x${evm.bytecode.object}`, effects: countEffects(evm.deployedBytecode.opcodes) };
+  };
+
+  /** The lens as the build makes it under the repository's configuration, which appends nothing to the code. */
+  const builtLens = async () => {
+    const built = await buildSnippet(COUNTER_LENS);
+    const { settings } = findConfig(built.module.file).solc;
+    expect(settings).toMatchObject({ metadata: { appendCBOR: false } });
+    const [lens] = built.lenses;
+    return { solidity: lens?.printed.solidity as string, bytecode: lens?.artifact.bytecode, settings };
+  };
+
+  it("on the default target, a call to an interface's view function is one STATICCALL, and nothing else leaves or writes", async () => {
+    const lens = await builtLens();
+    // The repository's configuration names no target, so this is solc's default.
+    expect(lens.settings).not.toHaveProperty("evmVersion");
+    const runtime = runtimeOf(lens.solidity, lens.settings);
+    // The listing is of the lens the build made.
+    expect(lens.bytecode).toBe(runtime.bytecode);
+    expect(runtime.effects).toEqual({ ...countEffects(""), STATICCALL: 1 });
+  });
+
+  it("on the oldest target accepted, the same call is still one STATICCALL", async () => {
+    const lens = await builtLens();
+    expect(runtimeOf(lens.solidity, { ...lens.settings, evmVersion: "byzantium" }).effects).toEqual({
+      ...countEffects(""),
+      STATICCALL: 1,
+    });
+  });
+
+  // What the minimum is for: below it solc has no STATICCALL to print, and prints the call that can write.
+  it("below it, solc itself compiles the same call as a CALL", async () => {
+    const lens = await builtLens();
+    expect(runtimeOf(lens.solidity, { ...lens.settings, evmVersion: "spuriousDragon" }).effects).toEqual({
+      ...countEffects(""),
+      CALL: 1,
+    });
+  });
+
+  it.each(BEFORE_BYZANTIUM)("solidity.config.json is refused for %s", (evmVersion) => {
+    const dir = temporaryDirectory();
+    const file = path.join(dir, CONFIG_FILE);
+    fs.writeFileSync(file, JSON.stringify({ solc: { version: "0.8.36", settings: settingsFor(evmVersion) } }));
+    expect(() => readConfig(file)).toThrow(ConfigError);
+    expect(() => readConfig(file)).toThrow(`${file}: ${REFUSED(evmVersion)}`);
+  });
+
+  it.each(SINCE_BYZANTIUM)("solidity.config.json is read for %s", (evmVersion) => {
+    const dir = temporaryDirectory();
+    const file = path.join(dir, CONFIG_FILE);
+    fs.writeFileSync(file, JSON.stringify({ solc: { version: "0.8.36", settings: settingsFor(evmVersion) } }));
+    expect(readConfig(file).solc.settings).toEqual(settingsFor(evmVersion));
+  });
+
+  it("a lens under such a configuration is refused at the lens, and nothing is compiled or cached", async () => {
+    const dir = temporaryDirectory();
+    const file = path.join(dir, CONFIG_FILE);
+    fs.writeFileSync(file, JSON.stringify({ solc: { version: "0.8.36", settings: settingsFor("homestead") } }));
+    const error = await build(LENS, path.join(dir, "lens.ts"), {
+      resolve: () => undefined,
+      addDependency: () => {},
+    }).catch((cause: unknown) => cause);
+    expect((error as LensError).diagnostics).toEqual([
+      {
+        file: path.join(dir, "lens.ts"),
+        ...positionIn(LENS, 'contract("Lens"'),
+        severity: "error",
+        source: "transform",
+        lens: "Lens",
+        message: `${file}: ${REFUSED("homestead")}`,
+      },
+    ]);
+    expect(fs.existsSync(path.join(dir, "node_modules"))).toBe(false);
+  });
+
+  describe("a configuration given to the transform or to compile directly", () => {
+    let config: SolidityConfig;
+    beforeEach(() => {
+      const root = temporaryDirectory();
+      config = {
+        path: path.join(root, CONFIG_FILE),
+        root,
+        cacheDir: path.join(root, "node_modules", ".cache", "viem-dlc-solidity"),
+        solc: { version: "0.8.36", settings: settingsFor("tangerineWhistle") },
+      };
+    });
+
+    it("is refused by compile before the cache is read and before solc runs", () => {
+      const read = vi.spyOn(fs, "readFileSync");
+      try {
+        expect(() => compile({ contractName: "Lens", solidity: SOLIDITY_HEADER }, config)).toThrow(
+          new ConfigError(`${config.path}: ${REFUSED("tangerineWhistle")}`),
+        );
+        expect(read).not.toHaveBeenCalled();
+      } finally {
+        read.mockRestore();
+      }
+      expect(fs.existsSync(config.cacheDir)).toBe(false);
+    });
+
+    it("is refused by the transform at the lens", async () => {
+      const error = await build(
+        LENS,
+        path.join(config.root, "lens.ts"),
+        { resolve: () => undefined, addDependency: () => {} },
+        { config },
+      ).catch((cause: unknown) => cause);
+      expect((error as LensError).diagnostics).toMatchObject([
+        {
+          ...positionIn(LENS, 'contract("Lens"'),
+          lens: "Lens",
+          message: `${config.path}: ${REFUSED("tangerineWhistle")}`,
+        },
+      ]);
+    });
   });
 });
 

@@ -117,6 +117,7 @@ const buildOnce = (
       result = compile({ contractName: resolved.name, solidity: printed.solidity }, config, { cache: options.cache });
     } catch (cause) {
       if (cause instanceof SolcUnavailableError) refuse(`the lens ${site.name} needs compiling: ${cause.message}`);
+      if (cause instanceof ConfigError) refuse(cause.message);
       throw cause;
     }
     for (const warning of mapSolcDiagnostics(result.warnings, printed, resolved)) host.warn?.(warning);

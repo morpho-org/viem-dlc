@@ -870,6 +870,11 @@ Each lens uses the nearest `solidity.config.json` above its file.
 - `solc.version` is an exact version. The installed `solc` package has to be that version; another
   one is an error, not a substitute.
 - `solc.settings` is solc's standard-JSON `settings`, without `outputSelection`. It is optional.
+- `solc.settings.evmVersion`, when it is given, is `byzantium` or later. A lens only reads because
+  solc compiles every call it makes as a `STATICCALL`, and Byzantium is the first EVM version with
+  one: for an older target solc compiles the same call as a `CALL`. A configuration that names
+  `homestead`, `tangerineWhistle` or `spuriousDragon` is an error at the lens, before anything is
+  compiled or read from the cache.
 
 Compiled lenses are cached in `node_modules/.cache/viem-dlc-solidity`, beside the configuration
 file, under a hash of the Solidity, the settings and the version. A lens found there needs no
