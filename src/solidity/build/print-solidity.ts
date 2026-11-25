@@ -1092,7 +1092,18 @@ class Printer {
       // A type name called is Solidity's conversion; require, revert, gasleft and keccak256 are spelled the same.
       if (reference.module === "solidity" && (isElementaryTypeName(name) || SAME_CALL.has(name))) {
         out.write(name);
+        const from = out.finish().solidity.length;
         this.#arguments(args);
+        // solc reads the bytes of a fixed-size value off the spelling of a number, and a compiler may spell
+        // a number another way: 0x00_00_00_01 as 1. So no number reaches such a conversion, written in
+        // place or in a constant. Zero is every byte zero, however it is spelled.
+        const [converted] = args;
+        const number = /^\(+(0[xX][0-9a-fA-F]+|[0-9]+)\)+$/.exec(out.finish().solidity.slice(from))?.[1];
+        if (converted && number !== undefined && /^bytes\d/.test(name) && !/^0(?:[xX]0+)?$/.test(number))
+          this.#fail(
+            converted,
+            `a number converted to ${name} is read by its spelling, which a compiler may change. Write the bytes as a quoted hexadecimal string: ${name}("0x…")`,
+          );
         return;
       }
       if (this.#isBuiltin(callee, "staticcall")) {
