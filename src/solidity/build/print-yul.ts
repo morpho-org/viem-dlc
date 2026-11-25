@@ -27,10 +27,13 @@
  * literal that is not a safe integer is refused there as it is in Solidity. A constant named
  * inside a block must be a single such literal, because Yul has no operators. Anything that is not in
  * the table is a located error.
+ *
+ * What is only TypeScript is erased as it is outside a block: annotations, a `this` parameter of the
+ * callback, and a type declared in the block, which is not a statement when the last one is looked for.
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, is, unwrap } from "./ast.js";
+import { type AnyNode, ERASED_STATEMENTS, is, isThisParameter, unwrap } from "./ast.js";
 import { YUL_SPECIFIER } from "./builtins.js";
 import { fail, UNSAFE_NUMBER } from "./errors.js";
 import type { Reference, YulBlockInput } from "./types.js";
@@ -262,7 +265,7 @@ export function printYul(input: YulBlockInput): void {
   };
 
   const statement = (node: AnyNode): void => {
-    if (is(node, "EmptyStatement")) return;
+    if (ERASED_STATEMENTS.has(node.type)) return;
     out.line();
     out.node({ module, node }, () => {
       switch (node.type) {
@@ -335,7 +338,7 @@ export function printYul(input: YulBlockInput): void {
   /** What a callback or a function returns: its expression body, or the `return word` that ends its block. */
   const returned = (body: AnyNode): { readonly at: Span; readonly word: Span } | undefined => {
     if (!is(body, "BlockStatement")) return { at: body, word: body };
-    const last = body.body.at(-1);
+    const last = body.body.filter((inner) => !ERASED_STATEMENTS.has(inner.type)).at(-1);
     if (!is(last, "ReturnStatement")) return undefined;
     return { at: last, word: last.argument ?? refuse(last, "return is followed by the word it gives") };
   };
@@ -373,7 +376,7 @@ export function printYul(input: YulBlockInput): void {
 
   // ---- the block ------------------------------------------------------------------------------------------------
   const { block } = input;
-  const [parameter] = block.params;
+  const [parameter] = block.params.filter((declared) => !isThisParameter(declared));
   if (parameter) refuse(parameter, "the callback of an assembly block takes no parameters");
   if (block.async || block.generator) refuse(block, "the callback of an assembly block cannot be async or a generator");
   const blockBody = block.body as AnyNode;

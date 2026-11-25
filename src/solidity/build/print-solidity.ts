@@ -33,7 +33,7 @@
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, children, is, keyName, unwrap } from "./ast.js";
+import { type AnyNode, children, ERASED_STATEMENTS, is, isThisParameter, keyName, unwrap } from "./ast.js";
 import { isElementaryTypeName } from "./builtins.js";
 import { fail, UNSAFE_NUMBER } from "./errors.js";
 import { Writer } from "./position-map.js";
@@ -89,9 +89,6 @@ const OPERATORS = new Set([
   "AssignmentExpression",
   "UpdateExpression",
 ]);
-
-/** Statements that print as nothing: the empty statement, and a type declared in a body, which is only TypeScript. */
-const ERASED_STATEMENTS = new Set(["EmptyStatement", "TSTypeAliasDeclaration", "TSInterfaceDeclaration"]);
 
 const UINT256: TypeRef = { kind: "elementary", name: "uint256" };
 const BOOL: TypeRef = { kind: "elementary", name: "bool" };
@@ -301,7 +298,7 @@ class Printer {
     this.#module = fn.module;
     this.#scopes = [new Map()];
     // A `this` parameter is a TypeScript annotation, and is erased with the others.
-    const params = body.params.filter((parameter) => !(is(parameter, "Identifier") && parameter.name === "this"));
+    const params = body.params.filter((parameter) => !isThisParameter(parameter));
     if (params.length !== signature.inputs.length)
       this.#fail(
         body,
