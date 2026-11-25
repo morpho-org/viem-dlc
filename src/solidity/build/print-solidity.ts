@@ -31,7 +31,7 @@
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, children, is, keyName, unwrap } from "./ast.js";
+import { type AnyNode, children, is, keyName, patternNames, unwrap, walk } from "./ast.js";
 import { isElementaryTypeName } from "./builtins.js";
 import { fail } from "./errors.js";
 import { refusedName } from "./names.js";
@@ -147,8 +147,11 @@ class Printer {
   readonly #out = new Writer();
   /** The module of the body being printed, for positions. */
   #module: SourceModule;
-  /** The locals in scope, innermost last, each with the type it was declared with. */
-  #scopes: Map<string, TypeRef>[] = [];
+  /**
+   * The locals in scope, innermost last, each with the type it was declared with. A local its block
+   * declares further down has no type yet: the name is already its own, and cannot be read.
+   */
+  #scopes: Map<string, TypeRef | undefined>[] = [];
   /** True while a library's functions are printed: they are outside the contract, and cannot reach into it. */
   #inLibrary = false;
 
@@ -322,6 +325,7 @@ class Printer {
         const block = body.body as AnyNode | null;
         if (!block) this.#fail(body, "a lens function needs a body");
         if (is(block, "BlockStatement")) {
+          this.#hoist(block.body as unknown as AnyNode[]);
           for (const statement of block.body) this.#statement(statement as unknown as AnyNode);
           return;
         }
@@ -441,6 +445,7 @@ class Printer {
     const out = this.#out;
     const init = node.init as AnyNode | null;
     this.#scopes.push(new Map());
+    if (init) this.#hoist([init]);
     out.write("for (");
     if (init)
       out.node({ module: this.#module, node: init }, () => {
@@ -508,6 +513,7 @@ class Printer {
     const out = this.#out;
     out.write("{");
     this.#scopes.push(new Map());
+    this.#hoist(node.body as AnyNode[]);
     out.indented(() => {
       for (const statement of node.body as AnyNode[]) this.#statement(statement);
     });
@@ -677,7 +683,7 @@ class Printer {
       return undefined;
     }
     if (is(node, "Identifier") || this.#lens.references.has(node)) {
-      const local = is(node, "Identifier") ? this.#local(node.name) : undefined;
+      const local = is(node, "Identifier") ? this.#local(node) : undefined;
       if (local) return local;
       const reference = this.#lens.references.get(node);
       if (reference?.kind !== "declaration") return undefined;
@@ -847,7 +853,7 @@ class Printer {
       out.write(this.#literal(node));
       return;
     }
-    if (is(node, "Identifier") && this.#local(node.name)) {
+    if (is(node, "Identifier") && this.#local(node)) {
       out.write(node.name);
       return;
     }
@@ -1252,6 +1258,21 @@ class Printer {
       );
     if (named && local === undefined)
       this.#fail(named, "a type is named only for an assembly block that is the initializer of a local");
+    // A name the block reads from around it is a local declared above it: not the one the block initializes.
+    const inside = new Set<string>();
+    walk(block as unknown as AnyNode, (node) => {
+      if (is(node, "VariableDeclarator")) for (const name of patternNames(node.id)) inside.add(name);
+      else if (is(node, "ArrowFunctionExpression") || is(node, "FunctionExpression"))
+        for (const parameter of node.params) for (const name of patternNames(parameter)) inside.add(name);
+    });
+    const read = (node: AnyNode): void => {
+      if (this.#lens.references.has(node)) return;
+      if (is(node, "Identifier")) {
+        if (!inside.has(node.name)) this.#local(node);
+      } else if (is(node, "MemberExpression") && !node.computed) read(node.object as unknown as AnyNode);
+      else for (const child of children(node)) read(child);
+    };
+    read(block as unknown as AnyNode);
     if (local !== undefined) {
       const reference = named && this.#lens.references.get(named);
       const type: TypeRef = !named
@@ -1270,7 +1291,7 @@ class Printer {
         module: this.#module,
         references: this.#lens.references,
         result: local?.name,
-        locals: new Set(this.#scopes.flatMap((scope) => [...scope.keys()])),
+        locals: this.#declared(),
         writer: out,
       });
     });
@@ -1298,12 +1319,38 @@ class Printer {
     return name;
   }
 
-  #local(name: string): TypeRef | undefined {
+  /** Makes the names a block declares its own from the block's start, as they are in TypeScript. */
+  #hoist(statements: readonly AnyNode[]): void {
+    const scope = this.#scopes.at(-1);
+    for (const statement of statements) {
+      if (!is(statement, "VariableDeclaration")) continue;
+      for (const declarator of statement.declarations)
+        for (const name of patternNames(declarator.id)) if (!scope?.has(name)) scope?.set(name, undefined);
+    }
+  }
+
+  /**
+   * The type of the local a name means, or undefined when the name is no local. The nearest binding is the
+   * one meant, so a local that is declared further down is a located error, never the outer local of its name.
+   */
+  #local(id: Span & { readonly name: string }): TypeRef | undefined {
     for (let i = this.#scopes.length - 1; i >= 0; i--) {
-      const type = this.#scopes[i]?.get(name);
-      if (type) return type;
+      const scope = this.#scopes[i];
+      if (scope?.has(id.name))
+        return scope.get(id.name) ?? this.#fail(id, `"${id.name}" is used before it is declared`);
     }
     return undefined;
+  }
+
+  /** The names of the locals declared so far, without the ones a nearer, undeclared local hides. */
+  #declared(): Set<string> {
+    const names = new Set<string>();
+    for (const scope of this.#scopes)
+      for (const [name, type] of scope) {
+        if (type) names.add(name);
+        else names.delete(name);
+      }
+    return names;
   }
 
   #fail(node: Span, message: string): never {

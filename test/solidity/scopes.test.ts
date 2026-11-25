@@ -173,3 +173,92 @@ describePairs("a parameter and a local hide a module-level name inside a lens, a
     calls: [{ functionName: "run", args: [5n] }],
   },
 });
+
+describe("a local is not read before it is declared", () => {
+  const lens = (body: string) => `import { assembly, contract, pure, uint256 } from "${PACKAGE}";
+import { add } from "${PACKAGE}/yul";
+export const Lens = contract("Lens", { read: pure(uint256).returns(uint256) }).implementation({
+  read(x) {
+    ${body}
+  },
+});
+`;
+  const EARLY = (name: string) => `"${name}" is used before it is declared`;
+  refuses([
+    [
+      "a local of a block read above its declaration, where an outer local has the same name",
+      lens(
+        "let count = 7n;\n    {\n      const seen = count;\n      let count = 9n;\n      return seen + count;\n    }",
+      ),
+      "count;\n      let count",
+      EARLY("count"),
+    ],
+    [
+      "a local read in its own initializer, where an outer local has the same name",
+      lens("let count = 7n;\n    {\n      const count = uint256(count + x);\n      return count;\n    }"),
+      "count + x",
+      EARLY("count"),
+    ],
+    [
+      "a local of a for loop read in its own initializer, where a parameter has the same name",
+      lens("let sum = 0n;\n    for (let x = uint256(x + 1n); x < 9n; x++) sum += x;\n    return sum;"),
+      "x + 1n",
+      EARLY("x"),
+    ],
+    [
+      "a local read by an assembly block above its declaration, where an outer local has the same name",
+      lens(
+        'let a = 21n;\n    {\n      const value = assembly("memory-safe", () => a);\n      const a = x;\n      return value + a;\n    }',
+      ),
+      "a);",
+      EARLY("a"),
+    ],
+    [
+      "the local an assembly block is the initializer of, read by the block",
+      lens('const value = assembly("memory-safe", () => add(value, x));\n    return value;'),
+      "value, x",
+      EARLY("value"),
+    ],
+  ]);
+});
+
+describePairs("an outer local is read where no nearer one is declared", {
+  "a block that reads the function's local, and an assembly block that reads and declares its own": {
+    ts: `
+      import { assembly, contract, pure, uint256 } from "${PACKAGE}";
+      import { add } from "${PACKAGE}/yul";
+      export const Lens = contract("Lens", { read: pure(uint256).returns(uint256) }).implementation({
+        read(x) {
+          const count = 7n;
+          {
+            const seen = count;
+            const value = assembly("memory-safe", () => {
+              const a = add(seen, x);
+              return a;
+            });
+            const a = value;
+            return a;
+          }
+        },
+      });
+    `,
+    solidity: `
+      contract Lens {
+          function read(uint256 x) external pure returns (uint256) {
+              uint256 count = 7;
+              {
+                  uint256 seen = count;
+                  uint256 value;
+                  assembly ("memory-safe") {
+                      let a := add(seen, x)
+                      value := a
+                  }
+                  uint256 a = value;
+                  return a;
+              }
+          }
+      }
+    `,
+    calls: [{ functionName: "read", args: [5n] }],
+  },
+});
