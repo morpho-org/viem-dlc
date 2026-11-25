@@ -333,9 +333,12 @@ export const Lens = contract("Lens", { f: pure(uint256).returns(uint256) }).impl
       });
     });
 
-  it("an enum declared in a body is not a name a lens can use", async () => {
+  it("an enum declared in a body has no Solidity form", async () => {
     const code = lens("enum Side { Low, High }\n    return x;");
-    await expectRejection(code, { message: '"Side" is not a module-level name', ...positionIn(code, "Side") });
+    await expectRejection(code, {
+      message: "a lens body cannot contain this statement (TSEnumDeclaration)",
+      ...positionIn(code, "enum Side"),
+    });
   });
 
   it("a statement assigns or calls", async () => {

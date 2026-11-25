@@ -5,7 +5,9 @@
  *   wants caching pays for nothing here.
  * - The runtime half (`src/solidity` without `build/`) imports only viem and itself: no parser, no
  *   compiler, no Node built-in, nothing from the build half.
- * - Only the build half imports solc and the TypeScript parser, which are optional peer dependencies.
+ * - Only the build half imports solc, the TypeScript parser, the resolver and the scope analyzer, which
+ *   are optional peer dependencies, each pinned to one version for development.
+ * - The parser and the scope analyzer are each called from one module.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -81,7 +83,7 @@ const packageOf = (specifier: string) =>
     .slice(0, specifier.startsWith("@") ? 2 : 1)
     .join("/");
 
-const BUILD_ONLY = ["solc", "oxc-parser", "oxc-resolver"];
+const BUILD_ONLY = ["solc", "oxc-parser", "oxc-resolver", "@typescript-eslint/scope-manager"];
 
 describe("src/solidity import boundaries", () => {
   it("finds the files it is about", () => {
@@ -123,12 +125,34 @@ describe("src/solidity import boundaries", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("only the build half imports solc and the parser", () => {
+  it("only the build half imports solc, the parser, the resolver and the scope analyzer", () => {
     const users = imports
       .filter(({ specifiers }) => specifiers.some(({ specifier }) => BUILD_ONLY.includes(packageOf(specifier))))
       .map(({ file }) => file);
     expect(users.length).toBeGreaterThan(0);
     expect(users.filter((file) => !inside(BUILD, file)).map(relative)).toEqual([]);
+  });
+
+  it("each of them is an optional peer, pinned to one version for development", () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(SRC, "..", "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies: Record<string, string>;
+      peerDependencies: Record<string, string>;
+      peerDependenciesMeta: Record<string, { optional?: boolean }>;
+    };
+    for (const dependency of BUILD_ONLY) {
+      expect(manifest.dependencies?.[dependency], dependency).toBeUndefined();
+      expect(manifest.peerDependencies[dependency], dependency).toBeDefined();
+      expect(manifest.peerDependenciesMeta[dependency], dependency).toEqual({ optional: true });
+      expect(manifest.devDependencies[dependency], dependency).toMatch(/^\d+\.\d+\.\d+$/);
+    }
+  });
+
+  it("the scope analyzer is called from one module", () => {
+    const callers = imports
+      .filter(({ specifiers }) => specifiers.some(({ specifier }) => specifier === "@typescript-eslint/scope-manager"))
+      .map(({ file }) => relative(file));
+    expect(callers).toEqual([path.join("solidity", "build", "scopes.ts")]);
   });
 
   it("the parser is called from one module", () => {

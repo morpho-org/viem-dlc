@@ -218,9 +218,8 @@ describe("find", () => {
         // Off an object that is not a namespace import, and off one that is not a name.
         local.contract("C", ${body};
         local.nested.contract("D", ${body};
-        // Something else off the package's namespace, and a computed name.
+        // Something else off the package's namespace.
         sol.library("E", ${body};
-        sol["contract"]("F", ${body};
         // A call of a call, and .implementation on something that is not a call.
         local.contract()("G", ${body};
         local.implementation({});
@@ -305,7 +304,7 @@ describe("resolve: names", () => {
       "index.ts": `
         export { SCALE } from "./units.js";
         export * as units from "./units.js";
-        export * from "${PACKAGE}";
+        export { uint128 } from "${PACKAGE}";
         export * from "./loop.js";
         export * from "./helpers.js";
       `,
@@ -316,7 +315,7 @@ describe("resolve: names", () => {
         import { internal, pure, uint256 } from "${PACKAGE}";
         export const half = internal(pure(uint256).returns(uint256), (x) => x / 2n);
       `,
-      "dsl.ts": `export * from "${PACKAGE}"; export * from "${PACKAGE}/yul";`,
+      "dsl.ts": `export { uint256 } from "${PACKAGE}"; export * from "${PACKAGE}/yul";`,
     });
     // The module of the helper is reached first, then the module of the constants, then the lens's own.
     expect(declared(lens)).toEqual(["helper half", "constant SCALE", "constant LIMIT", "constant DOUBLE"]);
@@ -347,36 +346,48 @@ describe("resolve: names", () => {
     expect(referenced(lens)).toEqual(new Set(["solidity:uint256", "yul:mload", "yul:add", "global:BigInt"]));
   });
 
-  it("orders declarations by module, other modules first, and renames two that share a name", () => {
-    const lens = resolveSnippet({
-      "lens.ts": `${IMPORTS}
+  const twoModules = (other: string) => ({
+    "lens.ts": `${IMPORTS}
         import { Pair, first } from "./b.js";
-        import { Pair as Other, second } from "./a.js";
+        import { ${other}, second } from "./a.js";
 
         class Lens_ extends Struct({ x: uint256 }) {}
-        const f = internal(pure(uint256).returns(uint256), (x) => x);
+        const g = internal(pure(uint256).returns(uint256), (x) => x);
 
         export const Lens = contract("Lens", { f: pure(Pair, Other, Lens_).returns(uint256) }).implementation({
-          f: (p, q, r) => f(first(p) + second(q)),
+          f: (p, q, r) => g(first(p) + second(q)),
         });
       `,
-      "a.ts": `${IMPORTS}
-        export class Pair extends Struct({ a: uint256 }) {}
-        export const second = internal(pure(Pair).returns(uint256), (p) => p.a);
+    "a.ts": `${IMPORTS}
+        export class ${other.split(" ")[0]} extends Struct({ a: uint256 }) {}
+        export const second = internal(pure(${other.split(" ")[0]}).returns(uint256), (p) => p.a);
       `,
-      "b.ts": `${IMPORTS}
+    "b.ts": `${IMPORTS}
         export class Pair extends Struct({ b: uint256 }) {}
         export const first = internal(pure(Pair).returns(uint256), (p) => p.b);
       `,
-    });
-    expect(declared(lens)).toEqual([
+  });
+
+  it("orders declarations by module, other modules first, each under the name it is written with", () => {
+    expect(declared(resolveSnippet(twoModules("Other")))).toEqual([
       "struct Pair",
       "helper first",
-      "struct Pair_2",
+      "struct Other",
       "helper second",
       "struct Lens_",
-      "helper f_2",
+      "helper g",
     ]);
+  });
+
+  it("refuses the second of two declarations that share a name, and renames neither", async () => {
+    const modules = twoModules("Pair as Other");
+    await expectRejection(modules, {
+      message:
+        '"Pair" is also the name of a struct. A name is printed in Solidity as it is written and is never changed',
+      file: "a.ts",
+      ...positionIn(modules["a.ts"], "class Pair"),
+      source: "transform",
+    });
   });
 
   it("resolves interfaces, immutables, libraries and the names inside try and catch", () => {
@@ -482,7 +493,7 @@ export const Lens = contract("Lens", { f: ${signature} }).implementation({
       "a namespace import used as a value",
       `import * as sol from "${PACKAGE}";`,
       "return x + sol;",
-      "a namespace import can only be used as namespace.name",
+      "a namespace import of the package is only read as namespace.name",
       "sol;",
     ],
     [

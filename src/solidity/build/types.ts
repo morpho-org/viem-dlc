@@ -218,9 +218,9 @@ export interface ResolvedFunction {
 
 interface DeclarationBase {
   /**
-   * The Solidity identifier, unique among the lens's declarations: the name the declaration has in the
-   * module that declares it, with `_2`, `_3`… appended when two different declarations share a name.
-   * A constant has no Solidity name of its own (it is printed in place) and keeps its module name.
+   * The Solidity identifier: the name the declaration has in the module that declares it, never changed.
+   * Two declarations of a lens that would print under one name are refused. A constant has no Solidity
+   * name of its own (it is printed in place), so it may share its module name with another.
    */
   readonly name: string;
   /** The module that declares it. */

@@ -16,7 +16,7 @@ const pairs: Record<string, ExecutedPair> = {
 
       // A field named alone takes the local of that name.
       const point = internal(pure(uint256, uint256).returns(Point), (x, y) => new Point({ x, y }));
-      const lengthSquared = internal(pure(Segment).returns(uint256), (s) => {
+      const squaredLength = internal(pure(Segment).returns(uint256), (s) => {
         const dx = uint256(s.to.x - s.from.x);
         const dy = uint256(s.to.y - s.from.y);
         return dx * dx + dy * dy;
@@ -43,7 +43,7 @@ const pairs: Record<string, ExecutedPair> = {
         mirrored: (p) => new Point({ "x": p.y, y: p.x + ONE }),
         // As an argument, and as an operand.
         lengthSquared(a, b) {
-          return lengthSquared(new Segment({ from: a, to: b, label: "", weights: array(uint128, 0n), closed: false }))
+          return squaredLength(new Segment({ from: a, to: b, label: "", weights: array(uint128, 0n), closed: false }))
             + new Point({ x: a.x, y: 0n }).y;
         },
         // As the value of an assignment to an element.
@@ -85,7 +85,7 @@ const pairs: Record<string, ExecutedPair> = {
           }
 
           function lengthSquared(Point calldata a, Point calldata b) external pure returns (uint256) {
-              return lengthSquared_2(Segment({from: a, to: b, label: "", weights: new uint128[](0), closed: false}))
+              return squaredLength(Segment({from: a, to: b, label: "", weights: new uint128[](0), closed: false}))
                   + Point({x: a.x, y: 0}).y;
           }
 
@@ -99,7 +99,7 @@ const pairs: Record<string, ExecutedPair> = {
               return Point({x: x, y: y});
           }
 
-          function lengthSquared_2(Segment memory s) internal pure returns (uint256) {
+          function squaredLength(Segment memory s) internal pure returns (uint256) {
               uint256 dx = uint256(s.to.x - s.from.x);
               uint256 dy = uint256(s.to.y - s.from.y);
               return dx * dx + dy * dy;

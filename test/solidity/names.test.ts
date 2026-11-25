@@ -278,11 +278,21 @@ describe("the names the transform refuses are the names solc refuses", () => {
   });
 });
 
+const ONE_NAME =
+  "A name is printed in Solidity as it is written and is never changed, so two declarations of a lens cannot share one: rename one of them";
+
 const BUILTIN = (name: string) =>
   `"${name}" is a Solidity built-in, and a declaration named "${name}" would hide it: choose another name`;
 
 describe("a printed name reaches the declaration the TypeScript names", () => {
-  const cases: readonly (readonly [name: string, code: Snippet, at: string, message: string, file?: string])[] = [
+  const cases: readonly (readonly [
+    name: string,
+    code: Snippet,
+    at: string,
+    message: string,
+    file?: string,
+    others?: Readonly<Record<string, string>>,
+  ])[] = [
     [
       "an immutable imported under another name, where a parameter has the name it is declared with",
       {
@@ -313,14 +323,61 @@ export const Lens = contract("Lens", { run: view(uint256).returns(uint256) }, { 
       'this is "r" in Solidity, the name it is declared with, and a parameter or local named "r" hides it here',
     ],
     [
-      "a helper that was given a second name, where a local has that name",
+      "a helper with the name of an entry point, which is given no second name",
       `${IMPORTS}
 const read = internal(pure().returns(uint256), () => 4n);
 export const Lens = contract("Lens", { read: pure(uint256).returns(uint256) }).implementation({
   read(read_2) { return read() + read_2; },
 });`,
-      "read() + read_2",
-      'this is "read_2" in Solidity, the name it is declared with, and a parameter or local named "read_2" hides it here',
+      "internal(pure().returns(uint256), () => 4n)",
+      `"read" is also the name of an entry point. ${ONE_NAME}`,
+    ],
+    [
+      "a struct with the name of the contract",
+      `${IMPORTS}
+class Naming extends Struct({ a: uint256 }) {}
+export const Lens = contract("Naming", { f: pure(Naming).returns(uint256) }).implementation({ f: (o) => o.a });`,
+      "class Naming",
+      `"Naming" is also the name of contract Naming. ${ONE_NAME}`,
+    ],
+    [
+      "an interface with the name of a struct",
+      `import { address, contract, iface, Struct, uint256, view } from "${PACKAGE}";
+import { Feed as IFeed } from "./feed.js";
+class Feed extends Struct({ at: address }) {}
+export const Lens = contract("Lens", { run: view(Feed).returns(uint256) }).implementation({
+  run(feed) { return IFeed(feed.at).price(); },
+});`,
+      "class Feed",
+      `"Feed" is also the name of an interface. ${ONE_NAME}`,
+      undefined,
+      {
+        "feed.ts": `import { iface, uint256, view } from "${PACKAGE}";\nexport const Feed = iface({ price: view().returns(uint256) });\n`,
+      },
+    ],
+    [
+      "a function of a library with the name of a struct",
+      `${IMPORTS}
+class Pair extends Struct({ a: uint256, b: uint256 }) {}
+const Pairs = library("Pairs", { Pair: pure(uint256).returns(Pair) }).implementation({
+  Pair: (a) => new Pair({ a, b: a + 1n }),
+});
+export const Lens = contract("Lens", { f: pure(uint256).returns(uint256) }).implementation({
+  f(x) { return Pairs.Pair(x).a; },
+});`,
+      "(a) => new Pair",
+      `"Pair" is also the name of a struct. ${ONE_NAME}`,
+    ],
+    [
+      "a helper with the name of a function of a library",
+      `${IMPORTS}
+const Halves = library("Halves", { half: pure(uint256).returns(uint256) }).implementation({ half: (a) => a / 2n });
+const half = internal(pure(uint256).returns(uint256), (a) => Halves.half(a));
+export const Lens = contract("Lens", { f: pure(uint256).returns(uint256) }).implementation({
+  f(x) { return half(x); },
+});`,
+      "internal(pure(uint256).returns(uint256), (a) => Halves",
+      `"half" is also the name of a function of library Halves. ${ONE_NAME}`,
     ],
     [
       "a parameter named block, where block is imported under another name",
@@ -382,10 +439,15 @@ export const Lens = contract("Lens", { tx: pure().returns(uint256) }).implementa
       BUILTIN("abi"),
     ],
   ];
-  for (const [name, code, at, message, file] of cases)
+  for (const [name, code, at, message, file, others] of cases)
     it(`refuses ${name}`, async () => {
       const text = typeof code === "string" ? code : (code[file ?? "lens.ts"] as string);
-      await expectRejection(code, { message, ...positionIn(text, at), source: "transform", ...(file ? { file } : {}) });
+      await expectRejection(typeof code === "string" && others ? { "lens.ts": code, ...others } : code, {
+        message,
+        ...positionIn(text, at),
+        source: "transform",
+        ...(file ? { file } : {}),
+      });
     });
 
   it("every built-in is hidden by a declaration of its name, as solc warns", () => {
@@ -468,40 +530,6 @@ describePairs("built-ins and declarations under other names", {
       }
     `,
     calls: [{ functionName: "run", args: ["0x12"] }],
-  },
-  "a library function with the name of a struct it builds": {
-    ts: `${IMPORTS}
-      class Pair extends Struct({ a: uint256, b: uint256 }) {}
-      const Pairs = library("Pairs", { Pair: pure(uint256).returns(Pair) }).implementation({
-        Pair: (a) => new Pair({ a, b: a + 1n }),
-      });
-      export const Lens = contract("Lens", { f: pure(uint256).returns(uint256) }).implementation({
-        f(x) {
-          const pair = Pairs.Pair(x);
-          return pair.a + pair.b;
-        },
-      });
-    `,
-    solidity: `
-      struct Pair_2 {
-          uint256 a;
-          uint256 b;
-      }
-
-      library Pairs {
-          function Pair(uint256 a) internal pure returns (Pair_2 memory) {
-              return Pair_2({a: a, b: a + 1});
-          }
-      }
-
-      contract Lens {
-          function f(uint256 x) external pure returns (uint256) {
-              Pair_2 memory pair = Pairs.Pair(x);
-              return pair.a + pair.b;
-          }
-      }
-    `,
-    calls: [{ functionName: "f", args: [5n] }],
   },
 });
 

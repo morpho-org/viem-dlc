@@ -13,7 +13,7 @@ const pairs: Record<string, ExecutedPair> = {
       class Range extends Struct({ low: uint256, high: uint256, width: uint128 }) {}
 
       // An expression body that returns several values.
-      const divMod = internal(pure(uint256, uint256).returns(uint256, uint256), (x, y) => [x / y, x % y]);
+      const divide = internal(pure(uint256, uint256).returns(uint256, uint256), (x, y) => [x / y, x % y]);
       const ordered = internal(pure(uint256, uint256).returns(uint256, uint256), (a, b) => {
         if (a < b) return [a, b];
         return [b, a];
@@ -35,17 +35,17 @@ const pairs: Record<string, ExecutedPair> = {
       }).implementation({
         // Each local takes the type the helper declares for that value.
         divMod(x, y) {
-          const [q, r] = divMod(x, y);
+          const [q, r] = divide(x, y);
           const quotient = q;
           return [quotient, r];
         },
         // A value that is not used is a hole, in any position.
         quotient(x, y) {
-          const [q, ,] = divMod(x, y);
+          const [q, ,] = divide(x, y);
           return q;
         },
         remainder(x, y) {
-          const [, r] = divMod(x, y);
+          const [, r] = divide(x, y);
           return r;
         },
         // Assigning to fields, with a hole, and to a local declared before.
@@ -79,18 +79,18 @@ const pairs: Record<string, ExecutedPair> = {
 
       contract TupleLens {
           function divMod(uint256 x, uint256 y) external pure returns (uint256, uint256) {
-              (uint256 q, uint256 r) = divMod_2(x, y);
+              (uint256 q, uint256 r) = divide(x, y);
               uint256 quotient = q;
               return (quotient, r);
           }
 
           function quotient(uint256 x, uint256 y) external pure returns (uint256) {
-              (uint256 q, ) = divMod_2(x, y);
+              (uint256 q, ) = divide(x, y);
               return q;
           }
 
           function remainder(uint256 x, uint256 y) external pure returns (uint256) {
-              (, uint256 r) = divMod_2(x, y);
+              (, uint256 r) = divide(x, y);
               return r;
           }
 
@@ -114,7 +114,7 @@ const pairs: Record<string, ExecutedPair> = {
               return out;
           }
 
-          function divMod_2(uint256 x, uint256 y) internal pure returns (uint256, uint256) {
+          function divide(uint256 x, uint256 y) internal pure returns (uint256, uint256) {
               return (x / y, x % y);
           }
 

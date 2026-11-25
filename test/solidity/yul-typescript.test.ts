@@ -278,3 +278,44 @@ ${block}
     });
   });
 });
+
+describe("typed Yul: a name only TypeScript declares", () => {
+  const block = (statements: string, after = "") => `${HEAD}
+export const Lens = contract("Lens", { f: pure(uint256).returns(uint256) }).implementation({
+  f(x) {
+    const value = assembly("memory-safe", () => {
+      ${statements}
+    });${after}
+    return value;
+  },
+});
+`;
+  const sources = {
+    // The type is named like a local declared after the block, which the block would read too early.
+    later: block("type later = bigint;\n      const n: later = 3n;\n      return add(x, n);", "\n    const later = x;"),
+    // The type's name has a letter no Solidity name has.
+    letters: block("type Größe = bigint;\n      const n: Größe = 3n;\n      return add(x, n);"),
+    // The type is named like the name the printer gives what a function of the block returns.
+    generated: block("type r = bigint;\n      const same = (q: r): r => q;\n      return same(x);"),
+  };
+  let javascript: Record<keyof typeof sources, string>;
+  beforeAll(() => {
+    javascript = emitJavaScript(sources);
+  });
+
+  it.each(Object.keys(sources) as (keyof typeof sources)[])(
+    "prints the same Solidity with and without the type (%s)",
+    async (name) => {
+      expect(javascript[name]).not.toMatch(/\btype \S+ =/);
+      const fromTypescript = await buildSnippet({ "lens.ts": sources[name] });
+      const fromJavascript = await buildSnippet({ "lens.js": javascript[name] });
+      expect(fromTypescript.lenses[0]?.printed.solidity).toBe(fromJavascript.lenses[0]?.printed.solidity);
+      expect(fromTypescript.lenses[0]?.artifact.bytecode).toBe(fromJavascript.lenses[0]?.artifact.bytecode);
+    },
+  );
+
+  it("gives a function of a block the same return name with and without the type", async () => {
+    const solidity = (await buildSnippet(sources.generated)).lenses[0]?.printed.solidity ?? "";
+    expect(solidity).toContain("function same(q) -> r {");
+  });
+});

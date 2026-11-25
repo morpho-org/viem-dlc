@@ -1,12 +1,13 @@
 /**
- * Exports: a name a lens imports is followed through re-exports as a JavaScript engine links it. An
- * `export *` gives a name only when it is one binding, never gives `default`, and an export a module
- * writes itself comes before any star.
+ * Exports: a name a lens imports is followed through re-exports. An export a module writes itself is
+ * followed directly and comes before any star. An `export *` is followed only where it is the one
+ * `export *` of its module that offers the name, and never gives `default`. Two that offer it are refused,
+ * where a JavaScript engine would link them to one binding too: the build compares no bindings.
  */
 import { describe, it } from "vitest";
 
 import { describePairs } from "./helpers/core.js";
-import { expectRejection, positionIn } from "./helpers/harness.js";
+import { expectRejection, positionIn, type Snippet } from "./helpers/harness.js";
 
 const PACKAGE = "@morpho-org/viem-dlc/solidity";
 const IMPORTS = `import { contract, pure, uint256 } from "${PACKAGE}";`;
@@ -23,38 +24,186 @@ const RUN = `
       }
   }
 `;
+const BARREL = 'export * from "./left.js";\nexport * from "./right.js";\n';
+const TWICE = (name: string, file = "barrel") =>
+  new RegExp(
+    `^"${name}" is offered by more than one export \\* of .*${file}\\.ts: from "\\./left\\.js" and from "\\./right\\.js"\\. `,
+  );
 
-describe("export * follows the rules of a JavaScript module", () => {
-  it("refuses a name two export * declarations give from different declarations", async () => {
-    const lens = reads('import { X } from "./barrel.js";', "X");
+describe("a name that more than one export * offers is refused", () => {
+  /** [what offers the name twice, the import, the value read, the other modules, where the error points] */
+  const cases: readonly (readonly [name: string, imports: string, value: string, modules: Snippet, at: string])[] = [
+    [
+      "two declarations",
+      'import { X } from "./barrel.js";',
+      "X",
+      { "barrel.ts": BARREL, "left.ts": "export const X = 11n;\n", "right.ts": "export const X = 22n;\n" },
+      "X }",
+    ],
+    [
+      "two declarations, read off a namespace",
+      'import * as barrel from "./barrel.js";',
+      "barrel.X",
+      { "barrel.ts": BARREL, "left.ts": "export const X = 11n;\n", "right.ts": "export const X = 22n;\n" },
+      "barrel.X",
+    ],
+    [
+      "the namespaces of two modules",
+      'import { X } from "./barrel.js";',
+      "X.V",
+      {
+        "barrel.ts": BARREL,
+        "left.ts": 'import * as X from "./small.js";\nexport { X };\n',
+        "right.ts": 'import * as X from "./large.js";\nexport { X };\n',
+        "small.ts": "export const V = 11n;\n",
+        "large.ts": "export const V = 22n;\n",
+      },
+      "X }",
+    ],
+    [
+      "one declaration, by its name in both",
+      'import { X } from "./barrel.js";',
+      "X",
+      {
+        "barrel.ts": BARREL,
+        "left.ts": 'export { X } from "./provider.js";\n',
+        "right.ts": 'export * from "./provider.js";\n',
+        "provider.ts": "export const X = 33n;\n",
+      },
+      "X }",
+    ],
+    [
+      "one declaration, by its name and as a copy of the default export",
+      'import { X } from "./barrel.js";',
+      "X",
+      {
+        "barrel.ts": BARREL,
+        "left.ts": 'export { default as X } from "./provider.js";\n',
+        "right.ts": 'export { X } from "./provider.js";\n',
+        "provider.ts": "export const X = 23n;\nexport default X;\n",
+      },
+      "X }",
+    ],
+    [
+      "the namespace of one module, which each exports by import",
+      'import { X } from "./barrel.js";',
+      "X.V",
+      {
+        "barrel.ts": BARREL,
+        "left.ts": 'import * as X from "./provider.js";\nexport { X };\n',
+        "right.ts": 'import * as X from "./provider.js";\nexport { X };\n',
+        "provider.ts": "export const V = 23n;\n",
+      },
+      "X }",
+    ],
+    [
+      "the namespace of one module, which each exports directly",
+      'import { X } from "./barrel.js";',
+      "X.V",
+      {
+        "barrel.ts": BARREL,
+        "left.ts": 'export * as X from "./provider.js";\n',
+        "right.ts": 'export * as X from "./provider.js";\n',
+        "provider.ts": "export const V = 23n;\n",
+      },
+      "X }",
+    ],
+    [
+      "a declaration and a name of the package only JavaScript uses",
+      'import { compiledLens } from "./barrel.js";',
+      "compiledLens",
+      {
+        "barrel.ts": BARREL,
+        "left.ts": `export { compiledLens } from "${PACKAGE}";\n`,
+        "right.ts": "export const compiledLens = 23n;\n",
+      },
+      "compiledLens }",
+    ],
+    [
+      "a declaration and a name declared by destructuring",
+      'import { X } from "./barrel.js";',
+      "X",
+      {
+        "barrel.ts": BARREL,
+        "left.ts": "export const { X } = { X: 11n };\n",
+        "right.ts": "export const X = 22n;\n",
+      },
+      "X }",
+    ],
+    [
+      "a declaration and an enum",
+      'import { X } from "./barrel.js";',
+      "X",
+      { "barrel.ts": BARREL, "left.ts": "export enum X { A }\n", "right.ts": "export const X = 22n;\n" },
+      "X }",
+    ],
+    [
+      "a declaration and a namespace written with a dotted name",
+      'import { X } from "./barrel.js";',
+      "X",
+      {
+        "barrel.ts": BARREL,
+        "left.ts": "export namespace X.Inner {\n  export const value = 11n;\n}\n",
+        "right.ts": "export const X = 22n;\n",
+      },
+      "X }",
+    ],
+    [
+      "a declaration, and a module that names it back from the module asked",
+      'import { X } from "./barrel.js";',
+      "X",
+      {
+        "barrel.ts": BARREL,
+        "left.ts": 'export { X } from "./barrel.js";\n',
+        "right.ts": 'export { X } from "./provider.js";\n',
+        "provider.ts": "export const X = 23n;\n",
+      },
+      "X }",
+    ],
+  ];
+  for (const [name, imports, value, modules, at] of cases)
+    it(`refuses ${name}`, async () => {
+      const lens = reads(imports, value);
+      await expectRejection(
+        { "lens.ts": lens, ...(modules as Record<string, string>) },
+        { message: TWICE(/\{ (\w+) \}/.exec(imports)?.[1] ?? "X"), ...positionIn(lens, at), source: "transform" },
+      );
+    });
+
+  it("refuses the package's names through two modules that each export them", async () => {
+    const lens = `import { contract } from "${PACKAGE}";
+import * as dsl from "./barrel.js";
+export const Lens = contract("Lens", { run: dsl.pure().returns(dsl.uint256) }).implementation({
+  run() { return dsl.uint256(31n); },
+});
+`;
     await expectRejection(
       {
         "lens.ts": lens,
-        "barrel.ts": 'export * from "./left.js";\nexport * from "./right.js";\n',
-        "left.ts": "export const X = 11n;\n",
-        "right.ts": "export const X = 22n;\n",
+        "barrel.ts": BARREL,
+        "left.ts": `export { pure, uint256 } from "${PACKAGE}";\n`,
+        "right.ts": `export { pure, uint256 } from "${PACKAGE}";\n`,
       },
-      {
-        message: /^"X" is exported by more than one export \* of .*barrel\.ts, from different declarations/,
-        ...positionIn(lens, "X }"),
-        source: "transform",
-      },
+      { message: TWICE("pure"), ...positionIn(lens, "dsl.pure"), source: "transform" },
     );
   });
 
-  it("refuses the same name read off a namespace", async () => {
-    const lens = reads('import * as barrel from "./barrel.js";', "barrel.X");
+  it("refuses it one module down, where the two export * declarations are", async () => {
+    const lens = reads('import { X } from "./top.js";', "X");
     await expectRejection(
       {
         "lens.ts": lens,
-        "barrel.ts": 'export * from "./left.js";\nexport * from "./right.js";\n',
+        "top.ts": 'export * from "./barrel.js";\n',
+        "barrel.ts": BARREL,
         "left.ts": "export const X = 11n;\n",
         "right.ts": "export const X = 22n;\n",
       },
-      { message: "from different declarations", ...positionIn(lens, "barrel.X"), source: "transform" },
+      { message: TWICE("X"), ...positionIn(lens, "X }"), source: "transform" },
     );
   });
+});
 
+describe("what export * does not give", () => {
   it("refuses a default import through export *, which passes no default on", async () => {
     const lens = reads('import N from "./barrel.js";', "N");
     await expectRejection(
@@ -71,43 +220,80 @@ describe("export * follows the rules of a JavaScript module", () => {
     );
   });
 
-  it("refuses a name two export * declarations give as the namespaces of different modules", async () => {
-    const lens = reads('import { units } from "./barrel.js";', "units.X");
+  it("refuses a name that only a circle of export * leads to", async () => {
+    const lens = reads('import { X } from "./barrel.js";', "X");
     await expectRejection(
+      { "lens.ts": lens, "barrel.ts": 'export * from "./left.js";\n', "left.ts": 'export * from "./barrel.js";\n' },
+      { message: /^"X" is not exported by .*barrel\.ts$/, ...positionIn(lens, "X }"), source: "transform" },
+    );
+  });
+
+  it("refuses a name the one export * that offers it names back from the module asked", async () => {
+    const lens = reads('import { X } from "./barrel.js";', "X");
+    await expectRejection(
+      { "lens.ts": lens, "barrel.ts": 'export * from "./left.js";\n', "left.ts": 'export { X } from "./barrel.js";\n' },
       {
-        "lens.ts": lens,
-        "barrel.ts": 'export * from "./left.js";\nexport * from "./right.js";\n',
-        "left.ts": 'import * as units from "./small.js";\nexport { units };\n',
-        "right.ts": 'import * as units from "./large.js";\nexport { units };\n',
-        "small.ts": "export const X = 11n;\n",
-        "large.ts": "export const X = 22n;\n",
+        message: /^"X" is exported by .*barrel\.ts in terms of itself$/,
+        ...positionIn(lens, "X }"),
+        source: "transform",
       },
-      { message: "from different declarations", ...positionIn(lens, "units }"), source: "transform" },
+    );
+  });
+
+  it.each([
+    ["an enum", "export enum X {\n  A,\n}\n"],
+    ["a name declared by destructuring", "export const { X } = { X: 11n };\n"],
+  ])("refuses %s another module exports, which is no binding a lens reads", async (_what, provider) => {
+    const lens = reads('import { X } from "./provider.js";', "X");
+    await expectRejection(
+      { "lens.ts": lens, "provider.ts": provider },
+      { message: '"X" is a module-level binding a lens cannot read', ...positionIn(lens, "X }"), source: "transform" },
+    );
+  });
+
+  it("refuses a name of the package only JavaScript uses, which a module exports by name", async () => {
+    const lens = reads('import { compiledLens } from "./barrel.js";', "compiledLens");
+    await expectRejection(
+      { "lens.ts": lens, "barrel.ts": `export { compiledLens } from "${PACKAGE}";\n` },
+      {
+        message: '"compiledLens" is not something a lens can use',
+        ...positionIn(lens, "compiledLens }"),
+        source: "transform",
+      },
     );
   });
 });
 
 describePairs("names that export * does give", {
-  "the namespace of one module, which two modules each import and export": {
+  "a name one export * offers, beside one that offers other names": {
     ts: {
-      "lens.ts": reads('import { units } from "./top.js";', "units.X"),
-      "top.ts": 'export * from "./one.js";\nexport * from "./two.js";\n',
-      "one.ts": 'import * as units from "./provider.js";\nexport { units };\n',
-      "two.ts": 'import * as units from "./provider.js";\nexport { units };\n',
+      "lens.ts": reads('import { X } from "./barrel.js";', "X"),
+      "barrel.ts": BARREL,
+      "left.ts": "export const X = 11n;\n",
+      "right.ts": "export const Y = 22n;\nexport default 5n;\n",
+    },
+    solidity: RUN.replace("VALUE", "11"),
+    calls: [{ functionName: "run" }],
+  },
+  "a name through two modules of export *, one after the other": {
+    ts: {
+      "lens.ts": reads('import * as top from "./top.js";', "top.X"),
+      "top.ts": 'export * from "./middle.js";\n',
+      "middle.ts": 'export * from "./provider.js";\n',
       "provider.ts": "export const X = 33n;\n",
     },
     solidity: RUN.replace("VALUE", "33"),
     calls: [{ functionName: "run" }],
   },
-  "one binding reached through two export * declarations": {
+  "a name one export * offers, beside one that leads back to the module asked": {
     ts: {
-      "lens.ts": reads('import * as top from "./top.js";', "top.X"),
-      "top.ts": 'export * from "./one.js";\nexport * from "./two.js";\nexport * from "./provider.js";\n',
-      "one.ts": 'export { X } from "./provider.js";\n',
-      "two.ts": 'export * from "./provider.js";\n',
-      "provider.ts": "export const X = 33n;\n",
+      "lens.ts": reads('import { X } from "./barrel.js";', "X"),
+      "barrel.ts": BARREL,
+      "left.ts": 'export * from "./barrel.js";\n',
+      "right.ts": 'export { X } from "./provider.js";\n',
+      "provider.ts": "export const X = 23n;\n",
     },
-    solidity: RUN.replace("VALUE", "33"),
+    solidity: RUN.replace("VALUE", "23"),
     calls: [{ functionName: "run" }],
   },
   "an export written by name, which comes before a star of the same name": {
@@ -120,19 +306,44 @@ describePairs("names that export * does give", {
     solidity: RUN.replace("VALUE", "22"),
     calls: [{ functionName: "run" }],
   },
-  "the package's names through two modules of export *, and through two ways to it": {
+  "an export written by name, which comes before two stars of the same name": {
+    ts: {
+      "lens.ts": reads('import { X } from "./barrel.js";', "X"),
+      "barrel.ts": `export { X } from "./provider.js";\n${BARREL}`,
+      "left.ts": "export const X = 57n;\n",
+      "right.ts": "export const X = 61n;\n",
+      "provider.ts": "export const X = 23n;\n",
+    },
+    solidity: RUN.replace("VALUE", "23"),
+    calls: [{ functionName: "run" }],
+  },
+  "the package's names, exported by name, through a module of export *": {
     ts: {
       "lens.ts": `import { contract } from "${PACKAGE}";
         import * as dsl from "./top.js";
+        import { add } from "./yul.js";
         export const Lens = contract("Lens", { run: dsl.pure().returns(dsl.uint256) }).implementation({
-          run() { return dsl.uint256(31n); },
+          run() {
+            const sum = dsl.assembly("memory-safe", () => add(30n, 1n));
+            return dsl.uint256(sum);
+          },
         });
       `,
-      "top.ts": 'export * from "./middle.js";\nexport * from "./other.js";\n',
-      "middle.ts": `export * from "${PACKAGE}";\n`,
-      "other.ts": `export * from "${PACKAGE}";\n`,
+      "top.ts": 'export * from "./middle.js";\n',
+      "middle.ts": `export { assembly, pure, uint256 } from "${PACKAGE}";\n`,
+      "yul.ts": `export * from "${PACKAGE}/yul";\n`,
     },
-    solidity: RUN.replace("VALUE", "uint256(31)"),
+    solidity: `
+      contract Lens {
+          function run() external pure returns (uint256) {
+              uint256 sum;
+              assembly ("memory-safe") {
+                  sum := add(30, 1)
+              }
+              return uint256(sum);
+          }
+      }
+    `,
     calls: [{ functionName: "run" }],
   },
 });

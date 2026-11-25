@@ -134,6 +134,9 @@ export const Lens = contract("Lens", {
 `;
   const MEMBER = "is not a member a lens can read";
   const CALL = "is not a call a lens can make";
+  const UNDECLARED =
+    "off an expression whose type no declaration gives. A member needs a receiver with a declared type: a parameter, a local, a field, an element of an array, or what a call returns";
+  const CONDITIONAL = "The type of a conditional is not worked out: take the member in each branch, as in";
   const refuses = async (body: string, message: string, at: string) => {
     const code = lens(body);
     await expectRejection(code, { message, ...positionIn(code, at), source: "transform" });
@@ -170,8 +173,24 @@ export const Lens = contract("Lens", {
     await refuses("return book.feed.price;", `"price" ${MEMBER}`, "book.feed.price");
   });
 
-  it("a member of an expression whose type the source does not declare", async () => {
-    await refuses("return (xs.length > 0n ? book.best : book.best).low;", `"low" ${MEMBER}`, "(xs.length");
+  it("a field read off a conditional, whose type no declaration gives", async () => {
+    await refuses(
+      "return (xs.length > 0n ? book.best : book.best).low;",
+      `"low" is read ${UNDECLARED}. ${CONDITIONAL} c ? a.low : b.low`,
+      "(xs.length",
+    );
+  });
+
+  it("the length of an array read off a conditional", async () => {
+    await refuses(
+      "return (xs.length > 0n ? xs : xs).length;",
+      `"length" is read ${UNDECLARED}. ${CONDITIONAL} c ? a.length : b.length`,
+      "(xs.length > 0n ? xs",
+    );
+  });
+
+  it("a member read off arithmetic", async () => {
+    await refuses("return (xs.length + 1n).low;", `"low" is read ${UNDECLARED}`, "(xs.length");
   });
 
   it("a member that is assigned", async () => {
@@ -190,7 +209,11 @@ export const Lens = contract("Lens", {
     await refuses("return book.owner.price();", `.price(…) ${CALL}`, "book.owner.price()");
   });
 
-  it("a call through an expression whose type the source does not declare", async () => {
-    await refuses("return (xs.length > 0n ? book.feed : book.feed).price();", `.price(…) ${CALL}`, "(xs.length");
+  it("a call through a conditional, whose type no declaration gives", async () => {
+    await refuses(
+      "return (xs.length > 0n ? book.feed : book.feed).price();",
+      `.price(…) is called ${UNDECLARED}. ${CONDITIONAL} c ? a.price(…) : b.price(…)`,
+      "(xs.length",
+    );
   });
 });

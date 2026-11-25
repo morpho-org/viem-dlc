@@ -22,7 +22,7 @@ class Pair extends Struct({ low: uint128, high: uint128 }) {}
 const SCALE = 1_000n as const;
 
 const widen = internal(pure(uint128).returns(uint256), (x: Amount): Amount => uint256(x as Amount) satisfies Amount);
-const pick = internal(
+const element = internal(
   pure([uint128], uint256).returns(uint128),
   function (this: void, xs: readonly Amount[], i: Amount): Amount {
     type Index = number;
@@ -45,7 +45,7 @@ export const ErasureLens = contract("ErasureLens", {
     if (!ordered!) high = low as Amount;
     return (widen<Amount>(high)! - widen(low as Amount)) * (SCALE satisfies Amount);
   },
-  pick: (xs, i) => pick(xs, i)!,
+  pick: (xs, i) => element(xs, i)!,
   largest(xs: readonly Amount[]) {
     let best = xs[0]!;
     for (let i: number = 1; i < xs.length; i++) if (xs[i]! > best!) best = xs[i]!;
@@ -65,7 +65,7 @@ class Pair extends Struct({ low: uint128, high: uint128 }) {}
 const SCALE = 1_000n;
 
 const widen = internal(pure(uint128).returns(uint256), (x) => uint256(x));
-const pick = internal(
+const element = internal(
   pure([uint128], uint256).returns(uint128),
   function (xs, i) {
     const index = i;
@@ -86,7 +86,7 @@ export const ErasureLens = contract("ErasureLens", {
     if (!ordered) high = low;
     return (widen(high) - widen(low)) * SCALE;
   },
-  pick: (xs, i) => pick(xs, i),
+  pick: (xs, i) => element(xs, i),
   largest(xs) {
     let best = xs[0];
     for (let i = 1; i < xs.length; i++) if (xs[i] > best) best = xs[i];
@@ -117,7 +117,7 @@ const pairs: Record<string, ExecutedPair> = {
           }
 
           function pick(uint128[] calldata xs, uint256 i) external pure returns (uint128) {
-              return pick_2(xs, i);
+              return element(xs, i);
           }
 
           function largest(uint128[] calldata xs) external pure returns (uint128) {
@@ -130,7 +130,7 @@ const pairs: Record<string, ExecutedPair> = {
               return uint256(x);
           }
 
-          function pick_2(uint128[] memory xs, uint256 i) internal pure returns (uint128) {
+          function element(uint128[] memory xs, uint256 i) internal pure returns (uint128) {
               uint256 index = i;
               uint128 picked = xs[index];
               return picked;

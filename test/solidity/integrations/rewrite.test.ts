@@ -275,6 +275,18 @@ describe("what the rewritten module keeps, by binding", () => {
       "export function ruler(deep: boolean) {\n  if (deep) {\n    const scale = 3n;\n    return scale;\n  }\n  return scale;\n}",
     ],
     ["a default of a parameter", "export const ruler = (helper = scale) => helper;"],
+    [
+      "a default of a parameter, beside a var of the function's body",
+      "export function ruler(helper = scale) {\n  var scale = 3n;\n  return [helper, scale];\n}",
+    ],
+    [
+      "the discriminant of a switch, beside a const of one of its cases",
+      "export const pick = () => {\n  switch (scale) {\n    default:\n      const scale = 3n;\n      return scale;\n  }\n};",
+    ],
+    [
+      "a function, beside a var of a static block of a class",
+      "export function ruler() {\n  class Inner {\n    static {\n      var scale = 3n;\n    }\n  }\n  return [Inner, scale];\n}",
+    ],
     ["an export under another name", "export { scale as ruler };"],
     ["a use in a type", "export type Ruler = typeof scale;"],
   ])("%s that reads the helper keeps it", async (_what, rest) => {
@@ -385,5 +397,33 @@ throw new Error(\`reached \${reached}\`);
     expect(run.ok).toBe(false);
     expect(run.output).toContain("Error: reached QuoteLens");
     expect(run.output).toContain(`src/throws.ts:${positionIn(script, "throw new Error").line}`);
+  });
+
+  it("still has a constant its own code reads where a nearer binding of the name is not yet in scope", async () => {
+    // The lens reads the constant too, so the rewrite has to tell the module's own read of it from the
+    // case's binding of the same name. What is run is the module's function, not the lens.
+    project.write(
+      "src/tiers.ts",
+      `import { contract, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
+
+const rate = 3n;
+export const RateLens = contract("RateLens", { read: pure().returns(uint256) }).implementation({ read: () => rate });
+
+export function tier() {
+  switch (rate) {
+    case 3n:
+      return "low";
+    default:
+      const rate = "high";
+      return rate;
+  }
+}
+
+console.log("tier", tier(), "of", RateLens.name);
+`,
+    );
+    const run = await project.run(["--import", "@morpho-org/viem-dlc/solidity/register", "src/tiers.ts"]);
+    expect(run.ok, run.output).toBe(true);
+    expect(run.output).toContain("tier low of RateLens");
   });
 });
