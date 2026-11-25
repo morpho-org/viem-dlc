@@ -898,6 +898,17 @@ class Printer {
           return;
         }
         this.#expression(object, true);
+        // What is left is a field its struct declares, or the length of an array. A native member of a
+        // Solidity type, such as the balance of an address, has no form in a lens.
+        const receiver = this.#declaredType(object);
+        if (receiver?.kind === "struct") {
+          if (!receiver.declaration.fields.some((field) => field.name === property))
+            this.#fail(node, `struct ${receiver.declaration.name} has no field "${property}"`);
+        } else if (receiver?.kind !== "array" || property !== "length")
+          this.#fail(
+            node,
+            `"${property}" is not a member a lens can read here. A member is a field of a struct, the length of an array, block.timestamp, block.number, or I.f.selector`,
+          );
         out.write(`.${property}`);
         return;
       }
@@ -1156,6 +1167,12 @@ class Printer {
       this.#options(options);
     } else {
       this.#expression(object, true);
+      // A native member of a Solidity type, such as the call of an address, has no form in a lens.
+      if (this.#declaredType(object)?.kind !== "interface")
+        this.#fail(
+          node,
+          `.${name}(…) is not a call a lens can make here. A member is called on a handle of a declared interface, on a library, on this, or as abi.encode, abi.decode and I.f.encode`,
+        );
       out.write(`.${name}`);
     }
     this.#arguments(args);

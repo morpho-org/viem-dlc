@@ -339,10 +339,17 @@ describe("rejections: try and catch", () => {
     await refuses(attempt("{ x = FEED.latest(feed); }"), "a try assigns the one value its call returns", "FEED.latest");
   });
 
-  it("an assigned call whose function is not declared in the source", async () => {
+  it("an assigned call that returns nothing", async () => {
+    const code = lens("try { x = IPing(feed).ping(); } catch {}\n    return x;", {
+      head: "const IPing = iface({ ping: view() });",
+    });
+    await refuses(code, "the call must be to a declared function with exactly one return value", "IPing(feed).ping()");
+  });
+
+  it("a call through a handle whose interface the source does not declare", async () => {
     await refuses(
       attempt("{ x = (x > 0n ? FEED : IFeed(feed)).price(feed); }"),
-      "the call must be to a declared function with exactly one return value",
+      ".price(…) is not a call a lens can make here",
       "(x > 0n",
     );
   });
