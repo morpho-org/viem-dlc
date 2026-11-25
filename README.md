@@ -833,7 +833,9 @@ Every integration runs the same transform, and holds to the same rules:
   next.
 - **Modules are parsed and never run.** A lens reaches helpers, structs and constants in other
   modules through imports, re-exports, `export *` and namespace imports, resolved by the tool's own
-  resolver, so a path alias such as `@/` works. A helper can also be read from the JavaScript that
+  resolver, so a path alias such as `@/` works. Under `node --import` that resolver is Node's own, with
+  the conditions the process runs with; TypeScript's conventions and the `paths` of `tsconfig.json`
+  apply only to an import Node cannot resolve. A helper can also be read from the JavaScript that
   `tsc` emitted for it. Output that a bundler or a minifier has rewritten is not supported: it may be
   refused, or print different Solidity.
 - **Nothing is written into the source tree.** The only files written are the tool's own output and
