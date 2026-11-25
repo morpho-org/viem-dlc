@@ -364,6 +364,21 @@ export type Returns<T extends readonly unknown[]> = T extends readonly []
     ? In<O>
     : InArgs<T>;
 
+/**
+ * `internal(signature, body)`. A body that returns several values is checked against a tuple written out
+ * in its own signature, so that tsc reads `(x) => [x, x + 1n]` as a pair and not as an array.
+ */
+export interface Internal {
+  <I extends readonly SolType[], O extends readonly [SolType, SolType, ...SolType[]], M extends Mutability>(
+    signature: Sig<I, O, M>,
+    body: (...args: OutArgs<I>) => [...InArgs<O>],
+  ): (...args: InArgs<I>) => OutArgs<O>;
+  <S extends Sig>(
+    signature: S,
+    body: (...args: OutArgs<S["inputs"]>) => Returns<S["outputs"]>,
+  ): (...args: InArgs<S["inputs"]>) => Returned<S["outputs"]>;
+}
+
 /** What a call may be given besides its arguments: `IPriceFeed(feed, { gas: 100_000 })`. */
 export interface CallOptions {
   gas: bigint | number;
