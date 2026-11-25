@@ -46,14 +46,19 @@ export function readConfig(file: string): SolidityConfig {
   };
 }
 
-/** The configuration that applies to the lens file `file`: the nearest `solidity.config.json` above it. */
-export function findConfig(file: string): SolidityConfig {
+/** The configuration file that applies to the lens file `file`: the nearest `solidity.config.json` above it. */
+export function findConfigFile(file: string): string {
   for (let dir = path.dirname(path.resolve(file)); ; dir = path.dirname(dir)) {
     const candidate = path.join(dir, CONFIG_FILE);
-    if (fs.existsSync(candidate)) return readConfig(candidate);
+    if (fs.existsSync(candidate)) return candidate;
     if (dir === path.dirname(dir))
       throw new ConfigError(
         `no ${CONFIG_FILE} found above ${file}. Add one at the repository root to pin the compiler: { "solc": { "version": "0.8.36" } }`,
       );
   }
+}
+
+/** The configuration that applies to the lens file `file`. */
+export function findConfig(file: string): SolidityConfig {
+  return readConfig(findConfigFile(file));
 }

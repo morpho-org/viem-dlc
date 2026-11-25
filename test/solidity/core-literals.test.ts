@@ -137,8 +137,6 @@ const pairs: Record<string, ExecutedPair> = {
   },
   "hex literals and address literals": {
     ts: `${IMPORTS}
-      const OWNER = "${OWNER}";
-
       export const HexLens = contract("HexLens", {
         selector: pure().returns(bytes4, bytes4),
         word: pure().returns(bytes32),
@@ -157,7 +155,7 @@ const pairs: Record<string, ExecutedPair> = {
         // With 40 digits it is an address literal, and a local declared from one is an address.
         owner() {
           const holder = "${OWNER}";
-          return [holder, OWNER];
+          return [holder, "${OWNER}"];
         },
         isOwner: (who) => who == "${OWNER}",
         // Anything else is a string: an odd number of digits, a digit that is not hexadecimal, a capital X.
@@ -253,9 +251,17 @@ export const Lens = contract("Lens", { f: pure(uint256).returns(${returns}) }).i
   });
 
   it("a literal with an exponent", async () => {
-    const code = lens("return x + 1e18;");
+    const code = lens("return x + 1e3;");
     await expectRejection(code, {
       message: "an integer literal is written in decimal or in hexadecimal",
+      ...positionIn(code, "1e3"),
+    });
+  });
+
+  it("a literal with an exponent that is not a safe integer", async () => {
+    const code = lens("return x + 1e18;");
+    await expectRejection(code, {
+      message: "this Number literal is not a safe integer",
       ...positionIn(code, "1e18"),
     });
   });
@@ -263,7 +269,7 @@ export const Lens = contract("Lens", { f: pure(uint256).returns(${returns}) }).i
   it("a literal with a fraction", async () => {
     const code = lens("return x + 1.5;");
     await expectRejection(code, {
-      message: "an integer literal is written in decimal or in hexadecimal",
+      message: "this Number literal is not a safe integer",
       ...positionIn(code, "1.5"),
     });
   });

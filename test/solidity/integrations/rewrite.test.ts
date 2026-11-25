@@ -7,10 +7,10 @@ import path from "node:path";
 import { parseSync } from "oxc-parser";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { transform } from "../../../src/solidity/build/index.js";
+import { parseModule, rewrite, transform } from "../../../src/solidity/build/index.js";
 import { positionIn } from "../helpers/harness.js";
 
-import { Project } from "./helpers/project.js";
+import { bin, Project } from "./helpers/project.js";
 
 const DIR = path.join(import.meta.dirname, "..", "__fixtures__");
 
@@ -168,6 +168,202 @@ export const Lens = contract("Lens", { run: pure(uint256).returns(uint256) }).im
     const mentions = 'import { uint256 } from "@morpho-org/viem-dlc/solidity";\nexport const word = uint256;\n';
     expect((await transformSnippet({ "main.ts": mentions })).result).toBeNull();
     expect((await transformSnippet({ "main.ts": "export const one = 1;\n" })).result).toBeNull();
+  });
+
+  it("is the module as it was written when no lens was built from it", () => {
+    expect(rewrite(parseModule(path.join(DIR, "main.ts"), source), [])).toBe(source);
+  });
+
+  it("puts its wrapper import beside a namespace import the lens is written through", async () => {
+    const viaNamespace = `import * as sol from "@morpho-org/viem-dlc/solidity";
+
+export const NamespaceLens = sol
+  .contract("NamespaceLens", { one: sol.pure().returns(sol.uint256) })
+  .implementation({ one: () => 1n });
+export const word = sol.uint256;
+`;
+    const code = (await transformSnippet({ "main.ts": viaNamespace })).result?.code ?? "";
+    expect(parseSync("main.ts", code).errors).toEqual([]);
+    expect(code.split("\n")).toHaveLength(viaNamespace.split("\n").length);
+    // On the line of the namespace import, which stays: the module still reads a name off it.
+    expect(code.split("\n")[0]).toMatch(
+      /^import \* as sol from "@morpho-org\/viem-dlc\/solidity";+import \{ compiledLens as __viemDlcCompiledLens \} from "@morpho-org\/viem-dlc\/solidity";$/,
+    );
+    expect(code).toContain("export const NamespaceLens = /*#__PURE__*/ __viemDlcCompiledLens({");
+    expect(code).not.toContain(".implementation(");
+    expect(code).toContain("export const word = sol.uint256;");
+  });
+});
+
+/** A module with one lens whose only helper is `scale`, and whatever else the module says. */
+const scaled = (
+  rest: string,
+  declaration = "const scale = internal(pure(uint256).returns(uint256), (x) => x * 123456789n);",
+) =>
+  `import { contract, internal, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
+
+${declaration}
+
+export const ScaleLens = contract("ScaleLens", { read: pure(uint256).returns(uint256) }).implementation({
+  read: (x) => scale(x),
+});
+
+${rest}
+`;
+
+describe("what the rewritten module keeps, by binding", () => {
+  const rewritten = async (source: string) => {
+    const code = (await transformSnippet({ "main.ts": source })).result?.code ?? "";
+    expect(parseSync("main.ts", code).errors).toEqual([]);
+    expect(code.split("\n")).toHaveLength(source.split("\n").length);
+    return code;
+  };
+  const HELPER = /123456789n|\binternal\b/;
+
+  it.each([
+    ["a property key", "export const markers = { scale: 3 };"],
+    ["a property read", "export const read = (markers: { scale: number }) => markers.scale;"],
+    [
+      "a method and a field of a class",
+      "export class Ruler {\n  scale = 3;\n  static scale() {\n    return 4;\n  }\n}",
+    ],
+    ["a parameter", "export function identity(scale: bigint) {\n  return scale;\n}"],
+    ["a parameter of an arrow function", "export const identity = (scale: bigint) => scale;"],
+    ["a destructured parameter", "export const pick = ({ scale }: { scale: bigint }) => scale;"],
+    ["a local of a function", "export function three() {\n  const scale = 3n;\n  return scale;\n}"],
+    ["a local of a block", "export const sizes: bigint[] = [];\n{\n  const scale = 3n;\n  sizes.push(scale);\n}"],
+    ["a loop variable", "export const sizes: bigint[] = [];\nfor (const scale of [3n]) sizes.push(scale);"],
+    [
+      "a caught error",
+      "export const attempt = () => {\n  try {\n    return 1;\n  } catch (scale) {\n    return scale;\n  }\n};",
+    ],
+    ["a label", "export const first = () => {\n  scale: for (;;) break scale;\n};"],
+    [
+      "a local of a switch",
+      "export const pick = (on: number) => {\n  switch (on) {\n    default:\n      const scale = 3n;\n      return scale;\n  }\n};",
+    ],
+    [
+      "a function declared in a block",
+      "export const sizes: bigint[] = [];\n{\n  function scale() {\n    return 3n;\n  }\n  sizes.push(scale());\n}",
+    ],
+    ["a var declared in a block", "export function three() {\n  {\n    var scale = 3n;\n  }\n  return scale;\n}"],
+    [
+      "a value a namespace exports",
+      "export namespace Ruler {\n  export const scale = 3n;\n  export const twice = scale * 2n;\n}",
+    ],
+    [
+      "a value an ambient module declares and lists as an export",
+      'declare module "ruler" {\n  const scale: bigint;\n  export { scale };\n}',
+    ],
+    ["a name another module exports", 'export { scale as ruler } from "./ruler.js";'],
+    ["the far side of an export alias", "const ruler = 3;\nexport { ruler as scale };"],
+    ["a parameter in a type", "export type Ruler = (scale: bigint) => bigint;"],
+  ])("%s spelled like a helper does not keep the helper", async (_what, rest) => {
+    const code = await rewritten(scaled(rest));
+    expect(code).not.toMatch(HELPER);
+    // The rest of the module is as it was written.
+    for (const line of rest.split("\n")) expect(code).toContain(line);
+  });
+
+  it.each([
+    ["a shorthand property", "export const markers = { scale };"],
+    ["a property value", "export const markers = { ruler: scale };"],
+    ["a computed key", "export const markers = { [String(scale)]: 3 };"],
+    ["a use inside a function", "export function ruler() {\n  return scale;\n}"],
+    [
+      "a use inside a function that declares the name deeper",
+      "export function ruler(deep: boolean) {\n  if (deep) {\n    const scale = 3n;\n    return scale;\n  }\n  return scale;\n}",
+    ],
+    ["a default of a parameter", "export const ruler = (helper = scale) => helper;"],
+    ["an export under another name", "export { scale as ruler };"],
+    ["a use in a type", "export type Ruler = typeof scale;"],
+  ])("%s that reads the helper keeps it", async (_what, rest) => {
+    const code = await rewritten(scaled(rest));
+    expect(code).toContain("const scale = internal(pure(uint256).returns(uint256), (x) => x * 123456789n);");
+    for (const line of rest.split("\n")) expect(code).toContain(line);
+  });
+
+  it.each([
+    [
+      "first",
+      "const scale = internal(pure(uint256).returns(uint256), (x) => x * 123456789n), appValue = 1n;",
+      "const appValue = 1n;",
+    ],
+    [
+      "last",
+      "const appValue = 1n, scale = internal(pure(uint256).returns(uint256), (x) => x * 123456789n);",
+      "const appValue = 1n;",
+    ],
+    [
+      "between two others, on lines of its own",
+      "const appValue = 1n,\n  scale = internal(pure(uint256).returns(uint256), (x) => x * 123456789n),\n  otherValue = 2n;",
+      "const appValue = 1n,\n  otherValue = 2n;",
+    ],
+  ])(
+    "a helper declared %s in a statement goes, and the values declared beside it stay",
+    async (_where, declaration, kept) => {
+      const rest = 'export { appValue };\nexport const marker = "after the lens";';
+      const source = scaled(rest, declaration);
+      const code = await rewritten(source);
+      expect(code).not.toMatch(HELPER);
+      expect(code.replace(/\s+/g, " ")).toContain(kept.replace(/\s+/g, " "));
+      expect(code).toContain("export { appValue };");
+      expect(positionIn(code, "export const marker").line).toBe(positionIn(source, "export const marker").line);
+    },
+  );
+
+  it("two helpers declared in one statement go with the statement", async () => {
+    const declaration =
+      "const scale = internal(pure(uint256).returns(uint256), (x) => twice(x) * 123456789n),\n  twice = internal(pure(uint256).returns(uint256), (x) => x * 2n);";
+    const code = await rewritten(scaled('export const marker = "after the lens";', declaration));
+    expect(code).not.toMatch(HELPER);
+    expect(code).not.toMatch(/\bconst\s*;|\bscale\b|\btwice\b/);
+  });
+});
+
+describe("the rewritten module, bundled as a library whose runtime is external", { timeout: 120_000 }, () => {
+  let project: Project;
+  beforeAll(() => {
+    project = new Project("app");
+  });
+  afterAll(() => project?.remove());
+
+  it("ships no helper body for a name the module also uses as a property key, and keeps the module's exports", async () => {
+    project.write(
+      "library/index.ts",
+      scaled(
+        "export const markers = { scale: 3 };",
+        "const scale = internal(pure(uint256).returns(uint256), (x) => x * 123456789n), appValue = 1n;\nexport { appValue };",
+      ),
+    );
+    project.write(
+      "vite.library.config.ts",
+      `import { solidity } from "@morpho-org/viem-dlc/solidity/vite";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [solidity()],
+  build: {
+    minify: false,
+    outDir: "dist/library",
+    lib: { entry: "library/index.ts", formats: ["es"], fileName: "index" },
+    rollupOptions: { external: ["viem", "@morpho-org/viem-dlc/solidity"] },
+  },
+});
+`,
+    );
+    const run = await project.run([bin("vite"), "build", "--config", "vite.library.config.ts"]);
+    expect(run.ok, run.output).toBe(true);
+    const bundle = project.read("dist/library/index.js");
+
+    // With the runtime external, the bundler cannot know a call to `internal` is free of effects: what
+    // the rewrite leaves is what ships.
+    expect(bundle).not.toMatch(/123456789n|\binternal\(|\bpure\(/);
+    expect(bundle).toMatch(/import \{ compiledLens \} from "@morpho-org\/viem-dlc\/solidity"/);
+    expect(bundle).toContain("const markers = { scale: 3 }");
+    expect(bundle).toContain("const appValue = 1n");
+    expect(bundle).toMatch(/export \{\s*ScaleLens,\s*appValue,\s*markers\s*\}/);
+    expect(bundle).toMatch(/"bytecode": ?"0x60[0-9a-f]+"/);
   });
 });
 

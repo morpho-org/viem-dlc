@@ -33,6 +33,7 @@ export function runSolc(input: unknown, version: string): Record<string, unknown
     try {
       loaded = createRequire(import.meta.url)("solc") as Solc;
     } catch (cause) {
+      /* v8 ignore next -- @preserve: solc is installed wherever the tests run */
       throw new SolcUnavailableError(
         `solc is not installed (${(cause as { code?: string }).code ?? (cause as Error).message}). It is an optional peer dependency of @morpho-org/viem-dlc, needed wherever lenses are built or tested: add solc@${version} as a devDependency.`,
       );

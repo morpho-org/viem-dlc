@@ -36,29 +36,41 @@ interface NextConfigLike {
   [key: string]: unknown;
 }
 
+const GLOB = "*.{ts,tsx}";
+
+/** A loader in Turbopack's shorthand, where a rule is only the list of its loaders. */
+const isLoader = (item: unknown): boolean =>
+  typeof item === "string" || (typeof item === "object" && item !== null && "loader" in item);
+
 export function withSolidity<C extends NextConfigLike>(config: C = {} as C): C {
+  const rule = {
+    condition: { all: [{ not: "foreign" }, { content: /@morpho-org\/viem-dlc\/solidity/ }] },
+    loaders: [
+      {
+        loader: "@morpho-org/viem-dlc/solidity/next/loader",
+        options: {
+          cacheKey: [
+            // This package's own manifest, which its `exports` do not expose to `require.resolve`.
+            versionIn(new URL("../../../../package.json", import.meta.url)),
+            versionOf("solc"),
+            versionOf("oxc-parser"),
+          ].join("+"),
+        },
+      },
+    ],
+  };
+  // Turbopack runs every rule that matches a file, in order. A rule the application already has under
+  // the same glob is kept, after this one: the lens is compiled from the module as written, and the
+  // application's loaders then see the module without it, as a bundler would hand it to them.
+  const existing = config.turbopack?.rules?.[GLOB];
+  const existingRules = Array.isArray(existing) && existing.every(isLoader) ? [{ loaders: existing }] : existing;
   return {
     ...config,
     turbopack: {
       ...config.turbopack,
       rules: {
         ...config.turbopack?.rules,
-        "*.{ts,tsx}": {
-          condition: { all: [{ not: "foreign" }, { content: /@morpho-org\/viem-dlc\/solidity/ }] },
-          loaders: [
-            {
-              loader: "@morpho-org/viem-dlc/solidity/next/loader",
-              options: {
-                cacheKey: [
-                  // This package's own manifest, which its `exports` do not expose to `require.resolve`.
-                  versionIn(new URL("../../../../package.json", import.meta.url)),
-                  versionOf("solc"),
-                  versionOf("oxc-parser"),
-                ].join("+"),
-              },
-            },
-          ],
-        },
+        [GLOB]: existingRules === undefined ? rule : [rule, ...[existingRules].flat()],
       },
     },
     webpack() {

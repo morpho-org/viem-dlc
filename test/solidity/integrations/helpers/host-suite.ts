@@ -9,7 +9,7 @@
  * - solc hidden: a warm cache builds, a cold one fails and names the lens;
  * - staleness: an edit to only a helper file, or to only `solidity.config.json`, changes the bytecode
  *   served, in a second cold run, in watch mode, and in watch mode started again after an edit it did
- *   not see;
+ *   not see; and a build that failed is repaired by an edit to only the file that failed it;
  * - every kind of solc diagnostic, at its TypeScript file, line and column.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -37,12 +37,14 @@ export interface Host {
   output?: { directories: readonly string[]; caches?: readonly string[] };
   /** The host in watch mode, when it has one. */
   watch?(project: Project): Promise<Watch>;
+  /** The host in watch mode for the test that starts on a failed build, when that takes another start. */
+  watchAfterFailure?(project: Project): Promise<Watch>;
 }
 
 /** What must not reach production: the compiler, the parser, and the source of a lens. */
 const COMPILER = /\bsolc\b|soljson/;
 const PARSER = /oxc[-_]parser|oxc[-_]resolver|\bparseSync\b/;
-const LENS_SOURCE = /mulDivDown|lensHelperProduct|lensBodyQuote/;
+export const LENS_SOURCE = /mulDivDown|lensHelperProduct|lensBodyQuote/;
 
 /** For a test and for the first run: a cold Next build among other test files takes a while. */
 const TIMEOUT = 240_000;
@@ -174,6 +176,46 @@ export function describeHost(host: Host): void {
             const afterRestart = await editAndExpect(HELPER, "/ d + 2n;", "/ d + 3n;", afterConfig);
             watch = await startWatch(project);
             await serves(afterRestart, "after an edit made while it was stopped");
+          } finally {
+            await watch.stop();
+          }
+        });
+
+      if (startWatch)
+        it("in watch mode, a failed build is repaired by an edit to only the helper file, or to only solidity.config.json", async () => {
+          project.restore();
+          // The watcher starts on a build that solc refuses, after the helper and the configuration were read.
+          project.edit(HELPER, "return lensHelperProduct / d;", "return lensHelperProduct / d == 0n;");
+          const watch = await (host.watchAfterFailure ?? startWatch)(project);
+          const reports = (message: string, when: string) =>
+            waitFor(
+              async () => {
+                // A dev server builds, and so fails, when it is asked.
+                await watch.served();
+                return watch.output().includes(message) || undefined;
+              },
+              `the host to report the build that fails ${when}`,
+              watch.output,
+            );
+          const serves = async (when: string) => {
+            const want = (await expected()).served;
+            await waitFor(
+              async () => ((await watch.served()) === want ? want : undefined),
+              `the host to serve the lens ${when}`,
+              watch.output,
+            );
+          };
+          try {
+            await reports("Return argument type bool is not implicitly convertible", "on the helper");
+            project.restore();
+            await serves("after the helper alone was repaired");
+
+            // A configuration that cannot be read at all, where the one before it could.
+            const configuration = project.read(CONFIG);
+            project.write(CONFIG, configuration.replace('"version": "0.8.36"', '"version": "latest"'));
+            await reports("solidity.config.json must pin an exact compiler", "on the configuration");
+            project.write(CONFIG, configuration);
+            await serves("after the configuration alone was repaired");
           } finally {
             await watch.stop();
           }

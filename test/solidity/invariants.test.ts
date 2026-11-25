@@ -88,13 +88,45 @@ describe("the packed package, installed without its optional peers", () => {
   });
 });
 
-describe("a helper library built to JavaScript", () => {
+/** Every fixture whose lens reads helpers or constants from other modules, and how tsc emits those. */
+const HELPER_FIXTURES = [
+  {
+    name: "the helper library",
+    template: "library",
+    // The library as its own project emits it, file by file.
+    tsc: ["--project", "helpers/tsconfig.json"],
+    helpers: "helpers",
+    modules: ["fees", "index", "math", "types", "units"],
+    // The lens names the library as a package would be named.
+    alias: { helpers: "helpers/index.ts" } as Record<string, string>,
+    typescriptOnly: /\bas uint256\b|y!|\bsatisfies\b|: bigint|\(x: uint256|export type/,
+    helper: "function mulWad(uint256 x, uint256 y) internal pure returns (uint256)",
+  },
+  {
+    name: "the application's own modules",
+    template: "app",
+    // Emitted on their own: the project's configuration emits nothing.
+    tsc: [
+      ..."--ignoreConfig --target ES2022 --module ESNext --moduleResolution Bundler --types node --skipLibCheck".split(
+        " ",
+      ),
+      ..."--rootDir src/lib --outDir built/tsc src/lib/constants.ts src/lib/math.ts".split(" "),
+    ],
+    helpers: "src/lib",
+    modules: ["constants", "math"],
+    alias: {} as Record<string, string>,
+    typescriptOnly: undefined,
+    helper: "function mulDivDown(uint256 x, uint256 y, uint256 d) internal pure returns (uint256)",
+  },
+] as const;
+
+describe.each(HELPER_FIXTURES)("$name, built to JavaScript", (fixture) => {
   let project: Project;
 
   beforeAll(() => {
-    project = new Project("library");
-    // The library as tsc emits it, file by file: built/tsc/*.js.
-    const emitted = spawnSync(process.execPath, [bin("typescript", "tsc"), "--project", "helpers/tsconfig.json"], {
+    project = new Project(fixture.template);
+    // The modules as tsc emits them, file by file: built/tsc/*.js.
+    const emitted = spawnSync(process.execPath, [bin("typescript", "tsc"), ...fixture.tsc], {
       cwd: project.dir,
       encoding: "utf8",
     });
@@ -102,15 +134,20 @@ describe("a helper library built to JavaScript", () => {
   });
   afterAll(() => project?.remove());
 
-  /** Builds the fixture lens with the name "helpers" resolved to the given entry of the library. */
-  const buildAgainst = async (entry: string) => {
+  /** Builds the fixture lens with its helper modules read as TypeScript source, or as tsc emitted them. */
+  const buildAgainst = async (form: "source" | "built") => {
     const lensFile = project.file("src/lens.ts");
     const built = await build(
       fs.readFileSync(lensFile, "utf8"),
       lensFile,
       {
-        resolve: (specifier, importer) =>
-          specifier === "helpers" ? project.file(entry) : resolveSync(specifier, importer),
+        resolve(specifier, importer) {
+          const alias = fixture.alias[specifier];
+          const file = alias ? project.file(alias) : resolveSync(specifier, importer);
+          if (form === "source" || file === undefined) return file;
+          const module = path.relative(project.file(fixture.helpers), file);
+          return module.startsWith("..") ? file : project.file(`built/tsc/${module.replace(/\.ts$/, ".js")}`);
+        },
         addDependency: () => {},
       },
       { cache: false },
@@ -124,23 +161,24 @@ describe("a helper library built to JavaScript", () => {
     };
   };
 
-  it("gives the same Solidity as its TypeScript source", async () => {
-    const fromSource = await buildAgainst("helpers/index.ts");
-    const fromBuilt = await buildAgainst("built/tsc/index.js");
+  it("gives the same Solidity as the TypeScript source", async () => {
+    const fromSource = await buildAgainst("source");
+    const fromBuilt = await buildAgainst("built");
 
     // Each was read from its own files.
-    const modules = ["fees", "index", "math", "types", "units"];
-    expect(fromSource.read).toEqual([...modules.map((name) => `helpers/${name}.ts`), "solidity.config.json"]);
-    expect(fromBuilt.read).toEqual([...modules.map((name) => `built/tsc/${name}.js`), "solidity.config.json"]);
-    // The source has what only TypeScript has, and the built files have none of it.
-    const typescriptOnly = /\bas uint256\b|y!|\bsatisfies\b|: bigint|\(x: uint256|export type/;
-    expect(project.read("helpers/math.ts") + project.read("helpers/units.ts")).toMatch(typescriptOnly);
-    for (const name of modules)
-      expect(project.read(`built/tsc/${name}.js`).replace(/\/\/.*/g, "")).not.toMatch(typescriptOnly);
+    const { modules, helpers, typescriptOnly } = fixture;
+    expect(fromSource.read).toEqual([...modules.map((name) => `${helpers}/${name}.ts`), "solidity.config.json"].sort());
+    expect(fromBuilt.read).toEqual([...modules.map((name) => `built/tsc/${name}.js`), "solidity.config.json"].sort());
+    // Where the source has what only TypeScript has, the built files have none of it.
+    if (typescriptOnly) {
+      expect(modules.map((name) => project.read(`${helpers}/${name}.ts`)).join("\n")).toMatch(typescriptOnly);
+      for (const name of modules)
+        expect(project.read(`built/tsc/${name}.js`).replace(/\/\/.*/g, "")).not.toMatch(typescriptOnly);
+    }
 
     expect(fromBuilt.solidity).toBe(fromSource.solidity);
     expect(fromBuilt.bytecode).toBe(fromSource.bytecode);
-    expect(fromSource.solidity).toContain("function mulWad(uint256 x, uint256 y) internal pure returns (uint256)");
+    expect(fromSource.solidity).toContain(fixture.helper);
   });
 });
 

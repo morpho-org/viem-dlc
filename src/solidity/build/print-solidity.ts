@@ -12,7 +12,9 @@
  *   else is `memory`: locals, helper parameters and return values.
  * - **The spelling of a literal.** `0n` is `0`, `60_000` is `60000`, `'text'` is `"text"`, a string
  *   outside ASCII is a `unicode"…"` literal, `'0x313ce567'` is `hex"313ce567"`, and a `'0x…'` of 40
- *   digits is an address literal.
+ *   digits is an address literal. An integer written with 39 to 41 hexadecimal digits is padded with
+ *   leading zeros, so that solc reads a number and not an address. A Number literal that is not a safe
+ *   integer has no spelling: it is a located error asking for a bigint.
  *
  * What is only TypeScript is erased before anything is read: annotations, generics, `as`, `satisfies`,
  * `!`, a `this` parameter, and a type declared in a body. `Number(x)` and `BigInt(x)` print as `x`.
@@ -31,9 +33,20 @@
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, children, is, keyName, unwrap } from "./ast.js";
+import {
+  type AnyNode,
+  children,
+  ERASED_STATEMENTS,
+  is,
+  isThisParameter,
+  keyName,
+  patternNames,
+  unwrap,
+  walk,
+} from "./ast.js";
 import { isElementaryTypeName } from "./builtins.js";
-import { fail } from "./errors.js";
+import { fail, UNSAFE_NUMBER } from "./errors.js";
+import { refusedName } from "./names.js";
 import { Writer } from "./position-map.js";
 import { printYul } from "./print-yul.js";
 import type {
@@ -87,9 +100,6 @@ const OPERATORS = new Set([
   "AssignmentExpression",
   "UpdateExpression",
 ]);
-
-/** Statements that print as nothing: the empty statement, and a type declared in a body, which is only TypeScript. */
-const ERASED_STATEMENTS = new Set(["EmptyStatement", "TSTypeAliasDeclaration", "TSInterfaceDeclaration"]);
 
 const UINT256: TypeRef = { kind: "elementary", name: "uint256" };
 const BOOL: TypeRef = { kind: "elementary", name: "bool" };
@@ -146,8 +156,11 @@ class Printer {
   readonly #out = new Writer();
   /** The module of the body being printed, for positions. */
   #module: SourceModule;
-  /** The locals in scope, innermost last, each with the type it was declared with. */
-  #scopes: Map<string, TypeRef>[] = [];
+  /**
+   * The locals in scope, innermost last, each with the type it was declared with. A local its block
+   * declares further down has no type yet: the name is already its own, and cannot be read.
+   */
+  #scopes: Map<string, TypeRef | undefined>[] = [];
   /** True while a library's functions are printed: they are outside the contract, and cannot reach into it. */
   #inLibrary = false;
 
@@ -299,7 +312,7 @@ class Printer {
     this.#module = fn.module;
     this.#scopes = [new Map()];
     // A `this` parameter is a TypeScript annotation, and is erased with the others.
-    const params = body.params.filter((parameter) => !(is(parameter, "Identifier") && parameter.name === "this"));
+    const params = body.params.filter((parameter) => !isThisParameter(parameter));
     if (params.length !== signature.inputs.length)
       this.#fail(
         body,
@@ -314,13 +327,15 @@ class Printer {
         out.node({ module: fn.module, node: parameter }, () =>
           out.write(`${located(type, visibility === "external" ? "calldata" : "memory")} ${parameter.name}`),
         );
-        this.#declare(parameter.name, type);
+        this.#declare(parameter, type);
       }
       out.write(`) ${visibility} ${signature.mutability}${returns(signature)} {`);
       out.indented(() => {
         const block = body.body as AnyNode | null;
+        /* v8 ignore next -- @preserve: a function written as an expression always has a body, and the check is there for the type checker */
         if (!block) this.#fail(body, "a lens function needs a body");
         if (is(block, "BlockStatement")) {
+          this.#hoist(block.body as unknown as AnyNode[]);
           for (const statement of block.body) this.#statement(statement as unknown as AnyNode);
           return;
         }
@@ -440,6 +455,7 @@ class Printer {
     const out = this.#out;
     const init = node.init as AnyNode | null;
     this.#scopes.push(new Map());
+    if (init) this.#hoist([init]);
     out.write("for (");
     if (init)
       out.node({ module: this.#module, node: init }, () => {
@@ -507,6 +523,7 @@ class Printer {
     const out = this.#out;
     out.write("{");
     this.#scopes.push(new Map());
+    this.#hoist(node.body as AnyNode[]);
     out.indented(() => {
       for (const statement of node.body as AnyNode[]) this.#statement(statement);
     });
@@ -518,8 +535,8 @@ class Printer {
   /**
    * `try { x = feed.f(a) } catch { … }` is `try feed.f(a) returns (T r) { x = r; } catch { … }`: Solidity's
    * try takes one external call, so the block holds exactly one, bare or assigned. T is the type the called
-   * function declares. The returned value is named `r`, with `_` appended while the assigned target names an
-   * `r` of its own.
+   * function declares. The returned value is named `r`, with `_` appended while the assigned target prints
+   * that name for something of its own.
    */
   #try(node: AnyNode): void {
     const out = this.#out;
@@ -544,9 +561,12 @@ class Printer {
           call,
           "a try assigns the one value its call returns, so the call must be to a declared function with exactly one return value",
         );
+      // The names the target prints: a declaration's Solidity name, which is not always the name written here.
       const names = new Set<string>();
       const collect = (part: AnyNode): void => {
-        if (is(part, "Identifier")) names.add(part.name);
+        const reference = this.#lens.references.get(part);
+        if (reference) names.add(reference.kind === "builtin" ? reference.name : reference.declaration.name);
+        else if (is(part, "Identifier")) names.add(part.name);
         else if (is(part, "MemberExpression") && !part.computed) collect(part.object as AnyNode);
         else for (const child of children(part)) collect(child);
       };
@@ -595,7 +615,7 @@ class Printer {
       }
       if (!is(id, "Identifier")) this.#fail(id, "a local must be a plain name");
       if (this.#isAssembly(init)) {
-        this.#assembly(init, id.name);
+        this.#assembly(init, id);
         continue;
       }
       const type = this.typeOf(init);
@@ -606,26 +626,20 @@ class Printer {
         this.#expression(init);
       }
       out.write(";");
-      this.#declare(id.name, type);
+      this.#declare(id, type);
     }
   }
 
   /** `const [a, , c] = f(x)`: `(T a, , U c) = f(x);`, each type the one `f` declares for that value. */
   #tuple(pattern: AnyNode, init: AnyNode): void {
     const out = this.#out;
-    const outputs = is(init, "CallExpression") ? this.#outputs(init) : undefined;
-    if (!outputs)
-      this.#fail(
-        init,
-        "several locals are declared from one call whose return types are declared, as in const [a, b] = f(x)",
-      );
+    const outputs = this.#destructured(
+      pattern,
+      init,
+      "several locals are declared from one call whose return types are declared, as in const [a, b] = f(x)",
+    );
     const elements = pattern.elements as (AnyNode | null)[];
-    if (elements.length !== outputs.length)
-      this.#fail(
-        pattern,
-        `this pattern has ${elements.length} places and the call returns ${outputs.length} values: a value that is not used is left as a hole, as in [a, , c]`,
-      );
-    const declared: [string, TypeRef][] = [];
+    const declared: [Span & { name: string }, TypeRef][] = [];
     out.write("(");
     for (const [index, element] of elements.entries()) {
       if (index) out.write(", ");
@@ -633,12 +647,34 @@ class Printer {
       if (!is(element, "Identifier")) this.#fail(element, "a local must be a plain name");
       const type = outputs[index] as TypeRef;
       out.node({ module: this.#module, node: element }, () => out.write(`${located(type, "memory")} ${element.name}`));
-      declared.push([element.name, type]);
+      declared.push([element, type]);
     }
     out.write(") = ");
     this.#expression(init);
     out.write(";");
-    for (const [name, type] of declared) this.#declare(name, type);
+    for (const [element, type] of declared) this.#declare(element, type);
+  }
+
+  /**
+   * The values a pattern takes, on the declaring side and on the assigning side: those of one call whose
+   * declaration returns several, one for each place of the pattern. Solidity reads `(a) = e` as `a = e`,
+   * so a pattern of one place takes no tuple, and anything that is not such a call has no tuple to give.
+   */
+  #destructured(pattern: AnyNode, init: AnyNode, notACall: string): readonly TypeRef[] {
+    const outputs = is(init, "CallExpression") ? this.#outputs(init) : undefined;
+    if (!outputs) this.#fail(init, notACall);
+    if (outputs.length < 2)
+      this.#fail(
+        init,
+        `a pattern takes the values of a call that returns several, and this call returns ${outputs.length}: one value is taken without the brackets`,
+      );
+    const places = (pattern.elements as unknown[]).length;
+    if (places !== outputs.length)
+      this.#fail(
+        pattern,
+        `this pattern has ${places} places and the call returns ${outputs.length} values: a value that is not used is left as a hole, as in [a, , c]`,
+      );
+    return outputs;
   }
 
   // ---- the type of a local ------------------------------------------------------------------------------------
@@ -673,7 +709,7 @@ class Printer {
       return undefined;
     }
     if (is(node, "Identifier") || this.#lens.references.has(node)) {
-      const local = is(node, "Identifier") ? this.#local(node.name) : undefined;
+      const local = is(node, "Identifier") ? this.#local(node) : undefined;
       if (local) return local;
       const reference = this.#lens.references.get(node);
       if (reference?.kind !== "declaration") return undefined;
@@ -843,7 +879,7 @@ class Printer {
       out.write(this.#literal(node));
       return;
     }
-    if (is(node, "Identifier") && this.#local(node.name)) {
+    if (is(node, "Identifier") && this.#local(node)) {
       out.write(node.name);
       return;
     }
@@ -876,10 +912,21 @@ class Printer {
         const fn = this.#interfaceFunction(object);
         if (fn || this.#interfaceFunction(node)) {
           if (!fn || property !== "selector") this.#fail(node, INTERFACE_MEMBER);
-          out.write(`${fn.interface.name}.${fn.name}.selector`);
+          out.write(`${this.#reach(object, fn.interface.name)}.${fn.name}.selector`);
           return;
         }
         this.#expression(object, true);
+        // What is left is a field its struct declares, or the length of an array. A native member of a
+        // Solidity type, such as the balance of an address, has no form in a lens.
+        const receiver = this.#declaredType(object);
+        if (receiver?.kind === "struct") {
+          if (!receiver.declaration.fields.some((field) => field.name === property))
+            this.#fail(node, `struct ${receiver.declaration.name} has no field "${property}"`);
+        } else if (receiver?.kind !== "array" || property !== "length")
+          this.#fail(
+            node,
+            `"${property}" is not a member a lens can read here. A member is a field of a struct, the length of an array, block.timestamp, block.number, or I.f.selector`,
+          );
         out.write(`.${property}`);
         return;
       }
@@ -914,6 +961,11 @@ class Printer {
         const target = unwrap(node.left as Span);
         if (is(target, "ArrayPattern")) {
           // `[r.a, , r.b] = f(x)`: the tuple `(r.a, , r.b) = f(x)`, a hole where a value is not used.
+          this.#destructured(
+            target,
+            this.#strip(node.right as Span),
+            "several values are assigned from one call whose return types are declared, as in [a, b] = f(x)",
+          );
           out.write("(");
           for (const [index, element] of target.elements.entries()) {
             if (index) out.write(", ");
@@ -957,11 +1009,13 @@ class Printer {
     const fields = unwrap(argument);
     if (rest.length || !is(fields, "ObjectExpression"))
       this.#fail(node, "a struct is built from an object literal of its fields: new T({ a, b })");
-    out.write(`${struct.name}({`);
+    out.write(`${this.#reach(node, struct.name)}({`);
     for (const [index, property] of fields.properties.entries()) {
       const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
       if (name === undefined || !is(property, "Property") || property.kind !== "init" || property.method)
         this.#fail(property, "a field of a struct literal is written name: value, or the name alone");
+      const refused = refusedName(name, "member");
+      if (refused) this.#fail(property.key, refused);
       if (index) out.write(", ");
       out.node({ module: this.#module, node: property }, () => {
         out.write(`${name}: `);
@@ -985,7 +1039,7 @@ class Printer {
           node,
           `"${declaration.name}" is not listed in the immutables of ${this.#lens.name}: contract(name, functions, { immutables: { ${declaration.name} } })`,
         );
-      this.#out.write(declaration.name);
+      this.#out.write(this.#reach(node, declaration.name));
     } else if (declaration.kind === "interface") this.#fail(node, INTERFACE_MEMBER);
     else this.#fail(node, `"${declaration.name}" is a ${declaration.kind} and cannot be used as a value here`);
   }
@@ -1029,7 +1083,7 @@ class Printer {
           `"${declaration.name}" is ${declaration.kind === "immutable" ? "an" : "a"} ${declaration.kind} and cannot be called`,
         );
       else if (this.#inLibrary) this.#outsideLibrary(node, declaration.name);
-      out.write(declaration.name);
+      out.write(this.#reach(callee, declaration.name));
       this.#arguments(args);
       return;
     }
@@ -1081,7 +1135,7 @@ class Printer {
     }
     const named = this.#lens.references.get(object);
     if (named?.kind === "declaration" && named.declaration.kind === "library") {
-      out.write(`${named.declaration.name}.${name}`);
+      out.write(`${this.#reach(object, named.declaration.name)}.${name}`);
       this.#arguments(args);
       return;
     }
@@ -1114,7 +1168,7 @@ class Printer {
     if (fn) {
       // `I.f.encode(a, b)` is `abi.encodeCall(I.f, (a, b))`.
       if (name !== "encode") this.#fail(node, INTERFACE_MEMBER);
-      out.write(`abi.encodeCall(${fn.interface.name}.${fn.name}, `);
+      out.write(`abi.encodeCall(${this.#reach(object, fn.interface.name)}.${fn.name}, `);
       this.#arguments(args);
       out.write(")");
       return;
@@ -1125,7 +1179,7 @@ class Printer {
     const [address, options, ...rest] = is(object, "CallExpression") ? (object.arguments as AnyNode[]) : [];
     if (made?.kind === "declaration" && made.declaration.kind === "interface" && address && options && !rest.length) {
       out.node({ module: this.#module, node: object }, () => {
-        out.write(`${made.declaration.name}(`);
+        out.write(`${this.#reach(object, made.declaration.name)}(`);
         this.#expression(address);
         out.write(")");
       });
@@ -1133,6 +1187,12 @@ class Printer {
       this.#options(options);
     } else {
       this.#expression(object, true);
+      // A native member of a Solidity type, such as the call of an address, has no form in a lens.
+      if (this.#declaredType(object)?.kind !== "interface")
+        this.#fail(
+          node,
+          `.${name}(…) is not a call a lens can make here. A member is called on a handle of a declared interface, on a library, on this, or as abi.encode, abi.decode and I.f.encode`,
+        );
       out.write(`.${name}`);
     }
     this.#arguments(args);
@@ -1182,11 +1242,18 @@ class Printer {
     const { value } = node;
     if (typeof value === "boolean") return String(value);
     if (typeof value === "bigint" || typeof value === "number") {
+      if (typeof value === "number" && !Number.isSafeInteger(value)) return this.#fail(node, UNSAFE_NUMBER);
+      /* v8 ignore next -- @preserve: a literal the parser read always has its text, and the fallback after ?? is there for the type checker */
       const text = String(node.raw ?? "")
         .replace(/_/g, "")
         .replace(/n$/, "");
       if (/^(?:0|[1-9][0-9]*)$/.test(text)) return text;
-      if (/^0[xX][0-9a-fA-F]+$/.test(text)) return `0x${text.slice(2)}`;
+      if (/^0[xX][0-9a-fA-F]+$/.test(text)) {
+        // solc reads 40 hexadecimal digits as an address, and refuses 39 and 41 as a misspelled one.
+        // An integer stays an integer: leading zeros make it 42 digits, which solc reads as a number.
+        const digits = text.slice(2);
+        return `0x${digits.length >= 39 && digits.length <= 41 ? digits.padStart(42, "0") : digits}`;
+      }
       return this.#fail(node, "an integer literal is written in decimal or in hexadecimal");
     }
     if (typeof value === "string") {
@@ -1228,7 +1295,7 @@ class Printer {
    * ends in `return word` is the initializer of the local `local`: the local is declared first, as a
    * uint256 or as the type named first, and the block assigns it.
    */
-  #assembly(call: AnyNode, local?: string): void {
+  #assembly(call: AnyNode, local?: Span & { name: string }): void {
     const out = this.#out;
     const parts = (call.arguments as Span[]).map(unwrap);
     const named = parts.length === 3 ? parts[0] : undefined;
@@ -1246,6 +1313,21 @@ class Printer {
       );
     if (named && local === undefined)
       this.#fail(named, "a type is named only for an assembly block that is the initializer of a local");
+    // A name the block reads from around it is a local declared above it: not the one the block initializes.
+    const inside = new Set<string>();
+    walk(block as unknown as AnyNode, (node) => {
+      if (is(node, "VariableDeclarator")) for (const name of patternNames(node.id)) inside.add(name);
+      else if (is(node, "ArrowFunctionExpression") || is(node, "FunctionExpression"))
+        for (const parameter of node.params) for (const name of patternNames(parameter)) inside.add(name);
+    });
+    const read = (node: AnyNode): void => {
+      if (this.#lens.references.has(node)) return;
+      if (is(node, "Identifier")) {
+        if (!inside.has(node.name)) this.#local(node);
+      } else if (is(node, "MemberExpression") && !node.computed) read(node.object as unknown as AnyNode);
+      else for (const child of children(node)) read(child);
+    };
+    read(block as unknown as AnyNode);
     if (local !== undefined) {
       const reference = named && this.#lens.references.get(named);
       const type: TypeRef = !named
@@ -1253,7 +1335,7 @@ class Printer {
         : reference?.kind === "builtin" && reference.module === "solidity" && isElementaryTypeName(reference.name)
           ? { kind: "elementary", name: reference.name }
           : this.#fail(named, "the type of an assembly block's value is an elementary type, such as bytes32 or string");
-      out.write(`${located(type, "memory")} ${local};`);
+      out.write(`${located(type, "memory")} ${local.name};`);
       this.#declare(local, type);
       out.line();
     }
@@ -1263,24 +1345,67 @@ class Printer {
         block,
         module: this.#module,
         references: this.#lens.references,
-        result: local,
-        locals: new Set(this.#scopes.flatMap((scope) => [...scope.keys()])),
+        result: local?.name,
+        locals: this.#declared(),
         writer: out,
       });
     });
   }
 
   // ---- scopes -------------------------------------------------------------------------------------------------------
-  #declare(name: string, type: TypeRef): void {
-    this.#scopes.at(-1)?.set(name, type);
+  /** Declares a parameter or a local, whose name is printed as it is written. */
+  #declare(id: Span & { name: string }, type: TypeRef): void {
+    const refused = refusedName(id.name);
+    if (refused) this.#fail(id, refused);
+    this.#scopes.at(-1)?.set(id.name, type);
   }
 
-  #local(name: string): TypeRef | undefined {
+  /**
+   * The Solidity name of a module-level declaration, where it is printed as a value. TypeScript reads the
+   * declaration under the name the module gave it, and Solidity under the one name it is declared with: a
+   * parameter or a local of that name would be read instead, so the two are refused together.
+   */
+  #reach(node: Span, name: string): string {
+    if (this.#scopes.some((scope) => scope.has(name)))
+      this.#fail(
+        node,
+        `this is "${name}" in Solidity, the name it is declared with, and a parameter or local named "${name}" hides it here: rename the parameter or local`,
+      );
+    return name;
+  }
+
+  /** Makes the names a block declares its own from the block's start, as they are in TypeScript. */
+  #hoist(statements: readonly AnyNode[]): void {
+    const scope = this.#scopes.at(-1);
+    for (const statement of statements) {
+      if (!is(statement, "VariableDeclaration")) continue;
+      for (const declarator of statement.declarations)
+        for (const name of patternNames(declarator.id)) if (!scope?.has(name)) scope?.set(name, undefined);
+    }
+  }
+
+  /**
+   * The type of the local a name means, or undefined when the name is no local. The nearest binding is the
+   * one meant, so a local that is declared further down is a located error, never the outer local of its name.
+   */
+  #local(id: Span & { readonly name: string }): TypeRef | undefined {
     for (let i = this.#scopes.length - 1; i >= 0; i--) {
-      const type = this.#scopes[i]?.get(name);
-      if (type) return type;
+      const scope = this.#scopes[i];
+      if (scope?.has(id.name))
+        return scope.get(id.name) ?? this.#fail(id, `"${id.name}" is used before it is declared`);
     }
     return undefined;
+  }
+
+  /** The names of the locals declared so far, without the ones a nearer, undeclared local hides. */
+  #declared(): Set<string> {
+    const names = new Set<string>();
+    for (const scope of this.#scopes)
+      for (const [name, type] of scope) {
+        if (type) names.add(name);
+        else names.delete(name);
+      }
+    return names;
   }
 
   #fail(node: Span, message: string): never {

@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import { describeHost } from "./helpers/host-suite.js";
 import { bin, Project } from "./helpers/project.js";
+import { expectNoLensSourceInMaps } from "./helpers/source-maps.js";
 
 describeHost({
   name: "tsdown",
@@ -25,6 +26,22 @@ describeHost({
 });
 
 describe("a tsdown bundle, beyond the shared suite", { timeout: 120_000 }, () => {
+  it("with a source map, the map holds no lens body", async () => {
+    const project = new Project("app");
+    try {
+      const built = await project.run([bin("tsdown"), "--sourcemap"]);
+      expect(built.ok, built.output).toBe(true);
+      expect(project.bytecodeUnder("dist", ["dist/index.mjs.map"])).toBe((await project.expectedLens()).bytecode);
+      expect(expectNoLensSourceInMaps(project, "dist")).toEqual({
+        external: ["dist/index.mjs.map"],
+        inline: [],
+        linked: ["dist/index.mjs"],
+      });
+    } finally {
+      project.remove();
+    }
+  });
+
   it("runs where nothing is installed: no compiler, no parser, no package", async () => {
     const project = new Project("app");
     // Outside the repository, so nothing is found by walking up.

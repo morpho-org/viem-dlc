@@ -833,14 +833,25 @@ Every integration runs the same transform, and holds to the same rules:
   next.
 - **Modules are parsed and never run.** A lens reaches helpers, structs and constants in other
   modules through imports, re-exports, `export *` and namespace imports, resolved by the tool's own
-  resolver, so a path alias such as `@/` works. A helper can also be read from the JavaScript that
+  resolver, so a path alias such as `@/` works. Under `node --import` that resolver is Node's own, with
+  the conditions the process runs with; TypeScript's conventions and the `paths` of `tsconfig.json`
+  apply only to an import Node cannot resolve. A helper can also be read from the JavaScript that
   `tsc` emitted for it. Output that a bundler or a minifier has rewritten is not supported: it may be
   refused, or print different Solidity.
 - **Nothing is written into the source tree.** The only files written are the tool's own output and
   the cache described below.
 
 Next is supported with Turbopack. A webpack build of a configuration wrapped in `withSolidity` stops
-with an error, and webpack, esbuild and Bun have no integration yet.
+with an error, and webpack, esbuild and Bun have no integration yet. A loader rule the configuration
+already has for `*.{ts,tsx}` is kept, and runs after the lenses are compiled.
+
+Two limits come from Next itself:
+
+- Turbopack does not tell a loader whether a module is imported or required. An import that resolves
+  to a file its package lists for `require` is therefore refused, with an error at the import: the
+  application's own `import` may load another file.
+- With server fast refresh, `next dev` can keep serving the failure of a lens that has since been
+  repaired (seen with Next 16.4). Restart the server, or run `next dev --no-server-fast-refresh`.
 
 ### `solidity.config.json`
 

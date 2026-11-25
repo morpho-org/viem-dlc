@@ -21,7 +21,10 @@ import {
   SOLIDITY_SPECIFIER,
   YUL_SPECIFIER,
 } from "./builtins.js";
-import { fail } from "./errors.js";
+import { fail, failOnExtraArgument } from "./errors.js";
+import { refusedName } from "./names.js";
+import { YUL_OPCODES } from "./print-yul.js";
+import { enclosingScopes } from "./scopes.js";
 import type {
   ConstantDeclaration,
   FunctionBody,
@@ -71,6 +74,15 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
 
   const error = (m: SourceModule, node: Span, message: string): never => fail(m, node, message, lens);
 
+  /** Stops the build when a name cannot be printed as a Solidity name. A field or an interface function is a `member`. */
+  const named = (m: SourceModule, at: Span, name: string, member = false): void => {
+    const refused = refusedName(name, member ? "member" : "scoped");
+    if (refused) error(m, at, refused);
+  };
+
+  const takes = (m: SourceModule, call: { readonly arguments: readonly Span[] }, most: number, what: string): void =>
+    failOnExtraArgument(m, call, most, what, lens);
+
   // ---- names ------------------------------------------------------------------------------------------
   /** The module `source` names when imported from `m`. `user` and `at` are where the name is used, for errors. */
   const target = (m: SourceModule, source: string, user: SourceModule, at: Span): SourceModule => {
@@ -99,27 +111,46 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
   /** The exports being looked up, as `file\0name`: modules may export each other's names in a circle. */
   const exporting = new Set<string>();
 
-  const hasExport = (
-    m: SourceModule,
-    name: string,
-    user: SourceModule,
-    at: Span,
-    seen = new Set<SourceModule>(),
-  ): boolean => {
-    // A module already being asked for this name is where the search came from.
-    if (seen.has(m) || exporting.has(`${m.file}\0${name}`)) return false;
-    seen.add(m);
-    if (m.exports.has(name)) return true;
-    return m.starExports.some(
-      (source) =>
-        source !== SOLIDITY_SPECIFIER &&
-        source !== YUL_SPECIFIER &&
-        hasExport(target(m, source, user, at), name, user, at, seen),
-    );
+  /** True when two values are one binding, however each was reached. */
+  const same = (a: Value, b: Value): boolean => {
+    if (a.kind === "declaration") return b.kind === "declaration" && a.declaration === b.declaration;
+    if (a.kind === "builtin") return b.kind === "builtin" && a.module === b.module && a.name === b.name;
+    return a.kind === b.kind && a.module === b.module;
   };
 
-  /** The value `from` exports as `name`. `user` and `at` are where it is asked for, for errors. */
-  const exportedValue = (from: SourceModule, name: string, user: SourceModule, at: Span): Value => {
+  /**
+   * What the `export *` declarations of `from` give as `name`, as a JavaScript engine links them: nothing
+   * for `default`, one binding however many declarations lead to it, and an error for two bindings.
+   */
+  const starredValue = (from: SourceModule, name: string, user: SourceModule, at: Span): Value | undefined => {
+    if (name === "default") return undefined;
+    let found: Value | undefined;
+    for (const source of from.starExports) {
+      let value: Value | undefined;
+      if (source === SOLIDITY_SPECIFIER) {
+        if (isElementaryTypeName(name) || DECLARATION_BUILTINS.has(name) || BODY_BUILTINS.has(name))
+          value = packageExport("solidity", name, user, at);
+      } else if (source === YUL_SPECIFIER) {
+        if (YUL_OPCODES.has(name)) value = packageExport("yul", name, user, at);
+      } else {
+        const next = target(from, source, user, at);
+        // A module already being asked for this name is where the search came from.
+        if (!exporting.has(`${next.file}\0${name}`)) value = exportedBy(next, name, user, at);
+      }
+      if (!value) continue;
+      if (found && !same(found, value))
+        return error(
+          user,
+          at,
+          `"${name}" is exported by more than one export * of ${from.file}, from different declarations: export it by name`,
+        );
+      found = value;
+    }
+    return found;
+  };
+
+  /** The value `from` exports as `name`, or undefined when it exports no such name. */
+  const exportedBy = (from: SourceModule, name: string, user: SourceModule, at: Span): Value | undefined => {
     const key = `${from.file}\0${name}`;
     if (exporting.has(key)) return error(user, at, `"${name}" is exported by ${from.file} in terms of itself`);
     exporting.add(key);
@@ -133,20 +164,40 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
           at,
           "a default export that is an expression cannot be used by a lens; export it under a name",
         );
-      for (const source of from.starExports) {
-        if (source === SOLIDITY_SPECIFIER || source === YUL_SPECIFIER) {
-          const pkg = source === SOLIDITY_SPECIFIER ? "solidity" : "yul";
-          if (pkg === "yul" || isElementaryTypeName(name) || DECLARATION_BUILTINS.has(name) || BODY_BUILTINS.has(name))
-            return packageExport(pkg, name, user, at);
-          continue;
-        }
-        const next = target(from, source, user, at);
-        if (hasExport(next, name, user, at)) return exportedValue(next, name, user, at);
-      }
-      return error(user, at, `"${name}" is not exported by ${from.file}`);
+      return starredValue(from, name, user, at);
     } finally {
       exporting.delete(key);
     }
+  };
+
+  /** The value `from` exports as `name`. `user` and `at` are where it is asked for, for errors. */
+  const exportedValue = (from: SourceModule, name: string, user: SourceModule, at: Span): Value =>
+    exportedBy(from, name, user, at) ??
+    error(
+      user,
+      at,
+      name === "default" && from.starExports.length > 0
+        ? `"default" is not exported by ${from.file}: export * does not pass a default export on`
+        : `"${name}" is not exported by ${from.file}`,
+    );
+
+  /** The names bound between the module's scope and the lens: the parameters and locals of the code around it. */
+  const around = new Set(
+    enclosingScopes(module.program as unknown as AnyNode, site.node).flatMap((scope) => [...scope]),
+  );
+
+  /**
+   * The value of a name written in `m`. A name means its nearest binding, and inside the lens a binding of the
+   * code around it is nearer than the module's: that is a capture, which a lens compiled ahead of time cannot make.
+   */
+  const valueOfIdentifier = (m: SourceModule, node: Span, name: string): Value => {
+    if (m === module && around.has(name) && node.start >= site.node.start && node.end <= site.node.end)
+      return error(
+        m,
+        node,
+        `"${name}" is a parameter or a local of the code around this lens, which a lens cannot capture. ${NAMES}.`,
+      );
+    return valueOfName(m, name, m, node);
   };
 
   /** The value of the module-level name `name` of `m`. `user` and `at` are where it is used. */
@@ -165,7 +216,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
    * other expression.
    */
   const staticValue = (m: SourceModule, node: AnyNode): Value | undefined => {
-    if (is(node, "Identifier")) return valueOfName(m, node.name, m, node);
+    if (is(node, "Identifier")) return valueOfIdentifier(m, node, node.name);
     if (is(node, "MemberExpression") && !node.computed) {
       const object = unwrap(node.object);
       if (!is(object, "Identifier") && !is(object, "MemberExpression")) return undefined;
@@ -269,6 +320,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     const id = fn.id as { name: string } | null | undefined;
     if (id) scope.add(id.name);
     const body = fn.body as AnyNode | null;
+    /* v8 ignore next -- @preserve: a function written as an expression always has a body, and the check is there for the type checker */
     if (!body) return;
     if (is(body, "BlockStatement")) scanBlock(m, body.body as unknown as AnyNode[], [...scopes, scope], uses);
     else scan(m, body, [...scopes, scope], uses);
@@ -285,7 +337,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     switch (node.type) {
       case "Identifier": {
         const name = node.name as string;
-        if (!isLocal(name)) use(uses, asReference(valueOfName(m, name, m, node), m, node), node);
+        if (!isLocal(name)) use(uses, asReference(valueOfIdentifier(m, node, name), m, node), node);
         return;
       }
       case "MemberExpression": {
@@ -294,7 +346,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
         let root = object;
         while (is(root, "MemberExpression") && !root.computed) root = unwrap(root.object);
         if (!node.computed && is(root, "Identifier") && !isLocal(root.name)) {
-          const base = valueOfName(m, root.name, m, root);
+          const base = valueOfIdentifier(m, root, root.name);
           const value = base.kind === "namespace" || base.kind === "package" ? staticValue(m, node) : undefined;
           if (value) {
             use(uses, asReference(value, m, node), node);
@@ -358,13 +410,20 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
       if (name === undefined || !is(property, "Property") || property.kind !== "init")
         return error(m, property, `the implementation of ${owner} can only have plain functions under plain keys`);
+      if (bodies.has(name))
+        return error(m, property.key, `"${name}" is written twice in the implementation of ${owner}`);
       bodies.set(name, property);
     }
     const functions: ResolvedFunction[] = [];
+    const declared = new Set<string>();
     for (const property of signatures.properties as AnyNode[]) {
       const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
       if (name === undefined || !is(property, "Property") || property.kind !== "init" || property.method)
         return error(m, property, `the declaration of ${owner} can only have signatures under plain keys`);
+      if (declared.has(name))
+        return error(m, property.key, `"${name}" is written twice in the declaration of ${owner}`);
+      declared.add(name);
+      named(m, property.key, name);
       const implemented = bodies.get(name);
       if (!implemented) return error(m, property, `${owner} declares "${name}" and does not implement it`);
       bodies.delete(name);
@@ -380,14 +439,28 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
   };
 
   // ---- declarations --------------------------------------------------------------------------------------------
-  const plainEntries = (m: SourceModule, raw: Span | undefined, at: Span, what: string): [string, AnyNode][] => {
+  /**
+   * The entries of an object literal. With `members`, each key is printed as a Solidity name, and must be one.
+   * A key is written once: JavaScript would keep the last of two, without a word.
+   */
+  const plainEntries = (
+    m: SourceModule,
+    raw: Span | undefined,
+    at: Span,
+    what: string,
+    members = false,
+  ): [string, AnyNode][] => {
     const node = raw && unwrap(raw);
     if (!is(node, "ObjectExpression"))
       return error(m, node ?? at, `${what} must be an object literal written in place`);
+    const written = new Set<string>();
     return node.properties.map((property): [string, AnyNode] => {
       const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
       if (name === undefined || !is(property, "Property") || property.kind !== "init" || property.method)
         return error(m, property, `${what} can only have plain keys`);
+      if (written.has(name)) return error(m, property.key, `"${name}" is written twice in ${what}`);
+      written.add(name);
+      if (members) named(m, property.key, name, true);
       return [name, property.value as unknown as AnyNode];
     });
   };
@@ -404,11 +477,24 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       return error(
         m,
         node,
-        `${what} cannot be part of a constant a lens reads. Such a constant is built only from literals, other such constants, and the operators + - * ** % << >> & | ^ ~`,
+        `${what} cannot be part of a constant a lens reads. Such a constant is built only from bigint literals, booleans, strings, other such constants, and the operators + - * ** % << >> & | ^ ~`,
       );
     }
     if (is(node, "Literal")) {
-      if (!["bigint", "number", "boolean", "string"].includes(typeof node.value)) refused("this literal");
+      // JavaScript and a lens both read the constant, so it holds only what means the same to both.
+      if (typeof node.value === "number")
+        error(
+          m,
+          node,
+          "a Number literal cannot be part of a constant a lens reads: JavaScript computes with Numbers as floats, and in 32 bits where it shifts, and solc computes exactly, so the constant would mean two different values. Write it as a bigint, with the n suffix",
+        );
+      if (typeof node.value === "string" && node.value.startsWith("0x"))
+        error(
+          m,
+          node,
+          "a string that starts with 0x cannot be a constant a lens reads: a body can read it as a hex literal or an address, and JavaScript reads it as text, so the constant would mean two different values. Write the literal in the body",
+        );
+      if (!["bigint", "boolean", "string"].includes(typeof node.value)) refused("this literal");
       return;
     }
     if (is(node, "Identifier") || is(node, "MemberExpression")) {
@@ -424,10 +510,13 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     }
     if (is(node, "BinaryExpression")) {
       if (node.operator === "/") {
-        const at = m.code.indexOf("/", node.left.end);
+        // The operator is the one slash between the operands that is not in a comment.
+        const between = m.code.slice(node.left.end, node.right.start);
+        const comments = /\/\*[\s\S]*?\*\/|\/\/.*/g;
+        const at = node.left.end + between.replace(comments, (comment) => " ".repeat(comment.length)).indexOf("/");
         error(
           m,
-          at >= 0 && at < node.right.start ? { start: at, end: at + 1 } : node,
+          { start: at, end: at + 1 },
           "a constant a lens reads cannot use /: solc divides literals exactly and JavaScript's BigInt truncates, so the constant would mean two different values. Divide inside the body, where the division is Solidity's",
         );
       }
@@ -455,9 +544,15 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       const superClass = binding.node.superClass && unwrap(binding.node.superClass);
       if (!is(superClass, "CallExpression") || !isBuiltin(staticValue(m, unwrap(superClass.callee)), "Struct"))
         return error(m, key, `class "${binding.name}" does not extend Struct({ … })`);
-      if (binding.node.body.body.length) return error(m, binding.node.body, "a struct class has no members");
+      takes(m, superClass, 1, "Struct(…)");
+      // A member that is only a type is erased by a compiler, and is no member.
+      const members = binding.node.body.body.filter(
+        (member) => !is(member, "TSIndexSignature") && !(is(member, "PropertyDefinition") && member.declare),
+      );
+      if (members.length) return error(m, binding.node.body, "a struct class has no members");
+      named(m, binding.node.id ?? key, binding.name);
       const struct = register<Mutable<StructDeclaration>>(m, key, { ...base, kind: "struct", node: key, fields: [] });
-      struct.fields = plainEntries(m, superClass.arguments[0], superClass, "the fields of a struct").map(
+      struct.fields = plainEntries(m, superClass.arguments[0], superClass, "the fields of a struct", true).map(
         ([name, node]) => ({ name, type: typeRef(m, node, struct.dependencies as Uses), origin: { module: m, node } }),
       );
       return struct;
@@ -475,7 +570,10 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     if (is(init, "CallExpression")) {
       const callee = unwrap(init.callee);
       const called = staticValue(m, callee);
+      if (isBuiltin(called, "internal") || isBuiltin(called, "iface") || isBuiltin(called, "immutable"))
+        named(m, binding.node.id, binding.name);
       if (isBuiltin(called, "internal")) {
+        takes(m, init, 2, "internal(…)");
         const helper = register<Mutable<HelperDeclaration>>(m, key, {
           ...base,
           kind: "helper",
@@ -489,18 +587,20 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
         return helper;
       }
       if (isBuiltin(called, "iface")) {
+        takes(m, init, 1, "iface(…)");
         const declared = register<Mutable<InterfaceDeclaration>>(m, key, {
           ...base,
           kind: "interface",
           node: init,
           functions: [],
         });
-        declared.functions = plainEntries(m, init.arguments[0], init, "the functions of an interface").map(
+        declared.functions = plainEntries(m, init.arguments[0], init, "the functions of an interface", true).map(
           ([name, node]) => ({ name, signature: signature(m, node, declared.dependencies as Uses) }),
         );
         return declared;
       }
       if (isBuiltin(called, "immutable")) {
+        takes(m, init, 1, "immutable(…)");
         const declared = register<Mutable<ImmutableDeclaration>>(m, key, {
           ...base,
           kind: "immutable",
@@ -521,6 +621,9 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
             return error(m, nameNode ?? inner, "the first argument of library(…) must be a string literal: its name");
           if (!is(signatures, "ObjectExpression") || !is(implementation, "ObjectExpression"))
             return error(m, init, "library(name, { … }).implementation({ … }) takes object literals written in place");
+          takes(m, inner, 2, "library(…)");
+          takes(m, init, 1, ".implementation(…)");
+          named(m, nameNode, nameNode.value);
           const declared = register<Mutable<LibraryDeclaration>>(m, key, {
             ...base,
             name: nameNode.value,
@@ -578,12 +681,16 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
   }
 
   // Other modules first, in the order they were first reached; then the lens's own. Source order within each.
+  /* v8 ignore next -- @preserve: a module was ranked when its first declaration was reached, and the fallback after ?? is there for the type checker */
   const rank = (m: SourceModule) => (m === module ? Number.POSITIVE_INFINITY : (moduleRank.get(m) ?? 0));
   const ordered = [...declarations.values()].sort(
     (a, b) =>
       (rank(a.module) === rank(b.module) ? 0 : rank(a.module) < rank(b.module) ? -1 : 1) || a.node.start - b.node.start,
   );
+  // A name is given once: a library's functions are in scope of everything the library's bodies name.
   const taken = new Set([lens, ...entries.map((entry) => entry.name)]);
+  for (const declaration of ordered)
+    if (declaration.kind === "library") for (const fn of declaration.functions) taken.add(fn.name);
   for (const declaration of ordered) {
     if (declaration.kind === "constant") continue;
     let name = declaration.name;

@@ -25,14 +25,11 @@ import type {
   ImmutableType,
   ImmutableTypes,
   Impl,
-  InArgs,
+  Internal,
   Lens,
   Library,
   Mutability,
   Out,
-  OutArgs,
-  Returned,
-  Returns,
   Sig,
   SigBuilder,
   SolType,
@@ -237,10 +234,7 @@ export const iface = <F extends Record<string, Sig>>(_functions: F): Iface<F> =>
  * A helper: `internal(pure(uint256, uint256).returns(uint256), (a, b) => …)`. The signature is written
  * out because Solidity infers neither a return type nor a mutability.
  */
-export const internal = <S extends Sig>(
-  _signature: S,
-  _body: (...args: OutArgs<S["inputs"]>) => Returns<S["outputs"]>,
-): ((...args: InArgs<S["inputs"]>) => Returned<S["outputs"]>) => bodyOnly("an internal(…) helper");
+export const internal: Internal = () => bodyOnly<never>("an internal(…) helper");
 
 /**
  * `const FEED = immutable(IPriceFeed)`: a module-level name that helpers and entry points both use. It is

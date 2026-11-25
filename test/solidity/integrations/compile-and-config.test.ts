@@ -82,6 +82,7 @@ describe("solidity.config.json", () => {
   it.each([
     ["text that is not JSON", "{ solc: ", /^cannot read .*solidity\.config\.json: /],
     ["no compiler", {}, /must pin an exact compiler/],
+    ["a file that is not an object", ["0.8.36"], /must pin an exact compiler/],
     ["a version range", { solc: { version: "^0.8.0" } }, /must pin an exact compiler/],
     ["a version that is not a string", { solc: { version: 8 } }, /must pin an exact compiler/],
     [
