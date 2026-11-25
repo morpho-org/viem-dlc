@@ -183,14 +183,6 @@ const inTheBlock: readonly Case[] = [
 
 const atTheBlock: readonly Case[] = [
   [
-    "a function whose value would take the name of a Solidity local",
-    lens(
-      'const r = assembly("memory-safe", () => {\n      const twice = (a) => add(a, a);\n      return twice(x);\n    });\n    return r;',
-    ),
-    "(a) => add",
-    'a function inside an assembly block names its value "r" in Yul, and "r" is a local here: rename the local',
-  ],
-  [
     "a block that is a statement and returns a word",
     lens('assembly("memory-safe", () => {\n      return x;\n    });\n    return x;'),
     "return x;\n    });",
@@ -355,15 +347,6 @@ describe("typed Yul: rejections", () => {
       await expectRejection(code, {
         message: "Cannot access local Solidity variables from inside an inline assembly function.",
         ...positionIn(code, "x, a"),
-        source: "solc",
-      });
-    });
-
-    it("a Yul local with the name a function gives its value", async () => {
-      const code = block("let r = x;\n      const twice = (a) => add(a, a);\n      out = twice(r);");
-      await expectRejection(code, {
-        message: "Variable name r already taken in this scope.",
-        ...positionIn(code, "(a) => add"),
         source: "solc",
       });
     });

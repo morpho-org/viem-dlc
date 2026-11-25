@@ -48,6 +48,18 @@ export function fail(module: SourceModule, node: Span, message: string, lens?: s
   throw new LensError([diagnosticAt(module, node, message, lens)]);
 }
 
+/** Stops the build at an argument past the `most` a builder takes: it would be dropped without a word. */
+export function failOnExtraArgument(
+  module: SourceModule,
+  call: { readonly arguments: readonly Span[] },
+  most: number,
+  what: string,
+  lens?: string,
+): void {
+  const extra = call.arguments[most];
+  if (extra) fail(module, extra, `${what} takes ${most} argument${most === 1 ? "" : "s"}, and this is one more`, lens);
+}
+
 /**
  * Stops the build at a construct the design defines but this version does not print yet. Distinct from
  * {@link fail}, which is for what a lens may never contain: search for `notImplemented(` to find the

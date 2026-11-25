@@ -6,7 +6,7 @@
  */
 import { parseSync, type Span, type Statement } from "oxc-parser";
 
-import { type AnyNode, is, keyName } from "./ast.js";
+import { type AnyNode, is, keyName, unwrap } from "./ast.js";
 import { LensError } from "./errors.js";
 import type { ModuleBinding, ModuleExport, SourceModule } from "./types.js";
 
@@ -117,8 +117,15 @@ export function parseModule(file: string, code: string): SourceModule {
         declare(declaration, statement, false);
         const name = keyName(declaration.id as Span | null);
         if (name !== undefined) exports.set("default", { kind: "local", local: name });
-      } else if (!declaration.type.startsWith("TS")) {
-        exports.set("default", { kind: "default", node: statement.declaration as never });
+      } else if (!unwrap(declaration).type.startsWith("TS")) {
+        // A default export that is a name is that binding, as `export { name as default }` is.
+        const value = unwrap(declaration);
+        exports.set(
+          "default",
+          is(value, "Identifier")
+            ? { kind: "local", local: value.name }
+            : { kind: "default", node: statement.declaration as never },
+        );
       }
     } else declare(statement, statement, false);
   }

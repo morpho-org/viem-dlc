@@ -20,8 +20,10 @@
  *
  * A function written with a block body follows the block's own rule: a final `return word` is
  * `r := word`, and a body with none is a function that returns nothing. A callback or a function
- * whose body is an expression returns that expression. `r` is the one name the printer chooses, so a
- * function that returns a word is refused where a Solidity local is already named `r`.
+ * whose body is an expression returns that expression. `r` is the one name the printer chooses. Where the
+ * block writes `r`, a Solidity local around it has that name, or a function around the function gives its
+ * own value that name, the name is `r_`, then `r__`, and so on. A name that is called is an opcode or a
+ * function declared in the block.
  *
  * A literal is an integer, respelled as in Solidity (`0n` is `0`, `0x1fn` is `0x1f`). A constant named
  * inside a block must be a single such literal, because Yul has no operators. Anything that is not in
@@ -29,9 +31,10 @@
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, is, unwrap } from "./ast.js";
+import { type AnyNode, is, unwrap, walk } from "./ast.js";
 import { YUL_SPECIFIER } from "./builtins.js";
 import { fail } from "./errors.js";
+import { refusedName } from "./names.js";
 import type { Reference, YulBlockInput } from "./types.js";
 
 /**
@@ -99,7 +102,11 @@ const COMPARISONS: Readonly<Record<string, readonly [opcode: string, negated: bo
   "!==": ["eq", true],
 };
 
-/** What a function inside a block names its return value, as Yul must name it. */
+/**
+ * What a function inside a block names its return value, as Yul must name it. It is followed by as many `_`
+ * as make it a name the block does not use: TypeScript names no such value, so a name of the block must
+ * never come to mean it.
+ */
 const FUNCTION_RESULT = "r";
 
 /** Respells an integer literal. This is spelling, not arithmetic. Undefined for any other node. */
@@ -117,6 +124,32 @@ export function printYul(input: YulBlockInput): void {
   function refuse(node: Span, message: string): never {
     return fail(module, node, message);
   }
+
+  /** Every name the block writes or can read: the Solidity locals around it, and each name inside it. */
+  const written = new Set(input.locals);
+  // A name in the block is printed as it is written. What Yul itself reserves, solc refuses.
+  walk(input.block as unknown as AnyNode, (node) => {
+    if (!is(node, "Identifier")) return;
+    written.add(node.name);
+    const refused = references.has(node) ? undefined : refusedName(node.name, "yul");
+    if (refused) refuse(node, refused);
+  });
+  /** The names given to the values of the functions being printed, outermost first. */
+  const results: string[] = [];
+
+  /** The locals of the block in scope of what is being printed, innermost last. True for a function. */
+  const scopes: Map<string, boolean>[] = [];
+  /** Prints with the locals that `statements` declare, and `parameters`, in scope. */
+  const within = (statements: readonly AnyNode[], print: () => void, parameters: readonly string[] = []): void => {
+    const scope = new Map(parameters.map((name) => [name, false]));
+    for (const statement of statements)
+      if (is(statement, "VariableDeclaration"))
+        for (const { id, init } of statement.declarations)
+          if (is(id, "Identifier")) scope.set(id.name, !!init && is(unwrap(init), "ArrowFunctionExpression"));
+    scopes.push(scope);
+    print();
+    scopes.pop();
+  };
 
   const braces = (print: () => void): void => {
     out.write("{");
@@ -157,7 +190,12 @@ export function printYul(input: YulBlockInput): void {
         : YUL_OPCODES.has(reference.name)
           ? reference.name
           : refuse(callee, `"${reference.name}" is not an opcode ${YUL_SPECIFIER} exports`)
-      : is(callee, "Identifier")
+      : // A name means its nearest binding, which must be a function: a word cannot be called.
+        is(callee, "Identifier") &&
+          scopes
+            .filter((scope) => scope.has(callee.name))
+            .at(-1)
+            ?.get(callee.name)
         ? callee.name
         : uncallable();
     out.write(`${name}(`);
@@ -293,22 +331,24 @@ export function printYul(input: YulBlockInput): void {
           return;
         case "ForStatement":
           if (!node.test) refuse(node, "a for loop inside an assembly block needs a condition");
-          out.write("for {");
-          if (node.init) {
-            out.write(" ");
-            simple(node.init as AnyNode);
-            out.write(" ");
-          }
-          out.write("} ");
-          expression(node.test as Span);
-          out.write(" {");
-          if (node.update) {
-            out.write(" ");
-            effect(node.update as Span);
-            out.write(" ");
-          }
-          out.write("} ");
-          nested(node.body as AnyNode);
+          within(node.init ? [node.init as AnyNode] : [], () => {
+            out.write("for {");
+            if (node.init) {
+              out.write(" ");
+              simple(node.init as AnyNode);
+              out.write(" ");
+            }
+            out.write("} ");
+            expression(node.test as Span);
+            out.write(" {");
+            if (node.update) {
+              out.write(" ");
+              effect(node.update as Span);
+              out.write(" ");
+            }
+            out.write("} ");
+            nested(node.body as AnyNode);
+          });
           return;
         case "BreakStatement":
         case "ContinueStatement":
@@ -326,7 +366,10 @@ export function printYul(input: YulBlockInput): void {
   /** The body of an `if`, an `else` or a loop, which Yul always writes in braces. */
   const nested = (node: AnyNode): void =>
     braces(() => {
-      for (const inner of is(node, "BlockStatement") ? (node.body as unknown as AnyNode[]) : [node]) statement(inner);
+      const statements = is(node, "BlockStatement") ? (node.body as unknown as AnyNode[]) : [node];
+      within(statements, () => {
+        for (const inner of statements) statement(inner);
+      });
     });
 
   // ---- bodies that give a word ----------------------------------------------------------------------------------
@@ -339,17 +382,23 @@ export function printYul(input: YulBlockInput): void {
   };
 
   /** The body of a callback or of a function. What it returns is assigned to `result`. */
-  const body = (node: AnyNode, result: string | undefined): void =>
+  const body = (node: AnyNode, result: string | undefined, parameters: readonly string[] = []): void =>
     braces(() => {
       const final = returned(node);
-      if (is(node, "BlockStatement"))
-        for (const inner of node.body as unknown as AnyNode[]) if (inner !== final?.at) statement(inner);
-      if (!final) return;
-      out.line();
-      out.node({ module, node: final.at }, () => {
-        out.write(`${result} := `);
-        expression(final.word);
-      });
+      const statements = is(node, "BlockStatement") ? (node.body as unknown as AnyNode[]) : [];
+      within(
+        statements,
+        () => {
+          for (const inner of statements) if (inner !== final?.at) statement(inner);
+          if (!final) return;
+          out.line();
+          out.node({ module, node: final.at }, () => {
+            out.write(`${result} := `);
+            expression(final.word);
+          });
+        },
+        parameters,
+      );
     });
 
   /** `function name(x, y) -> r { … }`, from an arrow function. */
@@ -358,15 +407,13 @@ export function printYul(input: YulBlockInput): void {
     const parameters = (arrow.params as AnyNode[]).map((parameter) =>
       is(parameter, "Identifier") ? parameter.name : refuse(parameter, "a parameter must be a plain name"),
     );
-    const result = returned(arrow.body as AnyNode) ? FUNCTION_RESULT : undefined;
-    // solc reads the name as the Solidity local and reports the function's own assignment to it.
-    if (result && input.locals.has(result))
-      refuse(
-        arrow,
-        `a function inside an assembly block names its value "${result}" in Yul, and "${result}" is a local here: rename the local`,
-      );
+    let result = returned(arrow.body as AnyNode) ? FUNCTION_RESULT : undefined;
+    // Yul lets a function inside another not give its value the name the other gives its own.
+    while (result && (written.has(result) || results.includes(result))) result += "_";
     out.write(`function ${name}(${parameters.join(", ")})${result ? ` -> ${result}` : ""} `);
-    body(arrow.body as AnyNode, result);
+    if (result) results.push(result);
+    body(arrow.body as AnyNode, result, parameters);
+    if (result) results.pop();
   };
 
   // ---- the block ------------------------------------------------------------------------------------------------
