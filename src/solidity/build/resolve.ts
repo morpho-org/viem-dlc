@@ -528,7 +528,11 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       if (!is(superClass, "CallExpression") || !isBuiltin(staticValue(m, unwrap(superClass.callee)), "Struct"))
         return error(m, key, `class "${binding.name}" does not extend Struct({ … })`);
       takes(m, superClass, 1, "Struct(…)");
-      if (binding.node.body.body.length) return error(m, binding.node.body, "a struct class has no members");
+      // A member that is only a type is erased by a compiler, and is no member.
+      const members = binding.node.body.body.filter(
+        (member) => !is(member, "TSIndexSignature") && !(is(member, "PropertyDefinition") && member.declare),
+      );
+      if (members.length) return error(m, binding.node.body, "a struct class has no members");
       named(m, binding.node.id ?? key, binding.name);
       const struct = register<Mutable<StructDeclaration>>(m, key, { ...base, kind: "struct", node: key, fields: [] });
       struct.fields = plainEntries(m, superClass.arguments[0], superClass, "the fields of a struct", true).map(
