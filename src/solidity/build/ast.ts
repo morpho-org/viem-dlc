@@ -143,9 +143,6 @@ export const patternNames = (pattern: Span | null | undefined, into: string[] = 
     case "RestElement":
       patternNames(node.argument as Span, into);
       break;
-    case "TSParameterProperty":
-      patternNames(node.parameter as Span, into);
-      break;
   }
   return into;
 };

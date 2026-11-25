@@ -138,6 +138,17 @@ describe("a name that more than one export * offers is refused", () => {
       "X }",
     ],
     [
+      "a declaration and a namespace written with a dotted name",
+      'import { X } from "./barrel.js";',
+      "X",
+      {
+        "barrel.ts": BARREL,
+        "left.ts": "export namespace X.Inner {\n  export const value = 11n;\n}\n",
+        "right.ts": "export const X = 22n;\n",
+      },
+      "X }",
+    ],
+    [
       "a declaration, and a module that names it back from the module asked",
       'import { X } from "./barrel.js";',
       "X",
@@ -226,6 +237,17 @@ describe("what export * does not give", () => {
         ...positionIn(lens, "X }"),
         source: "transform",
       },
+    );
+  });
+
+  it.each([
+    ["an enum", "export enum X {\n  A,\n}\n"],
+    ["a name declared by destructuring", "export const { X } = { X: 11n };\n"],
+  ])("refuses %s another module exports, which is no binding a lens reads", async (_what, provider) => {
+    const lens = reads('import { X } from "./provider.js";', "X");
+    await expectRejection(
+      { "lens.ts": lens, "provider.ts": provider },
+      { message: '"X" is a module-level binding a lens cannot read', ...positionIn(lens, "X }"), source: "transform" },
     );
   });
 

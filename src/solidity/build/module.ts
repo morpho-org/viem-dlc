@@ -83,8 +83,11 @@ export function parseModule(file: string, code: string): SourceModule {
       if (exported) exports.set(name, { kind: "local", local: name });
     } else if (exported) {
       // An enum, a namespace or an import alias: a value the module exports, and no binding a lens reads.
-      const name = keyName((node as AnyNode).id as Span | null | undefined);
-      if (name !== undefined) exports.set(name, { kind: "local", local: name });
+      // A namespace written A.B exports A.
+      let id = (node as AnyNode).id as AnyNode;
+      while (is(id, "TSQualifiedName")) id = id.left as AnyNode;
+      const name = id.name as string;
+      exports.set(name, { kind: "local", local: name });
     }
   };
 
