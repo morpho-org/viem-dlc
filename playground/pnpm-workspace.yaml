@@ -25,8 +25,8 @@ allowBuilds:
 overrides:
   # GHSA-ph9p-34f9-6g65, GHSA-52f5-9888-hmc6, GHSA-7c78-jf6q-g5cm; solc@0.8.37 still pins 0.2.6
   tmp: ^0.2.7
-  # AIKIDO-2026-138234; viem pins 8.21.0 exactly
-  ws: 8.21.1
+  # GHSA-37g9-w4hg-h9qr, AIKIDO-2026-844803; viem pins 8.21.0 exactly
+  ws: 8.23.0
   # GHSA-p4f5-76q4-ffq7, AIKIDO-2026-137384; time-based resolution keeps the ^7.3.6 devDependency on 7.3.7
   vite: ^7.3.8
   # GHSA-68fv-2mgg-jv7q; postcss pins 1.2.1 under time-based resolution

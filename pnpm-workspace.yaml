@@ -22,5 +22,7 @@ overrides:
   zod: ^4.6.6
   # server.fs.deny bypasses, path traversal, launch-editor UNC disclosure; GHSA-p4f5-76q4-ffq7, AIKIDO-2026-137384
   vite: ^7.3.8
-  # AIKIDO-2026-138234; viem pins 8.21.0 exactly
-  ws: 8.21.1
+  # GHSA-37g9-w4hg-h9qr, AIKIDO-2026-844803; viem pins 8.21.0 exactly
+  ws: 8.23.0
+  # AIKIDO-2026-919131; time-based resolution keeps Vitest's ^1.0.2 range on 1.0.2
+  tinyexec: 1.1.2
