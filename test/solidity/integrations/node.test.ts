@@ -242,6 +242,26 @@ export const DynamicLens = contract("DynamicLens", { rate: pure().returns(uint25
     expect(check.output).toContain("0 lenses compiled, 1 files failed");
   });
 
+  // A query or a fragment makes another module of the same file: Node loads the file again for it, and
+  // runs it again.
+  it("the hook compiles a lens module imported with a query or a fragment, once for each module Node makes of the file", async () => {
+    project.restore();
+    project.write(
+      "versioned/script.ts",
+      `import { QuoteLens as plain } from "../src/lens.ts";
+import { QuoteLens as queried } from "../src/lens.ts?revision=2";
+import { QuoteLens as fragment } from "../src/lens.ts#second";
+
+const lenses = [plain, queried, fragment];
+console.log(JSON.stringify({ bytecodes: lenses.map((lens) => lens.bytecode), modules: new Set(lenses).size }));
+`,
+    );
+    const run = await project.run(["--import", "@morpho-org/viem-dlc/solidity/register", "versioned/script.ts"]);
+    expect(run.ok, run.output).toBe(true);
+    const { bytecode } = await project.expectedLens();
+    expect(JSON.parse(run.output)).toEqual({ bytecodes: [bytecode, bytecode, bytecode], modules: 3 });
+  });
+
   // Node loads no package.json a script's import is resolved through, so only the build can report it.
   it("an edit to only the package.json an import is resolved through restarts node --watch, which then serves the other file", async () => {
     project.restore();

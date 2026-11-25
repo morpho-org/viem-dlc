@@ -28,12 +28,15 @@ const addDependency = (file: string): void => {
 registerHooks({
   load(url, context, nextLoad) {
     const loaded = nextLoad(url, context);
-    if (!url.startsWith("file:") || url.includes("/node_modules/") || !/\.[cm]?[jt]sx?$/.test(url) || !loaded.source)
-      return loaded;
+    if (!url.startsWith("file:") || !loaded.source) return loaded;
+    // The file says whether a module is first-party source. A query or a fragment is no part of the file:
+    // Node makes another module of the same file for each, and each is transformed as the file is.
+    const file = fileURLToPath(url);
+    if (/[\\/]node_modules[\\/]/.test(file) || !/\.[cm]?[jt]sx?$/.test(file)) return loaded;
     // Text, or bytes in whichever container the hooks before this one hand them on in.
     const code = typeof loaded.source === "string" ? loaded.source : new TextDecoder().decode(loaded.source);
     if (!mentionsPackage(code)) return loaded;
-    const result = transformSync(code, fileURLToPath(url), {
+    const result = transformSync(code, file, {
       resolve: (specifier, importer) => resolveSync(specifier, importer, addDependency),
       addDependency,
       warn: (diagnostic) => console.warn(formatDiagnostic(diagnostic)),
