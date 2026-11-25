@@ -12,7 +12,8 @@
  * Every other use of the package's `contract` is a located error: a declaration kept in a variable and
  * implemented later, `contract` passed around or exported under another name, or read off the package's
  * namespace in any way but `namespace.contract`, would not be compiled, and would throw on first use.
- * The namespace itself is only ever the object of `namespace.name`, so no such read goes unseen.
+ * The namespace itself is only ever the object of `namespace.name`, so no such read goes unseen, and
+ * no module passes the package's names on with `export *`, which the parse refuses.
  */
 import { type AnyNode, is, keyName, unwrap, walk } from "./ast.js";
 import { SOLIDITY_SPECIFIER } from "./builtins.js";

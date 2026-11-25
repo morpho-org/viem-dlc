@@ -304,7 +304,7 @@ describe("resolve: names", () => {
       "index.ts": `
         export { SCALE } from "./units.js";
         export * as units from "./units.js";
-        export * from "${PACKAGE}";
+        export { uint128 } from "${PACKAGE}";
         export * from "./loop.js";
         export * from "./helpers.js";
       `,
@@ -315,7 +315,7 @@ describe("resolve: names", () => {
         import { internal, pure, uint256 } from "${PACKAGE}";
         export const half = internal(pure(uint256).returns(uint256), (x) => x / 2n);
       `,
-      "dsl.ts": `export * from "${PACKAGE}"; export * from "${PACKAGE}/yul";`,
+      "dsl.ts": `export { uint256 } from "${PACKAGE}"; export * from "${PACKAGE}/yul";`,
     });
     // The module of the helper is reached first, then the module of the constants, then the lens's own.
     expect(declared(lens)).toEqual(["helper half", "constant SCALE", "constant LIMIT", "constant DOUBLE"]);

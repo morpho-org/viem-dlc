@@ -772,9 +772,10 @@ the type checker, and a body never runs as JavaScript. The declarations give the
 `quote` above has the fields `gross`, `fee` and `net`, with no generated file.
 
 A lens is written in one expression, `contract(name, functions).implementation({ … })`, with
-`contract` imported from the package. Any other use of `contract` stops the build: a declaration kept
-in a variable and implemented later, or `contract` passed on, exported, or read off a namespace import
-in any way but `namespace.contract`, would leave a lens that is never compiled.
+`contract` imported from the package itself. Any other use of `contract` stops the build: a
+declaration kept in a variable and implemented later, or `contract` passed on, exported, re-exported
+with `export *`, or read off a namespace import in any way but `namespace.contract`, would leave a
+lens that is never compiled.
 
 Every name is printed in Solidity as it is written, and none is changed. Two declarations of one lens
 cannot share a name, and none can have the name of the contract or of an entry point: the build stops
@@ -844,7 +845,9 @@ Every integration runs the same transform, and holds to the same rules:
   modules through imports, re-exports, `export *` and namespace imports, resolved by the tool's own
   resolver, so a path alias such as `@/` works. A name is read through `export *` only where one
   `export *` of the module offers it. Where two offer it the build stops, even if both lead to one
-  declaration: export the name there by name, which comes before any `export *`. Under
+  declaration: export the name there by name, which comes before any `export *`. An `export *` of
+  the package itself stops the build, with or without `as`, because it would pass `contract` on: a
+  module re-exports the package's other names by name, as `export { pure, uint256 } from …`. Under
   `node --import` that resolver is Node's own, with the conditions the process runs with;
   TypeScript's conventions and the `paths` of `tsconfig.json` apply only to an import Node cannot
   resolve. A helper can also be read from the JavaScript that `tsc` emitted for it. Output that a

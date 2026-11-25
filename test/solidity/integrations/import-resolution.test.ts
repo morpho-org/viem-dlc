@@ -162,7 +162,7 @@ const pairs = {
         });
       `,
       "dsl.ts": `
-        export * from "@morpho-org/viem-dlc/solidity";
+        export { internal, pure, uint128, uint256 } from "@morpho-org/viem-dlc/solidity";
       `,
     },
     solidity: `

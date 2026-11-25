@@ -40,12 +40,5 @@ export const BODY_BUILTINS: ReadonlySet<string> = new Set([
   "assembly",
 ]);
 
-/** Exports that only JavaScript uses: no lens can name one. */
-const RUNTIME_EXPORTS: ReadonlySet<string> = new Set(["compiledLens", "CREATE2_FACTORY", "CREATE2_SALT"]);
-
-/** True for every name the package's runtime entry exports, whether or not a lens can use it. */
-export const isSolidityExport = (name: string): boolean =>
-  isElementaryTypeName(name) || DECLARATION_BUILTINS.has(name) || BODY_BUILTINS.has(name) || RUNTIME_EXPORTS.has(name);
-
 /** JavaScript globals a body can name. Both print as their argument. */
 export const GLOBAL_BUILTINS: ReadonlySet<string> = new Set(["Number", "BigInt"]);

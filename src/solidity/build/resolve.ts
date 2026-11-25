@@ -24,7 +24,6 @@ import {
   DECLARATION_BUILTINS,
   GLOBAL_BUILTINS,
   isElementaryTypeName,
-  isSolidityExport,
   SOLIDITY_SPECIFIER,
   YUL_SPECIFIER,
 } from "./builtins.js";
@@ -141,11 +140,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     at: Span,
     seen: Set<SourceModule>,
   ): boolean =>
-    source === SOLIDITY_SPECIFIER
-      ? isSolidityExport(name)
-      : source === YUL_SPECIFIER
-        ? YUL_OPCODES.has(name)
-        : offers(target(from, source, user, at), name, user, at, seen);
+    source === YUL_SPECIFIER ? YUL_OPCODES.has(name) : offers(target(from, source, user, at), name, user, at, seen);
 
   /**
    * What the `export *` declarations of `from` give as `name`: nothing for `default`, and otherwise what the

@@ -114,7 +114,7 @@ describe("a name that more than one export * offers is refused", () => {
       "compiledLens",
       {
         "barrel.ts": BARREL,
-        "left.ts": `export * from "${PACKAGE}";\n`,
+        "left.ts": `export { compiledLens } from "${PACKAGE}";\n`,
         "right.ts": "export const compiledLens = 23n;\n",
       },
       "compiledLens }",
@@ -170,7 +170,7 @@ describe("a name that more than one export * offers is refused", () => {
       );
     });
 
-  it("refuses the package's names through two modules that each export * of it", async () => {
+  it("refuses the package's names through two modules that each export them", async () => {
     const lens = `import { contract } from "${PACKAGE}";
 import * as dsl from "./barrel.js";
 export const Lens = contract("Lens", { run: dsl.pure().returns(dsl.uint256) }).implementation({
@@ -181,8 +181,8 @@ export const Lens = contract("Lens", { run: dsl.pure().returns(dsl.uint256) }).i
       {
         "lens.ts": lens,
         "barrel.ts": BARREL,
-        "left.ts": `export * from "${PACKAGE}";\n`,
-        "right.ts": `export * from "${PACKAGE}";\n`,
+        "left.ts": `export { pure, uint256 } from "${PACKAGE}";\n`,
+        "right.ts": `export { pure, uint256 } from "${PACKAGE}";\n`,
       },
       { message: TWICE("pure"), ...positionIn(lens, "dsl.pure"), source: "transform" },
     );
@@ -251,10 +251,10 @@ describe("what export * does not give", () => {
     );
   });
 
-  it("refuses a name of the package only JavaScript uses, where one export * offers it", async () => {
+  it("refuses a name of the package only JavaScript uses, which a module exports by name", async () => {
     const lens = reads('import { compiledLens } from "./barrel.js";', "compiledLens");
     await expectRejection(
-      { "lens.ts": lens, "barrel.ts": `export * from "${PACKAGE}";\n` },
+      { "lens.ts": lens, "barrel.ts": `export { compiledLens } from "${PACKAGE}";\n` },
       {
         message: '"compiledLens" is not something a lens can use',
         ...positionIn(lens, "compiledLens }"),
@@ -317,7 +317,7 @@ describePairs("names that export * does give", {
     solidity: RUN.replace("VALUE", "23"),
     calls: [{ functionName: "run" }],
   },
-  "the package's names through two modules of export *, one after the other": {
+  "the package's names, exported by name, through a module of export *": {
     ts: {
       "lens.ts": `import { contract } from "${PACKAGE}";
         import * as dsl from "./top.js";
@@ -330,7 +330,7 @@ describePairs("names that export * does give", {
         });
       `,
       "top.ts": 'export * from "./middle.js";\n',
-      "middle.ts": `export * from "${PACKAGE}";\n`,
+      "middle.ts": `export { assembly, pure, uint256 } from "${PACKAGE}";\n`,
       "yul.ts": `export * from "${PACKAGE}/yul";\n`,
     },
     solidity: `

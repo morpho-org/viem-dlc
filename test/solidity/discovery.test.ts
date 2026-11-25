@@ -107,6 +107,35 @@ export default contract;
     });
 });
 
+describe("an export * of the package is refused, so contract is only ever imported from the package", () => {
+  const STAR = `export * from "${PACKAGE}" passes contract on to every module that imports from this one`;
+  const stars = [
+    ["every name of the package", `export * from "${PACKAGE}";\n`],
+    ["the package as a namespace", `export * as dsl from "${PACKAGE}";\n`],
+  ] as const;
+
+  it.each(stars)("refuses a module that exports %s", async (_what, barrel) => {
+    await expectRejection(barrel, { message: STAR, line: 1, column: 1, source: "transform" });
+    expect(() => transformSync(barrel, FILE, HOST, { cache: false })).toThrow(LensError);
+  });
+
+  it.each(stars)("refuses it where a lens reads a name through a module that exports %s", async (_what, barrel) => {
+    const lens = `import { contract, pure } from "${PACKAGE}";
+import * as names from "./barrel.js";
+export const Lens = contract("Lens", { run: pure().returns(names.uint256) }).implementation({ run: () => 3n });
+`;
+    await expectRejection(
+      { "lens.ts": lens, "barrel.ts": barrel },
+      { message: STAR, line: 1, column: 1, file: "barrel.ts", source: "transform" },
+    );
+  });
+
+  it("leaves a module that exports the package's types alone", async () => {
+    const code = `export type * from "${PACKAGE}";\n`;
+    expect(await build(code, FILE, HOST, { cache: false })).toBeNull();
+  });
+});
+
 describe("the package's namespace is only read as namespace.name, so no contract leaves it unseen", () => {
   const NAMESPACE = "a namespace import of the package is only read as namespace.name";
   const cases: readonly Case[] = [

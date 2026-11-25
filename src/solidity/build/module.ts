@@ -7,11 +7,15 @@
  * A binding is recorded when the transform can read it: an import, or a name declared alone by a
  * statement of the module's own level. An export is recorded whatever it exports, because which names a
  * module exports decides what an `export *` of it passes on.
+ *
+ * An `export *` of the package is refused here, in every module the transform reads: it would pass
+ * `contract` on, and a lens is found by the direct import of `contract` alone.
  */
 import { parseSync, type Span, type Statement } from "oxc-parser";
 
 import { type AnyNode, is, isErased, keyName, patternNames, unwrap } from "./ast.js";
-import { LensError, LINE_TERMINATOR } from "./errors.js";
+import { SOLIDITY_SPECIFIER } from "./builtins.js";
+import { fail, LensError, LINE_TERMINATOR } from "./errors.js";
 import type { ModuleBinding, ModuleExport, SourceModule } from "./types.js";
 
 const lineStartsOf = (code: string): number[] => {
@@ -129,6 +133,13 @@ export function parseModule(file: string, code: string): SourceModule {
       }
     } else if (is(statement, "ExportAllDeclaration")) {
       if (statement.exportKind === "type") continue;
+      // contract is only ever imported from the package itself, so a lens is found without following an import.
+      if (statement.source.value === SOLIDITY_SPECIFIER)
+        fail(
+          module,
+          statement,
+          `export * from "${SOLIDITY_SPECIFIER}" passes contract on to every module that imports from this one, where a lens written with it is not found, and not compiled. Export the package's names by name, as export { pure, uint256 } from "…", and import contract from the package itself`,
+        );
       const exported = keyName(statement.exported);
       if (exported === undefined) starExports.push(statement.source.value);
       else exports.set(exported, { kind: "reexport", source: statement.source.value, imported: "*" });
