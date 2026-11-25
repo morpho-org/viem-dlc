@@ -10,7 +10,13 @@
  * that tied the lens module to them. So the plugin, not the bundler's module graph, has to make an edit
  * to one of those files reach the lens: each is declared with `addWatchFile`, and the two Vite-side
  * caches that key a transform on the module's own text are handled below.
+ *
+ * A lens is compiled as its module is loaded, not in a later transform. What a bundler takes for a
+ * module's source, and embeds in a source map as `sourcesContent`, is what `load` returned: the
+ * rewritten module, which holds no lens body and keeps every line on its line.
  */
+import fs from "node:fs/promises";
+
 import { SOLIDITY_SPECIFIER } from "../builtins.js";
 import { formatDiagnostic, LensError } from "../errors.js";
 import { transform } from "../transform.js";
@@ -49,6 +55,7 @@ interface VitestContext {
 export interface SolidityPlugin {
   name: string;
   enforce: "pre";
+  load(this: PluginContext, id: string): Promise<{ code: string; map: null } | null>;
   transform(this: PluginContext, code: string, id: string): Promise<{ code: string; map: null } | null>;
   configureServer(server: DevServer): void;
   configureVitest(context: VitestContext): void;
@@ -96,6 +103,17 @@ export function solidity(options: TransformOptions = {}): SolidityPlugin {
     name: "viem-dlc-solidity",
     // Before the host strips types, so the transform sees the module as written and its positions hold.
     enforce: "pre",
+    async load(id) {
+      // A query asks for something other than the module as written; the transform below sees those.
+      if (id.includes("?") || !firstParty(id)) return null;
+      const code = await fs.readFile(id, "utf8").catch(() => undefined);
+      if (code === undefined) return null;
+      const result = await compile(this, code, id);
+      // The host's own loader, which this one stood in for, is what watches a module's file.
+      if (result) this.addWatchFile(id);
+      return result;
+    },
+    // What `load` did not read: a module another plugin loaded, or one asked for with a query.
     async transform(code, id) {
       const file = id.split("?")[0] as string;
       return firstParty(file) ? compile(this, code, file) : null;
