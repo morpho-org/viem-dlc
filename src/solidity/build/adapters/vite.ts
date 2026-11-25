@@ -31,7 +31,10 @@ interface ModuleGraph {
 
 /** The part of Vite's dev server the plugin uses. */
 interface DevServer {
-  watcher: { on(event: "change" | "unlink", listener: (file: string) => void): unknown };
+  watcher: {
+    on(event: "change" | "unlink", listener: (file: string) => void): unknown;
+    emit(event: "change", file: string): unknown;
+  };
   environments?: Record<string, { moduleGraph: ModuleGraph }>;
   moduleGraph?: ModuleGraph;
 }
@@ -56,39 +59,46 @@ const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
 export function solidity(options: TransformOptions = {}): SolidityPlugin {
   /** A file a lens was compiled from, to the modules holding such a lens. */
   const dependents = new Map<string, Set<string>>();
+  /** The modules whose lens did not build when last asked for. */
+  const failed = new Set<string>();
+  const firstParty = (file: string) => SOURCE_FILE.test(file) && !file.includes("/node_modules/");
+  const compile = async (context: PluginContext, code: string, file: string) => {
+    try {
+      const result = await transform(
+        code,
+        file,
+        {
+          resolve: async (specifier, importer) => (await context.resolve(specifier, importer))?.id.split("?")[0],
+          addDependency: (dependency) => {
+            context.addWatchFile(dependency);
+            const lensModules = dependents.get(dependency) ?? new Set<string>();
+            dependents.set(dependency, lensModules);
+            lensModules.add(file);
+          },
+          warn: (diagnostic) => context.warn(formatDiagnostic(diagnostic)),
+        },
+        options,
+      );
+      failed.delete(file);
+      return result ? { code: result.code, map: null } : null;
+    } catch (cause) {
+      if (!(cause instanceof LensError)) throw cause;
+      failed.add(file);
+      const [first] = cause.diagnostics;
+      return context.error({
+        message: cause.message,
+        id: first?.file ?? file,
+        ...(first ? { loc: { file: first.file, line: first.line, column: first.column - 1 } } : {}),
+      });
+    }
+  };
   return {
     name: "viem-dlc-solidity",
     // Before the host strips types, so the transform sees the module as written and its positions hold.
     enforce: "pre",
     async transform(code, id) {
       const file = id.split("?")[0] as string;
-      if (!SOURCE_FILE.test(file) || file.includes("/node_modules/")) return null;
-      try {
-        const result = await transform(
-          code,
-          file,
-          {
-            resolve: async (specifier, importer) => (await this.resolve(specifier, importer))?.id.split("?")[0],
-            addDependency: (dependency) => {
-              this.addWatchFile(dependency);
-              const lensModules = dependents.get(dependency) ?? new Set<string>();
-              dependents.set(dependency, lensModules);
-              lensModules.add(file);
-            },
-            warn: (diagnostic) => this.warn(formatDiagnostic(diagnostic)),
-          },
-          options,
-        );
-        return result ? { code: result.code, map: null } : null;
-      } catch (cause) {
-        if (!(cause instanceof LensError)) throw cause;
-        const [first] = cause.diagnostics;
-        return this.error({
-          message: cause.message,
-          id: first?.file ?? file,
-          ...(first ? { loc: { file: first.file, line: first.line, column: first.column - 1 } } : {}),
-        });
-      }
+      return firstParty(file) ? compile(this, code, file) : null;
     },
     // Vite keeps a transform until the module itself changes, so declaring a watched file reruns tests on
     // the old bytecode. A change to a dependency therefore drops the transform of every lens built from it.
@@ -98,9 +108,13 @@ export function solidity(options: TransformOptions = {}): SolidityPlugin {
         ...(server.moduleGraph ? [server.moduleGraph] : []),
       ];
       const invalidate = (file: string) => {
-        for (const lensModule of dependents.get(file) ?? [])
+        for (const lensModule of dependents.get(file) ?? []) {
           for (const graph of graphs())
             for (const module of graph.getModulesByFile(lensModule) ?? []) graph.invalidateModule(module);
+          // A module that failed to build is tied to nothing it read. The edit that can repair it is passed
+          // on as a change to the module itself, which is what the server and Vitest's watch mode follow.
+          if (failed.delete(lensModule)) server.watcher.emit("change", lensModule);
+        }
       };
       server.watcher.on("change", invalidate);
       server.watcher.on("unlink", invalidate);

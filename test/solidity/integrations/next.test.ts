@@ -10,9 +10,9 @@ import { type Evm, requireAnvil, startAnvil } from "../helpers/anvil.js";
 import { describeHost } from "./helpers/host-suite.js";
 import { type Background, bin, freePort, Project, ROOT, waitFor } from "./helpers/project.js";
 
-const startDev = async (project: Project) => {
+const startDev = async (project: Project, ...flags: string[]) => {
   const port = await freePort();
-  const server = project.start([bin("next"), "dev", "--port", String(port)]);
+  const server = project.start([bin("next"), "dev", "--port", String(port), ...flags]);
   const get = async <T>(route: string): Promise<T | undefined> => {
     try {
       const response = await fetch(`http://localhost:${port}${route}`);
@@ -24,6 +24,15 @@ const startDev = async (project: Project) => {
   return { server, get };
 };
 
+const watchDev = async (project: Project, ...flags: string[]) => {
+  const { server, get } = await startDev(project, ...flags);
+  return {
+    served: async () => (await get<{ bytecode: string }>("/api/quote"))?.bytecode,
+    output: server.output,
+    stop: server.stop,
+  };
+};
+
 describeHost({
   name: "Next with Turbopack",
   template: "next",
@@ -31,14 +40,11 @@ describeHost({
   // The server bundles of the page and of the route handler both hold the lens.
   served: (project) => project.bytecodeUnder(".next/server"),
   output: { directories: [".next"], caches: [".next/cache"] },
-  async watch(project) {
-    const { server, get } = await startDev(project);
-    return {
-      served: async () => (await get<{ bytecode: string }>("/api/quote"))?.bytecode,
-      output: server.output,
-      stop: server.stop,
-    };
-  },
+  watch: (project) => watchDev(project),
+  // With server fast refresh, Next can keep serving a module whose loader once failed, after Turbopack
+  // has built it again, and it does so for a loader of ten lines that only throws. Without it the
+  // server loads what Turbopack built, which is what the loader answers for.
+  watchAfterFailure: (project) => watchDev(project, "--no-server-fast-refresh"),
 });
 
 describe("Next with Turbopack, beyond the shared suite", { timeout: 240_000 }, () => {
