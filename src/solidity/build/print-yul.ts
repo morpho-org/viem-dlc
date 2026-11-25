@@ -29,9 +29,10 @@
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, is, unwrap } from "./ast.js";
+import { type AnyNode, is, unwrap, walk } from "./ast.js";
 import { YUL_SPECIFIER } from "./builtins.js";
 import { fail } from "./errors.js";
+import { refusedName } from "./names.js";
 import type { Reference, YulBlockInput } from "./types.js";
 
 /**
@@ -117,6 +118,12 @@ export function printYul(input: YulBlockInput): void {
   function refuse(node: Span, message: string): never {
     return fail(module, node, message);
   }
+
+  // A name in the block is printed as it is written. What Yul itself reserves, solc refuses.
+  walk(input.block as unknown as AnyNode, (node) => {
+    const refused = is(node, "Identifier") && !references.has(node) ? refusedName(node.name, "yul") : undefined;
+    if (refused) refuse(node, refused);
+  });
 
   const braces = (print: () => void): void => {
     out.write("{");

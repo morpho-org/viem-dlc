@@ -22,6 +22,7 @@ import {
   YUL_SPECIFIER,
 } from "./builtins.js";
 import { fail } from "./errors.js";
+import { refusedName } from "./names.js";
 import type {
   ConstantDeclaration,
   FunctionBody,
@@ -70,6 +71,12 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
   const files = new Set<string>([module.file]);
 
   const error = (m: SourceModule, node: Span, message: string): never => fail(m, node, message, lens);
+
+  /** Stops the build when a name cannot be printed as a Solidity name. A field or an interface function is a `member`. */
+  const named = (m: SourceModule, at: Span, name: string, member = false): void => {
+    const refused = refusedName(name, member ? "member" : "scoped");
+    if (refused) error(m, at, refused);
+  };
 
   // ---- names ------------------------------------------------------------------------------------------
   /** The module `source` names when imported from `m`. `user` and `at` are where the name is used, for errors. */
@@ -365,6 +372,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
       if (name === undefined || !is(property, "Property") || property.kind !== "init" || property.method)
         return error(m, property, `the declaration of ${owner} can only have signatures under plain keys`);
+      named(m, property.key, name);
       const implemented = bodies.get(name);
       if (!implemented) return error(m, property, `${owner} declares "${name}" and does not implement it`);
       bodies.delete(name);
@@ -380,7 +388,14 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
   };
 
   // ---- declarations --------------------------------------------------------------------------------------------
-  const plainEntries = (m: SourceModule, raw: Span | undefined, at: Span, what: string): [string, AnyNode][] => {
+  /** The entries of an object literal. With `members`, each key is printed as a Solidity name, and must be one. */
+  const plainEntries = (
+    m: SourceModule,
+    raw: Span | undefined,
+    at: Span,
+    what: string,
+    members = false,
+  ): [string, AnyNode][] => {
     const node = raw && unwrap(raw);
     if (!is(node, "ObjectExpression"))
       return error(m, node ?? at, `${what} must be an object literal written in place`);
@@ -388,6 +403,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
       if (name === undefined || !is(property, "Property") || property.kind !== "init" || property.method)
         return error(m, property, `${what} can only have plain keys`);
+      if (members) named(m, property.key, name, true);
       return [name, property.value as unknown as AnyNode];
     });
   };
@@ -456,8 +472,9 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       if (!is(superClass, "CallExpression") || !isBuiltin(staticValue(m, unwrap(superClass.callee)), "Struct"))
         return error(m, key, `class "${binding.name}" does not extend Struct({ … })`);
       if (binding.node.body.body.length) return error(m, binding.node.body, "a struct class has no members");
+      named(m, binding.node.id ?? key, binding.name);
       const struct = register<Mutable<StructDeclaration>>(m, key, { ...base, kind: "struct", node: key, fields: [] });
-      struct.fields = plainEntries(m, superClass.arguments[0], superClass, "the fields of a struct").map(
+      struct.fields = plainEntries(m, superClass.arguments[0], superClass, "the fields of a struct", true).map(
         ([name, node]) => ({ name, type: typeRef(m, node, struct.dependencies as Uses), origin: { module: m, node } }),
       );
       return struct;
@@ -475,6 +492,8 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     if (is(init, "CallExpression")) {
       const callee = unwrap(init.callee);
       const called = staticValue(m, callee);
+      if (isBuiltin(called, "internal") || isBuiltin(called, "iface") || isBuiltin(called, "immutable"))
+        named(m, binding.node.id, binding.name);
       if (isBuiltin(called, "internal")) {
         const helper = register<Mutable<HelperDeclaration>>(m, key, {
           ...base,
@@ -495,7 +514,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
           node: init,
           functions: [],
         });
-        declared.functions = plainEntries(m, init.arguments[0], init, "the functions of an interface").map(
+        declared.functions = plainEntries(m, init.arguments[0], init, "the functions of an interface", true).map(
           ([name, node]) => ({ name, signature: signature(m, node, declared.dependencies as Uses) }),
         );
         return declared;
@@ -521,6 +540,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
             return error(m, nameNode ?? inner, "the first argument of library(…) must be a string literal: its name");
           if (!is(signatures, "ObjectExpression") || !is(implementation, "ObjectExpression"))
             return error(m, init, "library(name, { … }).implementation({ … }) takes object literals written in place");
+          named(m, nameNode, nameNode.value);
           const declared = register<Mutable<LibraryDeclaration>>(m, key, {
             ...base,
             name: nameNode.value,

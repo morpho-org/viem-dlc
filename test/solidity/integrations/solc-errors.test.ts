@@ -26,7 +26,7 @@ const FILE = path.join(import.meta.dirname, "..", "__fixtures__", "lens.ts");
 const lens = (
   body: string,
   declarations = "",
-) => `import { contract, pure, Struct, uint128, uint256 } from "@morpho-org/viem-dlc/solidity";
+) => `import { assembly, contract, pure, Struct, uint128, uint256 } from "@morpho-org/viem-dlc/solidity";
 ${declarations}
 export const Lens = contract("Lens", {
   run: pure(uint256).returns(uint256),
@@ -99,14 +99,17 @@ describe("solc's diagnostics, at TypeScript positions", () => {
   });
 
   it("a syntax error: at the statement", async () => {
-    const code = lens("const final = x;\n    return final;");
+    // A word only Yul reserves: the transform leaves those to solc, which stops at it while parsing.
+    const code = lens(
+      'const out = assembly("memory-safe", () => {\n      const leave = x;\n      return leave;\n    });\n    return out;',
+    );
     const { errors } = await diagnose(code);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({
-      ...positionIn(code, "const final"),
+      ...positionIn(code, "const leave"),
       source: "solc",
       code: "2314",
-      message: "Expected ';' but got reserved keyword 'final'",
+      message: "Expected identifier but got 'leave'",
     });
   });
 

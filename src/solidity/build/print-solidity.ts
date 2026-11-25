@@ -34,6 +34,7 @@ import type { Span } from "oxc-parser";
 import { type AnyNode, children, is, keyName, unwrap } from "./ast.js";
 import { isElementaryTypeName } from "./builtins.js";
 import { fail } from "./errors.js";
+import { refusedName } from "./names.js";
 import { Writer } from "./position-map.js";
 import { printYul } from "./print-yul.js";
 import type {
@@ -314,7 +315,7 @@ class Printer {
         out.node({ module: fn.module, node: parameter }, () =>
           out.write(`${located(type, visibility === "external" ? "calldata" : "memory")} ${parameter.name}`),
         );
-        this.#declare(parameter.name, type);
+        this.#declare(parameter, type);
       }
       out.write(`) ${visibility} ${signature.mutability}${returns(signature)} {`);
       out.indented(() => {
@@ -595,7 +596,7 @@ class Printer {
       }
       if (!is(id, "Identifier")) this.#fail(id, "a local must be a plain name");
       if (this.#isAssembly(init)) {
-        this.#assembly(init, id.name);
+        this.#assembly(init, id);
         continue;
       }
       const type = this.typeOf(init);
@@ -606,7 +607,7 @@ class Printer {
         this.#expression(init);
       }
       out.write(";");
-      this.#declare(id.name, type);
+      this.#declare(id, type);
     }
   }
 
@@ -625,7 +626,7 @@ class Printer {
         pattern,
         `this pattern has ${elements.length} places and the call returns ${outputs.length} values: a value that is not used is left as a hole, as in [a, , c]`,
       );
-    const declared: [string, TypeRef][] = [];
+    const declared: [Span & { name: string }, TypeRef][] = [];
     out.write("(");
     for (const [index, element] of elements.entries()) {
       if (index) out.write(", ");
@@ -633,12 +634,12 @@ class Printer {
       if (!is(element, "Identifier")) this.#fail(element, "a local must be a plain name");
       const type = outputs[index] as TypeRef;
       out.node({ module: this.#module, node: element }, () => out.write(`${located(type, "memory")} ${element.name}`));
-      declared.push([element.name, type]);
+      declared.push([element, type]);
     }
     out.write(") = ");
     this.#expression(init);
     out.write(";");
-    for (const [name, type] of declared) this.#declare(name, type);
+    for (const [element, type] of declared) this.#declare(element, type);
   }
 
   // ---- the type of a local ------------------------------------------------------------------------------------
@@ -962,6 +963,8 @@ class Printer {
       const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
       if (name === undefined || !is(property, "Property") || property.kind !== "init" || property.method)
         this.#fail(property, "a field of a struct literal is written name: value, or the name alone");
+      const refused = refusedName(name, "member");
+      if (refused) this.#fail(property.key, refused);
       if (index) out.write(", ");
       out.node({ module: this.#module, node: property }, () => {
         out.write(`${name}: `);
@@ -1228,7 +1231,7 @@ class Printer {
    * ends in `return word` is the initializer of the local `local`: the local is declared first, as a
    * uint256 or as the type named first, and the block assigns it.
    */
-  #assembly(call: AnyNode, local?: string): void {
+  #assembly(call: AnyNode, local?: Span & { name: string }): void {
     const out = this.#out;
     const parts = (call.arguments as Span[]).map(unwrap);
     const named = parts.length === 3 ? parts[0] : undefined;
@@ -1253,7 +1256,7 @@ class Printer {
         : reference?.kind === "builtin" && reference.module === "solidity" && isElementaryTypeName(reference.name)
           ? { kind: "elementary", name: reference.name }
           : this.#fail(named, "the type of an assembly block's value is an elementary type, such as bytes32 or string");
-      out.write(`${located(type, "memory")} ${local};`);
+      out.write(`${located(type, "memory")} ${local.name};`);
       this.#declare(local, type);
       out.line();
     }
@@ -1263,7 +1266,7 @@ class Printer {
         block,
         module: this.#module,
         references: this.#lens.references,
-        result: local,
+        result: local?.name,
         locals: new Set(this.#scopes.flatMap((scope) => [...scope.keys()])),
         writer: out,
       });
@@ -1271,8 +1274,11 @@ class Printer {
   }
 
   // ---- scopes -------------------------------------------------------------------------------------------------------
-  #declare(name: string, type: TypeRef): void {
-    this.#scopes.at(-1)?.set(name, type);
+  /** Declares a parameter or a local, whose name is printed as it is written. */
+  #declare(id: Span & { name: string }, type: TypeRef): void {
+    const refused = refusedName(id.name);
+    if (refused) this.#fail(id, refused);
+    this.#scopes.at(-1)?.set(id.name, type);
   }
 
   #local(name: string): TypeRef | undefined {

@@ -11,6 +11,7 @@
 import { type AnyNode, is, unwrap, walk } from "./ast.js";
 import { SOLIDITY_SPECIFIER } from "./builtins.js";
 import { fail } from "./errors.js";
+import { refusedName } from "./names.js";
 import type { LensSite, SourceModule } from "./types.js";
 
 /** True when a module's text can hold a lens. Checked before parsing, so other files cost nothing. */
@@ -31,8 +32,6 @@ export const isPackageExport = (module: SourceModule, callee: AnyNode, name: str
   return false;
 };
 
-const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-
 export function find(module: SourceModule): LensSite[] {
   const sites: LensSite[] = [];
   walk(module.program as unknown as AnyNode, (node) => {
@@ -50,7 +49,8 @@ export function find(module: SourceModule): LensSite[] {
         "the first argument of contract(…) must be a string literal: the lens's name",
       );
     const name = nameNode.value;
-    if (!IDENTIFIER.test(name)) return fail(module, nameNode, `"${name}" is not a Solidity identifier`);
+    const refused = refusedName(name);
+    if (refused) return fail(module, nameNode, refused);
     if (!is(functionsNode, "ObjectExpression"))
       return fail(
         module,

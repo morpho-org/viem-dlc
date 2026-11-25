@@ -80,13 +80,29 @@ export const QuoteLens = contract("QuoteLens", {
     at: "uint256 }) {}",
   },
   {
+    // A word only Yul reserves: the transform leaves those to solc, which stops at it while parsing.
     kind: "a syntax error",
-    files: { [LENS]: lensModule("    const final = assets;\n    return final;") },
+    files: {
+      [LENS]: `import { assembly, contract, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
+
+export const QuoteLens = contract("QuoteLens", {
+  quote: pure(uint256).returns(uint256),
+}).implementation({
+  quote(assets) {
+    const out = assembly("memory-safe", () => {
+      const leave = assets;
+      return leave;
+    });
+    return out;
+  },
+});
+`,
+    },
     severity: "error",
     solcType: "ParserError",
-    message: "Expected ';' but got reserved keyword 'final'",
+    message: "Expected identifier but got 'leave'",
     file: LENS,
-    at: "const final",
+    at: "const leave",
   },
   {
     // A warning is reported and does not stop the build.
