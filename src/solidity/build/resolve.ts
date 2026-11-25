@@ -21,7 +21,7 @@ import {
   SOLIDITY_SPECIFIER,
   YUL_SPECIFIER,
 } from "./builtins.js";
-import { fail } from "./errors.js";
+import { fail, failOnExtraArgument } from "./errors.js";
 import { refusedName } from "./names.js";
 import { YUL_OPCODES } from "./print-yul.js";
 import { enclosingScopes } from "./scopes.js";
@@ -79,6 +79,9 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     const refused = refusedName(name, member ? "member" : "scoped");
     if (refused) error(m, at, refused);
   };
+
+  const takes = (m: SourceModule, call: { readonly arguments: readonly Span[] }, most: number, what: string): void =>
+    failOnExtraArgument(m, call, most, what, lens);
 
   // ---- names ------------------------------------------------------------------------------------------
   /** The module `source` names when imported from `m`. `user` and `at` are where the name is used, for errors. */
@@ -406,13 +409,19 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
       if (name === undefined || !is(property, "Property") || property.kind !== "init")
         return error(m, property, `the implementation of ${owner} can only have plain functions under plain keys`);
+      if (bodies.has(name))
+        return error(m, property.key, `"${name}" is written twice in the implementation of ${owner}`);
       bodies.set(name, property);
     }
     const functions: ResolvedFunction[] = [];
+    const declared = new Set<string>();
     for (const property of signatures.properties as AnyNode[]) {
       const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
       if (name === undefined || !is(property, "Property") || property.kind !== "init" || property.method)
         return error(m, property, `the declaration of ${owner} can only have signatures under plain keys`);
+      if (declared.has(name))
+        return error(m, property.key, `"${name}" is written twice in the declaration of ${owner}`);
+      declared.add(name);
       named(m, property.key, name);
       const implemented = bodies.get(name);
       if (!implemented) return error(m, property, `${owner} declares "${name}" and does not implement it`);
@@ -429,7 +438,10 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
   };
 
   // ---- declarations --------------------------------------------------------------------------------------------
-  /** The entries of an object literal. With `members`, each key is printed as a Solidity name, and must be one. */
+  /**
+   * The entries of an object literal. With `members`, each key is printed as a Solidity name, and must be one.
+   * A key is written once: JavaScript would keep the last of two, without a word.
+   */
   const plainEntries = (
     m: SourceModule,
     raw: Span | undefined,
@@ -440,10 +452,13 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     const node = raw && unwrap(raw);
     if (!is(node, "ObjectExpression"))
       return error(m, node ?? at, `${what} must be an object literal written in place`);
+    const written = new Set<string>();
     return node.properties.map((property): [string, AnyNode] => {
       const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
       if (name === undefined || !is(property, "Property") || property.kind !== "init" || property.method)
         return error(m, property, `${what} can only have plain keys`);
+      if (written.has(name)) return error(m, property.key, `"${name}" is written twice in ${what}`);
+      written.add(name);
       if (members) named(m, property.key, name, true);
       return [name, property.value as unknown as AnyNode];
     });
@@ -512,6 +527,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       const superClass = binding.node.superClass && unwrap(binding.node.superClass);
       if (!is(superClass, "CallExpression") || !isBuiltin(staticValue(m, unwrap(superClass.callee)), "Struct"))
         return error(m, key, `class "${binding.name}" does not extend Struct({ … })`);
+      takes(m, superClass, 1, "Struct(…)");
       if (binding.node.body.body.length) return error(m, binding.node.body, "a struct class has no members");
       named(m, binding.node.id ?? key, binding.name);
       const struct = register<Mutable<StructDeclaration>>(m, key, { ...base, kind: "struct", node: key, fields: [] });
@@ -536,6 +552,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       if (isBuiltin(called, "internal") || isBuiltin(called, "iface") || isBuiltin(called, "immutable"))
         named(m, binding.node.id, binding.name);
       if (isBuiltin(called, "internal")) {
+        takes(m, init, 2, "internal(…)");
         const helper = register<Mutable<HelperDeclaration>>(m, key, {
           ...base,
           kind: "helper",
@@ -549,6 +566,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
         return helper;
       }
       if (isBuiltin(called, "iface")) {
+        takes(m, init, 1, "iface(…)");
         const declared = register<Mutable<InterfaceDeclaration>>(m, key, {
           ...base,
           kind: "interface",
@@ -561,6 +579,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
         return declared;
       }
       if (isBuiltin(called, "immutable")) {
+        takes(m, init, 1, "immutable(…)");
         const declared = register<Mutable<ImmutableDeclaration>>(m, key, {
           ...base,
           kind: "immutable",
@@ -581,6 +600,8 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
             return error(m, nameNode ?? inner, "the first argument of library(…) must be a string literal: its name");
           if (!is(signatures, "ObjectExpression") || !is(implementation, "ObjectExpression"))
             return error(m, init, "library(name, { … }).implementation({ … }) takes object literals written in place");
+          takes(m, inner, 2, "library(…)");
+          takes(m, init, 1, ".implementation(…)");
           named(m, nameNode, nameNode.value);
           const declared = register<Mutable<LibraryDeclaration>>(m, key, {
             ...base,

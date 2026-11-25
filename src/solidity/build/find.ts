@@ -14,7 +14,7 @@
  */
 import { type AnyNode, is, SKIPPED_KEYS, unwrap, walk } from "./ast.js";
 import { SOLIDITY_SPECIFIER } from "./builtins.js";
-import { fail } from "./errors.js";
+import { fail, failOnExtraArgument } from "./errors.js";
 import { refusedName } from "./names.js";
 import { isHidden } from "./scopes.js";
 import type { LensSite, SourceModule } from "./types.js";
@@ -96,6 +96,8 @@ export function find(module: SourceModule): LensSite[] {
     const implementation = node.arguments[0] && unwrap(node.arguments[0]);
     if (!is(implementation, "ObjectExpression"))
       return fail(module, implementation ?? node, ".implementation(…) takes an object literal written in place", name);
+    failOnExtraArgument(module, declaration, 3, "contract(…)", name);
+    failOnExtraArgument(module, node, 1, ".implementation(…)", name);
 
     sites.push({ node, declaration, name, functions: functionsNode, options: optionsNode, implementation });
   });
