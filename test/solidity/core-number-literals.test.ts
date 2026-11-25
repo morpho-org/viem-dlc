@@ -4,7 +4,8 @@
  * A Number literal is a 64-bit float in JavaScript: above the safe integers it does not hold the value
  * it spells, and a compiler that lowers the module to older JavaScript prints the value it holds. So a
  * Number literal that is not a safe integer is refused in a body and in an assembly block, and asked
- * for as a bigint.
+ * for as a bigint. A bigint written with 40 hexadecimal digits stays a number, where Solidity would
+ * read the same digits as an address.
  */
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -13,6 +14,7 @@ import { emitJavaScript } from "./helpers/emit.js";
 import { buildSnippet, expectRejection, positionIn } from "./helpers/harness.js";
 
 const UNSAFE = "is not a safe integer";
+const OWNER = "0x52908400098527886E0F7030069857D2E4169EE7";
 
 const pairs: Record<string, ExecutedPair> = {
   "the largest safe integer as a Number, and bigints above it": {
@@ -52,6 +54,77 @@ const pairs: Record<string, ExecutedPair> = {
       }
     `,
     calls: [{ functionName: "largestSafe" }, { functionName: "above" }, { functionName: "word", args: [1n] }],
+  },
+  "a bigint of 40 hexadecimal digits is a number, and a quoted one is an address": {
+    ts: `${IMPORTS}
+      export const WidthLens = contract("WidthLens", {
+        one: pure().returns(uint256),
+        sum: pure().returns(uint256),
+        unsuffixed: pure().returns(uint256),
+        uncased: pure().returns(uint256),
+        converted: pure().returns(address),
+        owner: pure().returns(address),
+        near: pure().returns(uint256, uint256),
+        apart: pure().returns(uint256, uint256),
+      }).implementation({
+        one: () => 0x0000000000000000000000000000000000000001n,
+        sum: () => 0x0000000000000000000000000000000000000001n + 1n,
+        unsuffixed: () => 0x0000000000000000000000000000000000000002 + 1n,
+        // As an address these digits would fail Solidity's checksum. As a number they need none.
+        uncased: () => 0x52908400098527886e0f7030069857d2e4169ee7n,
+        converted: () => address(uint160(0x52908400098527886e0f7030069857d2e4169ee7n)),
+        owner: () => "${OWNER}",
+        // Solidity refuses 39 and 41 digits as a misspelled address, so they are padded too.
+        near: () => [0x000000000000000000000000000000000000001n, 0x00000000000000000000000000000000000000001n],
+        // 38 and 42 digits are numbers as they are written.
+        apart: () => [0x00000000000000000000000000000000000001n, 0x000000000000000000000000000000000000000001n],
+      });
+    `,
+    solidity: `
+      contract WidthLens {
+          function one() external pure returns (uint256) {
+              return 0x000000000000000000000000000000000000000001;
+          }
+
+          function sum() external pure returns (uint256) {
+              return 0x000000000000000000000000000000000000000001 + 1;
+          }
+
+          function unsuffixed() external pure returns (uint256) {
+              return 0x000000000000000000000000000000000000000002 + 1;
+          }
+
+          function uncased() external pure returns (uint256) {
+              return 0x0052908400098527886e0f7030069857d2e4169ee7;
+          }
+
+          function converted() external pure returns (address) {
+              return address(uint160(0x0052908400098527886e0f7030069857d2e4169ee7));
+          }
+
+          function owner() external pure returns (address) {
+              return ${OWNER};
+          }
+
+          function near() external pure returns (uint256, uint256) {
+              return (0x000000000000000000000000000000000000000001, 0x000000000000000000000000000000000000000001);
+          }
+
+          function apart() external pure returns (uint256, uint256) {
+              return (0x00000000000000000000000000000000000001, 0x000000000000000000000000000000000000000001);
+          }
+      }
+    `,
+    calls: [
+      { functionName: "one" },
+      { functionName: "sum" },
+      { functionName: "unsuffixed" },
+      { functionName: "uncased" },
+      { functionName: "converted" },
+      { functionName: "owner" },
+      { functionName: "near" },
+      { functionName: "apart" },
+    ],
   },
 };
 

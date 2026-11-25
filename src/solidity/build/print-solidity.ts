@@ -12,8 +12,9 @@
  *   else is `memory`: locals, helper parameters and return values.
  * - **The spelling of a literal.** `0n` is `0`, `60_000` is `60000`, `'text'` is `"text"`, a string
  *   outside ASCII is a `unicode"…"` literal, `'0x313ce567'` is `hex"313ce567"`, and a `'0x…'` of 40
- *   digits is an address literal. A Number literal that is not a safe integer has no spelling: it is
- *   a located error asking for a bigint.
+ *   digits is an address literal. An integer written with 39 to 41 hexadecimal digits is padded with
+ *   leading zeros, so that solc reads a number and not an address. A Number literal that is not a safe
+ *   integer has no spelling: it is a located error asking for a bigint.
  *
  * What is only TypeScript is erased before anything is read: annotations, generics, `as`, `satisfies`,
  * `!`, a `this` parameter, and a type declared in a body. `Number(x)` and `BigInt(x)` print as `x`.
@@ -1188,7 +1189,12 @@ class Printer {
         .replace(/_/g, "")
         .replace(/n$/, "");
       if (/^(?:0|[1-9][0-9]*)$/.test(text)) return text;
-      if (/^0[xX][0-9a-fA-F]+$/.test(text)) return `0x${text.slice(2)}`;
+      if (/^0[xX][0-9a-fA-F]+$/.test(text)) {
+        // solc reads 40 hexadecimal digits as an address, and refuses 39 and 41 as a misspelled one.
+        // An integer stays an integer: leading zeros make it 42 digits, which solc reads as a number.
+        const digits = text.slice(2);
+        return `0x${digits.length >= 39 && digits.length <= 41 ? digits.padStart(42, "0") : digits}`;
+      }
       return this.#fail(node, "an integer literal is written in decimal or in hexadecimal");
     }
     if (typeof value === "string") {
