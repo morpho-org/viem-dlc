@@ -6,11 +6,15 @@
  * else in the module reads, and the import specifiers that are then unused. An exported declaration
  * stays, because another module may read it.
  *
+ * "Reads" is decided by binding, not by spelling: a property key, a label, or a parameter or local of
+ * the same name is not a use of the module's declaration. Where a position is not known to be one of
+ * those, it counts as a use, so a doubt keeps a declaration and never removes one that is read.
+ *
  * Every edit keeps the line count, so the rest of the file keeps its line numbers without a source map.
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, is, unwrap } from "./ast.js";
+import { type AnyNode, is, patternNames, unwrap } from "./ast.js";
 import { SOLIDITY_SPECIFIER } from "./builtins.js";
 import { LINE_TERMINATOR } from "./errors.js";
 import type { BuiltLens, ModuleBinding, SourceModule } from "./types.js";
@@ -20,17 +24,104 @@ type Edit = readonly [start: number, end: number, text: string];
 /** The line terminators of a text, each as it is written. */
 const lineBreaks = (text: string): string[] => text.match(LINE_TERMINATOR) ?? [];
 
-/** Every identifier under a node, TypeScript types included: a name used only as a type still counts as used. */
-const identifiers = (node: unknown, into: (Span & { name: string })[]): void => {
+const isNode = (value: unknown): value is AnyNode =>
+  typeof value === "object" && value !== null && typeof (value as AnyNode).type === "string";
+
+/** The children that name something other than a variable, unless the node is `computed`. */
+const NAME_KEYS: Readonly<Record<string, readonly string[]>> = {
+  MemberExpression: ["property"],
+  Property: ["key"],
+  MethodDefinition: ["key"],
+  PropertyDefinition: ["key"],
+  AccessorProperty: ["key"],
+  TSPropertySignature: ["key"],
+  TSMethodSignature: ["key"],
+  TSEnumMember: ["id"],
+  TSQualifiedName: ["right"],
+  LabeledStatement: ["label"],
+  BreakStatement: ["label"],
+  ContinueStatement: ["label"],
+  ExportSpecifier: ["exported"],
+  ExportAllDeclaration: ["exported"],
+  MetaProperty: ["meta", "property"],
+  JSXAttribute: ["name"],
+  JSXMemberExpression: ["property"],
+};
+
+/** The statements that declare a value under their `id`. A type of the same name hides no value. */
+const VALUE_DECLARATIONS = new Set([
+  "FunctionDeclaration",
+  "ClassDeclaration",
+  "TSDeclareFunction",
+  "TSEnumDeclaration",
+  "TSModuleDeclaration",
+]);
+/** The blocks whose `var`s are their own: a function's body is found by its `params`. */
+const VAR_SCOPES = new Set(["BlockStatement", "StaticBlock", "TSModuleBlock"]);
+
+/** The names the statements of one block declare for that block. */
+const declaredBy = (statements: readonly AnyNode[], into: string[]): void => {
+  for (const statement of statements) {
+    const declaration = statement.type.startsWith("Export") ? statement.declaration : statement;
+    if (!isNode(declaration)) continue;
+    if (declaration.type === "VariableDeclaration")
+      for (const declarator of declaration.declarations as AnyNode[]) patternNames(declarator.id as Span, into);
+    else if (VALUE_DECLARATIONS.has(declaration.type)) patternNames(declaration.id as Span | null, into);
+  }
+};
+
+/** The names of the `var`s under a node that are not another function's, static block's or namespace's. */
+const hoisted = (node: unknown, into: string[]): void => {
+  if (Array.isArray(node)) for (const item of node) hoisted(item, into);
+  if (!isNode(node) || Array.isArray(node.params) || node.type === "StaticBlock" || node.type === "TSModuleBlock")
+    return;
+  if (node.type === "VariableDeclaration" && node.kind === "var")
+    for (const declarator of node.declarations as AnyNode[]) patternNames(declarator.id as Span, into);
+  for (const key in node) if (key !== "parent") hoisted(node[key], into);
+};
+
+/** The names a node declares for everything under it: the scopes of a strict-mode module. */
+const scopeOf = (node: AnyNode): string[] => {
+  const names: string[] = [];
+  // A function, and a function's type: its parameters and, inside itself, its own name.
+  if (Array.isArray(node.params)) for (const parameter of node.params as Span[]) patternNames(parameter, names);
+  if (Array.isArray(node.params) || node.type.startsWith("Class")) patternNames(node.id as Span | null, names);
+  // A block: what its statements declare, and every `var` below it, which the function around it holds.
+  if (VAR_SCOPES.has(node.type)) {
+    declaredBy(node.body as AnyNode[], names);
+    hoisted(node.body, names);
+  }
+  if (node.type === "SwitchStatement")
+    for (const switchCase of node.cases as AnyNode[]) declaredBy(switchCase.consequent as AnyNode[], names);
+  if (node.type === "CatchClause") patternNames(node.param as Span | null, names);
+  if (node.type.startsWith("For"))
+    for (const head of [node.init, node.left]) if (isNode(head)) declaredBy([head], names);
+  return names;
+};
+
+type Reference = Span & { name: string };
+
+/**
+ * Every identifier under a node that can be a use of a module-level binding, TypeScript types included:
+ * a name used only as a type still counts as used. Left out are the names of {@link NAME_KEYS} and the
+ * identifiers that a scope between the module and the identifier declares.
+ */
+const references = (node: unknown, into: Reference[], scopes: readonly string[][] = []): void => {
   if (Array.isArray(node)) {
-    for (const item of node) identifiers(item, into);
+    for (const item of node) references(item, into, scopes);
     return;
   }
-  if (typeof node !== "object" || node === null) return;
-  const { type } = node as { type?: unknown };
-  if (typeof type !== "string") return;
-  if (type === "Identifier" || type === "JSXIdentifier") into.push(node as Span & { name: string });
-  for (const key in node) if (key !== "parent") identifiers((node as Record<string, unknown>)[key], into);
+  if (!isNode(node)) return;
+  if (node.type === "Identifier" || node.type === "JSXIdentifier") {
+    if (!scopes.some((scope) => scope.includes(node.name as string))) into.push(node as Span as Reference);
+    return;
+  }
+  const names = node.computed === true ? [] : (NAME_KEYS[node.type] ?? []);
+  // `export { a as b } from "…"` names the other module's bindings, not this one's.
+  const skipped = node.type === "ExportNamedDeclaration" && node.source ? ["specifiers"] : names;
+  const declared = scopeOf(node);
+  const inner = declared.length ? [...scopes, declared] : scopes;
+  for (const key in node) if (key !== "parent" && !skipped.includes(key)) references(node[key], into, inner);
 };
 
 export function rewrite(module: SourceModule, lenses: readonly BuiltLens[]): string {
@@ -69,11 +160,10 @@ export function rewrite(module: SourceModule, lenses: readonly BuiltLens[]): str
   }
 
   // ---- what only the removed bodies used -----------------------------------------------------------------
-  const references: (Span & { name: string })[] = [];
-  for (const statement of module.program.body)
-    if (!is(statement, "ImportDeclaration")) identifiers(statement, references);
+  const uses: Reference[] = [];
+  for (const statement of module.program.body) if (!is(statement, "ImportDeclaration")) references(statement, uses);
   const live = (name: string, own?: Span) =>
-    references.some((reference) => reference.name === name && reference !== own && !inRemoved(reference.start));
+    uses.some((use) => use.name === name && use !== own && !inRemoved(use.start));
 
   // Only the lenses' own declarations are candidates: their initializers are stub calls and literals,
   // so removing one cannot remove a side effect.
@@ -86,7 +176,7 @@ export function rewrite(module: SourceModule, lenses: readonly BuiltLens[]): str
     if (
       binding.kind === "class"
         ? declared.has(binding.node)
-        : binding.single && binding.init && (declared.has(binding.init) || declared.has(unwrap(binding.init)))
+        : binding.init && (declared.has(binding.init) || declared.has(unwrap(binding.init)))
     )
       candidates.push(binding);
   }
@@ -97,15 +187,35 @@ export function rewrite(module: SourceModule, lenses: readonly BuiltLens[]): str
       if (gone.has(binding) || live(binding.name, binding.node.id ?? undefined)) continue;
       gone.add(binding);
       changed = true;
-      removed.push([binding.statement.start, binding.statement.end]);
-      edits.push([binding.statement.start, binding.statement.end, ""]);
+      removed.push([binding.node.start, binding.node.end]);
+    }
+  }
+  // A statement goes when every name it declares goes. Otherwise each declarator that goes takes one
+  // comma with it, and the statement keeps declaring the others.
+  const goneNodes = new Set<Span>([...gone].map((binding) => binding.node));
+  for (const statement of new Set([...gone].map((binding) => binding.statement))) {
+    const declarators = is(statement, "VariableDeclaration") ? statement.declarations : [];
+    const goes = declarators.map((declarator) => goneNodes.has(declarator));
+    if (goes.every(Boolean)) {
+      edits.push([statement.start, statement.end, ""]);
+      continue;
+    }
+    for (let first = 0; first < declarators.length; first++) {
+      if (!goes[first]) continue;
+      let last = first;
+      while (goes[last + 1]) last++;
+      const next = declarators[last + 1];
+      edits.push(
+        next
+          ? [(declarators[first] as Span).start, next.start, ""]
+          : [(declarators[first - 1] as Span).end, (declarators[last] as Span).end, ""],
+      );
+      first = last;
     }
   }
 
   // An import goes when a removed range used it and nothing left does.
-  const touched = new Set(
-    references.filter((reference) => inRemoved(reference.start)).map((reference) => reference.name),
-  );
+  const touched = new Set(uses.filter((use) => inRemoved(use.start)).map((use) => use.name));
   for (const statement of module.program.body) {
     if (!is(statement, "ImportDeclaration") || statement.importKind === "type") continue;
     const kept = statement.specifiers.filter(
