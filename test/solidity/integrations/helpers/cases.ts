@@ -56,28 +56,31 @@ export const mulDivDown = internal(pure(uint256, uint256, uint256).returns(uint1
     at: "(x * y) / d",
   },
   {
+    // A function inside an assembly block reads a local of the block, which Yul does not give it.
     kind: "a declaration error",
     files: {
-      [LENS]: `import { contract, pure, Struct, uint256 } from "@morpho-org/viem-dlc/solidity";
-
-class Quote extends Struct({ gross: uint256, net: uint256, gross: uint256 }) {}
+      [LENS]: `import { assembly, contract, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
+import { add, mload } from "@morpho-org/viem-dlc/solidity/yul";
 
 export const QuoteLens = contract("QuoteLens", {
-  quote: pure(uint256).returns(Quote),
+  quote: pure(uint256).returns(uint256),
 }).implementation({
   quote(assets) {
-    const o = new Quote();
-    o.net = assets;
-    return o;
+    const net = assembly("memory-safe", () => {
+      const base = mload(0x40);
+      const offset = (a: bigint) => add(base, a);
+      return offset(assets);
+    });
+    return net;
   },
 });
 `,
     },
     severity: "error",
     solcType: "DeclarationError",
-    message: "Identifier already declared.",
+    message: 'Identifier "base" not found.',
     file: LENS,
-    at: "uint256 }) {}",
+    at: "base, a",
   },
   {
     // A word only Yul reserves: the transform leaves those to solc, which stops at it while parsing.
