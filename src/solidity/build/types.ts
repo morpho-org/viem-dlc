@@ -258,8 +258,9 @@ export interface ImmutableDeclaration extends DeclarationBase {
 
 /**
  * `const WAD = 10n ** 18n`. The resolver has checked the rule for a constant a lens reads: it is
- * built only from literals, other such constants, and operators other than `/`. The printer prints
- * `expression` in place, in parentheses, at each use.
+ * built only from bigint literals, booleans, strings that do not start with `0x`, other such
+ * constants, and operators other than `/`. A number in it is a bigint: a Number literal is refused.
+ * The printer prints `expression` in place, in parentheses, at each use.
  */
 export interface ConstantDeclaration extends DeclarationBase {
   readonly kind: "constant";
