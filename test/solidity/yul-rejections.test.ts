@@ -80,7 +80,7 @@ const inTheBlock: readonly Case[] = [
   ],
   ["a string literal", block('mstore(0x00, "text");'), '"text"', LITERAL],
   ["a boolean literal", block("out = true;"), "true", LITERAL],
-  ["a literal with a fraction", block("out = 1.5;"), "1.5", LITERAL],
+  ["a literal with a fraction", block("out = 1.5;"), "1.5", "this Number literal is not a safe integer"],
   ["a literal with an exponent", block("out = 1e3;"), "1e3", LITERAL],
   [
     "a constant that is an expression",

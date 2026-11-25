@@ -23,7 +23,8 @@
  * whose body is an expression returns that expression. `r` is the one name the printer chooses, so a
  * function that returns a word is refused where a Solidity local is already named `r`.
  *
- * A literal is an integer, respelled as in Solidity (`0n` is `0`, `0x1fn` is `0x1f`). A constant named
+ * A literal is an integer, respelled as in Solidity (`0n` is `0`, `0x1fn` is `0x1f`), and a Number
+ * literal that is not a safe integer is refused there as it is in Solidity. A constant named
  * inside a block must be a single such literal, because Yul has no operators. Anything that is not in
  * the table is a located error.
  */
@@ -31,7 +32,7 @@ import type { Span } from "oxc-parser";
 
 import { type AnyNode, is, unwrap } from "./ast.js";
 import { YUL_SPECIFIER } from "./builtins.js";
-import { fail } from "./errors.js";
+import { fail, UNSAFE_NUMBER } from "./errors.js";
 import type { Reference, YulBlockInput } from "./types.js";
 
 /**
@@ -179,6 +180,7 @@ export function printYul(input: YulBlockInput): void {
       }
       switch (node.type) {
         case "Literal":
+          if (typeof node.value === "number" && !Number.isSafeInteger(node.value)) refuse(node, UNSAFE_NUMBER);
           out.write(
             integer(node) ??
               refuse(node, "inside an assembly block a literal is an integer, written in decimal or in hexadecimal"),

@@ -43,6 +43,10 @@ export const diagnosticAt = (module: SourceModule, node: Span, message: string, 
   ...(lens === undefined ? {} : { lens }),
 });
 
+/** Why a Number literal that is not a safe integer is refused, in a body and in an assembly block. */
+export const UNSAFE_NUMBER =
+  "this Number literal is not a safe integer, so JavaScript does not hold the value it spells and a compiler may print another. Write an integer literal as a bigint, with the n suffix";
+
 /** Stops the build with one error at a node. */
 export function fail(module: SourceModule, node: Span, message: string, lens?: string): never {
   throw new LensError([diagnosticAt(module, node, message, lens)]);

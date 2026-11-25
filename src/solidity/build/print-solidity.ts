@@ -12,7 +12,8 @@
  *   else is `memory`: locals, helper parameters and return values.
  * - **The spelling of a literal.** `0n` is `0`, `60_000` is `60000`, `'text'` is `"text"`, a string
  *   outside ASCII is a `unicode"…"` literal, `'0x313ce567'` is `hex"313ce567"`, and a `'0x…'` of 40
- *   digits is an address literal.
+ *   digits is an address literal. A Number literal that is not a safe integer has no spelling: it is
+ *   a located error asking for a bigint.
  *
  * What is only TypeScript is erased before anything is read: annotations, generics, `as`, `satisfies`,
  * `!`, a `this` parameter, and a type declared in a body. `Number(x)` and `BigInt(x)` print as `x`.
@@ -33,7 +34,7 @@ import type { Span } from "oxc-parser";
 
 import { type AnyNode, children, is, keyName, unwrap } from "./ast.js";
 import { isElementaryTypeName } from "./builtins.js";
-import { fail } from "./errors.js";
+import { fail, UNSAFE_NUMBER } from "./errors.js";
 import { Writer } from "./position-map.js";
 import { printYul } from "./print-yul.js";
 import type {
@@ -1182,6 +1183,7 @@ class Printer {
     const { value } = node;
     if (typeof value === "boolean") return String(value);
     if (typeof value === "bigint" || typeof value === "number") {
+      if (typeof value === "number" && !Number.isSafeInteger(value)) return this.#fail(node, UNSAFE_NUMBER);
       const text = String(node.raw ?? "")
         .replace(/_/g, "")
         .replace(/n$/, "");
