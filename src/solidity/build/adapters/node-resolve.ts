@@ -2,9 +2,8 @@
  * The resolver of the two adapters that run in plain Node: the import hook and the check command.
  *
  * An import names the file this Node process would load for it: Node's own resolution is asked first,
- * through every resolve hook registered before this module was loaded, under the conditions the process
- * runs with. So a lens reads the module the application imports, whatever `--conditions` and package
- * `exports` select, and an explicit `./unit.js` is that file even beside a `unit.ts`.
+ * through every resolve hook registered before this module was loaded. So an explicit `./unit.js` is
+ * that file even beside a `unit.ts`, and a hook's alias is followed as the application follows it.
  *
  * Only an import Node cannot resolve falls back to TypeScript's conventions: an extensionless path, a
  * `.js` specifier that names a `.ts` file, and the `paths` aliases of the nearest `tsconfig.json`.
@@ -27,15 +26,12 @@ import { ResolverFactory } from "oxc-resolver";
  */
 const REQUEST = "viem-dlc-solidity:resolve";
 let pending: { specifier: string; parentURL: string } | undefined;
-/** The conditions Node resolves an `import` with in this process, as its resolver last reported them. */
-let conditions: readonly string[] = ["node", "import"];
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier !== REQUEST || !pending) return nextResolve(specifier, context);
     const request = pending;
     pending = undefined;
-    conditions = context.conditions;
     return nextResolve(request.specifier, { ...context, parentURL: request.parentURL });
   },
 });
@@ -132,13 +128,14 @@ export function resolveSync(
   const inputs = tsconfig ? [...tsconfigInputs(tsconfig)] : [];
   for (const [file] of inputs) addDependency(file);
   // Keyed on the text of the configuration, so an edit to an alias makes a new resolver.
-  const key = JSON.stringify([conditions, inputs]);
+  const key = JSON.stringify(inputs);
   let entry = resolvers.get(tsconfig);
   if (entry?.key !== key) {
     entry = {
       key,
       resolver: new ResolverFactory({
-        conditionNames: [...conditions, "default"],
+        // Which condition matches cannot matter: an entry that answers by condition is refused.
+        conditionNames: ["node", "import", "default"],
         extensions: [".ts", ".tsx", ".mts", ".js", ".mjs", ".jsx"],
         extensionAlias: { ".js": [".ts", ".tsx", ".js"], ".mjs": [".mts", ".mjs"] },
         ...(tsconfig ? { tsconfig: { configFile: tsconfig, references: "auto" as const } } : {}),

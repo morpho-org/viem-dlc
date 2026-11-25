@@ -11,7 +11,15 @@ import { type Evm, requireAnvil, startAnvil } from "../helpers/anvil.js";
 
 import { describeHost } from "./helpers/host-suite.js";
 import { lastPrintedBytecode, Project, waitFor } from "./helpers/project.js";
-import { expectHostResolution, REPORT, type Reported, VALUES, writeResolutionFixture } from "./helpers/resolution.js";
+import {
+  expectHostResolution,
+  REFUSED,
+  REPORT,
+  REPORTED_NAMES,
+  type Reported,
+  writeRefusedImport,
+  writeResolutionFixture,
+} from "./helpers/resolution.js";
 
 const HOOK = ["--import", "@morpho-org/viem-dlc/solidity/register", "script.ts"];
 const CLI = "node_modules/@morpho-org/viem-dlc/dist/solidity/build/adapters/cli.js";
@@ -52,15 +60,14 @@ describe("the Node hook and the check command, beyond the shared suite", { timeo
   });
 
   // What Node itself loads for an import depends on the process: its conditions, and the files that exist.
-  describe.each([
-    { flags: [], conditional: VALUES["fixture-units, by default"] },
-    { flags: ["--conditions=fixture"], conditional: VALUES["fixture-units, under the condition 'fixture'"] },
-  ])("under node $flags", ({ flags, conditional }) => {
+  // A lens reads an import that names one file whatever the conditions, and no other.
+  describe.each([{ flags: [] }, { flags: ["--conditions=fixture"] }])("under node $flags", ({ flags }) => {
     it.skipIf(!requireAnvil())("a lens reads the module the script imports", async () => {
+      project.restore();
       writeResolutionFixture(project, "resolved");
       project.write(
         "resolved/script.ts",
-        `import { DUAL, ResolvedLens, SCALE, UNIT } from "./lens.ts";\n\nconsole.log(${REPORT});\n`,
+        `import { ${REPORTED_NAMES} } from "./lens.ts";\n\nconsole.log(${REPORT});\n`,
       );
 
       const hook = await project.run([
@@ -78,8 +85,85 @@ describe("the Node hook and the check command, beyond the shared suite", { timeo
       const printed = /^ok {2}ResolvedLens {2}\S+ {2}\d+ bytes\n([\s\S]*?)\n\d+ files scanned/m.exec(check.output)?.[1];
       expect(printed, check.output).toBeDefined();
 
-      await expectHostResolution(evm as Evm, reported, conditional, { printed });
+      await expectHostResolution(evm as Evm, reported, { printed });
     });
+
+    it.each(REFUSED)("$name is refused at the import, by the hook and by the check command", async (refused) => {
+      project.restore();
+      const line = writeRefusedImport(project, "refused/lens.ts", refused);
+      project.write(
+        "refused/script.ts",
+        'import { RATE, RefusedLens } from "./lens.ts";\n\nconsole.log(RefusedLens.bytecode, RATE);\n',
+      );
+      const hook = await project.run([
+        ...flags,
+        "--import",
+        "@morpho-org/viem-dlc/solidity/register",
+        "refused/script.ts",
+      ]);
+      expect(hook.ok, hook.output).toBe(false);
+      expect(hook.output).toContain(`LensError: ${project.file(line)}`);
+
+      const check = await project.run([...flags, project.file(CLI), "check", "refused"]);
+      expect(check.ok, check.output).toBe(false);
+      expect(check.output).toContain(`${line}\n`);
+      expect(check.output).toContain("0 lenses compiled, 1 files failed");
+    });
+  });
+
+  // Node loads no package.json a script's import is resolved through, so only the build can report it.
+  it("an edit to only the package.json an import is resolved through restarts node --watch, which then serves the other file", async () => {
+    project.restore();
+    const manifest = (target: string) =>
+      `${JSON.stringify({ name: "fixture", private: true, type: "module", imports: { "#unit": `./mapped/${target}.ts` } }, null, 2)}\n`;
+    project.write("package.json", manifest("a"));
+    project.write("mapped/a.ts", "export const UNIT = 17n;\n");
+    project.write("mapped/b.ts", "export const UNIT = 29n;\n");
+    const lens = `import { contract, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
+import { UNIT } from "#unit";
+
+export const MappedLens = contract("MappedLens", { unit: pure().returns(uint256) }).implementation({ unit: () => UNIT });
+`;
+    project.write("mapped/lens.ts", lens);
+    project.write(
+      "mapped/script.ts",
+      'import { MappedLens } from "./lens.ts";\n\nconsole.log(JSON.stringify({ bytecode: MappedLens.bytecode }));\n',
+    );
+    /** The lens built with "#unit" resolved by hand. */
+    const builtWith = async (target: string) => {
+      const built = await build(
+        lens,
+        project.file("mapped/lens.ts"),
+        { resolve: () => project.file(`mapped/${target}.ts`), addDependency: () => {} },
+        { cache: false },
+      );
+      return built?.lenses[0]?.artifact.bytecode;
+    };
+    const fromA = await builtWith("a");
+    project.write("package.json", manifest("b"));
+    const fromB = await builtWith("b");
+    expect(fromB).not.toBe(fromA);
+    project.write("package.json", manifest("a"));
+
+    const watcher = project.start([
+      "--watch",
+      "--import",
+      "@morpho-org/viem-dlc/solidity/register",
+      "mapped/script.ts",
+    ]);
+    const serves = (want: string | undefined, when: string) =>
+      waitFor(
+        () => (lastPrintedBytecode(watcher.output()) === want ? want : undefined),
+        `node --watch to serve the lens ${when}`,
+        watcher.output,
+      );
+    try {
+      await serves(fromA, "as first built");
+      project.write("package.json", manifest("b"));
+      await serves(fromB, "after the edit to package.json");
+    } finally {
+      await watcher.stop();
+    }
   });
 
   describe("an alias of tsconfig.json, which only the build reads", () => {

@@ -828,16 +828,30 @@ Every integration runs the same transform, and holds to the same rules:
   A warning is printed the same way and does not stop the build. An error solc gives without a
   location, such as a setting it refuses, is reported at the lens.
 - **An edit to any file a lens was built from recompiles it**: the lens's own module, the module of a
-  helper or a constant it imports, and `solidity.config.json`. That holds in watch mode
-  (`next dev`, the Vite dev server, `vitest`, `tsdown --watch`, `node --watch`) and from one run to the
-  next.
+  helper or a constant it imports, the `package.json` such an import was resolved through, and
+  `solidity.config.json`. That holds in watch mode (`next dev`, the Vite dev server, `vitest`,
+  `tsdown --watch`, `node --watch`) and from one run to the next.
 - **Modules are parsed and never run.** A lens reaches helpers, structs and constants in other
-  modules through imports, re-exports, `export *` and namespace imports, resolved by the tool's own
-  resolver, so a path alias such as `@/` works. Under `node --import` that resolver is Node's own, with
-  the conditions the process runs with; TypeScript's conventions and the `paths` of `tsconfig.json`
-  apply only to an import Node cannot resolve. A helper can also be read from the JavaScript that
-  `tsc` emitted for it. Output that a bundler or a minifier has rewritten is not supported: it may be
-  refused, or print different Solidity.
+  modules through imports, re-exports, `export *` and namespace imports. The tool's own resolver
+  finds each file, so a path alias such as `@/` works. Under `node --import` that resolver is Node's
+  own; TypeScript's conventions and the `paths` of `tsconfig.json` apply only to an import Node
+  cannot resolve. A helper can also be read from the JavaScript that `tsc` emitted for it. Output
+  that a bundler or a minifier has rewritten is not supported: it may be refused, or print different
+  Solidity.
+- **An import a lens reads through names one file.** The application imports the module a lens was
+  compiled from only where the import names the same file under every condition, and whether the
+  module is imported or required. So an import that a lens reaches a helper, a struct or a constant
+  through is one of these, and anything else is an error at the import:
+  - a relative path, which names the file the tool resolves it to;
+  - a package name or a `#` import whose entry, in the package's `exports` or in the `imports` of
+    the importing package, names one file under every condition except `types`. An entry such as
+    `{ "types": "./index.d.ts", "import": "./index.js", "default": "./index.js" }` does;
+    `{ "import": "./index.js", "require": "./index.cjs" }` does not, and neither does a package
+    without `exports`. The error names the `package.json` and the entry;
+  - any other name, which is an alias of the tool's such as `@/`, where it leads to a file of the
+    importing module's own package. Another package is reached by its name.
+
+  The rest of the application imports what it likes: only what a lens reads is held to this.
 - **Nothing is written into the source tree.** The only files written are the tool's own output and
   the cache described below.
 
@@ -845,13 +859,9 @@ Next is supported with Turbopack. A webpack build of a configuration wrapped in 
 with an error, and webpack, esbuild and Bun have no integration yet. A loader rule the configuration
 already has for `*.{ts,tsx}` is kept, and runs after the lenses are compiled.
 
-Two limits come from Next itself:
-
-- Turbopack does not tell a loader whether a module is imported or required. An import that resolves
-  to a file its package lists for `require` is therefore refused, with an error at the import: the
-  application's own `import` may load another file.
-- With server fast refresh, `next dev` can keep serving the failure of a lens that has since been
-  repaired (seen with Next 16.4). Restart the server, or run `next dev --no-server-fast-refresh`.
+One limit comes from Next itself. With server fast refresh, `next dev` can keep serving the failure
+of a lens that has since been repaired (seen with Next 16.4). Restart the server, or run
+`next dev --no-server-fast-refresh`.
 
 ### `solidity.config.json`
 

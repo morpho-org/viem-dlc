@@ -8,7 +8,15 @@ import { type Evm, requireAnvil, startAnvil } from "../helpers/anvil.js";
 
 import { describeHost } from "./helpers/host-suite.js";
 import { bin, bytecodeIn, freePort, Project } from "./helpers/project.js";
-import { expectHostResolution, REPORT, type Reported, VALUES, writeResolutionFixture } from "./helpers/resolution.js";
+import {
+  expectHostResolution,
+  REFUSED,
+  REPORT,
+  REPORTED_NAMES,
+  type Reported,
+  writeRefusedImport,
+  writeResolutionFixture,
+} from "./helpers/resolution.js";
 import { expectNoLensSourceInMaps } from "./helpers/source-maps.js";
 
 describeHost({
@@ -64,19 +72,11 @@ describe("a Vite build, beyond the shared suite", { timeout: 120_000 }, () => {
     });
   });
 
-  // The plugin asks Vite's own resolver, so this holds by construction: the control for the same check
-  // on the hosts that have no resolver to ask.
-  it.skipIf(!requireAnvil())(
-    "a lens reads the module Vite bundles, under the conditions Vite resolves with",
-    async () => {
-      writeResolutionFixture(project, "resolved");
-      project.write(
-        "resolved/entry.ts",
-        `import { DUAL, ResolvedLens, SCALE, UNIT } from "./lens";\n\nconsole.log(${REPORT});\n`,
-      );
-      project.write(
-        "vite.resolved.config.ts",
-        `import { solidity } from "@morpho-org/viem-dlc/solidity/vite";
+  /** A library build of one entry, under a condition of the application's own. */
+  const buildEntry = (entry: string) => {
+    project.write(
+      "vite.resolved.config.ts",
+      `import { solidity } from "@morpho-org/viem-dlc/solidity/vite";
 import { defineConfig } from "vite";
 
 export default defineConfig({
@@ -85,21 +85,37 @@ export default defineConfig({
   build: {
     minify: false,
     outDir: "dist/resolved",
-    lib: { entry: "resolved/entry.ts", formats: ["es"], fileName: "entry" },
+    lib: { entry: "${entry}", formats: ["es"], fileName: "entry" },
     rollupOptions: { external: ["viem", "@morpho-org/viem-dlc/solidity"] },
   },
 });
 `,
-      );
-      const built = await project.run([bin("vite"), "build", "--config", "vite.resolved.config.ts"]);
-      expect(built.ok, built.output).toBe(true);
-      const run = await project.run(["dist/resolved/entry.js"]);
-      expect(run.ok, run.output).toBe(true);
-      await expectHostResolution(
-        evm as Evm,
-        JSON.parse(run.output) as Reported,
-        VALUES["fixture-units, under the condition 'fixture'"],
-      );
-    },
-  );
+    );
+    return project.run([bin("vite"), "build", "--config", "vite.resolved.config.ts"]);
+  };
+
+  // The plugin asks Vite's own resolver, and the build takes its answer for an import that names one
+  // file whatever the conditions.
+  it.skipIf(!requireAnvil())("a lens reads the module Vite bundles", async () => {
+    project.restore();
+    writeResolutionFixture(project, "resolved");
+    project.write("resolved/entry.ts", `import { ${REPORTED_NAMES} } from "./lens";\n\nconsole.log(${REPORT});\n`);
+    const built = await buildEntry("resolved/entry.ts");
+    expect(built.ok, built.output).toBe(true);
+    const run = await project.run(["dist/resolved/entry.js"]);
+    expect(run.ok, run.output).toBe(true);
+    await expectHostResolution(evm as Evm, JSON.parse(run.output) as Reported);
+  });
+
+  it.each(REFUSED)("$name is refused at the import", async (refused) => {
+    project.restore();
+    const line = writeRefusedImport(project, "refused/lens.ts", refused);
+    project.write(
+      "refused/entry.ts",
+      'import { RATE, RefusedLens } from "./lens";\n\nconsole.log(RefusedLens.bytecode, RATE);\n',
+    );
+    const built = await buildEntry("refused/entry.ts");
+    expect(built.ok, built.output).toBe(false);
+    expect(built.output).toContain(project.file(line));
+  });
 });
