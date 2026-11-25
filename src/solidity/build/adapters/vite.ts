@@ -17,7 +17,7 @@
  */
 import fs from "node:fs/promises";
 
-import { SOLIDITY_SPECIFIER } from "../builtins.js";
+import { MENTIONS_PACKAGE } from "../builtins.js";
 import { formatDiagnostic, LensError } from "../errors.js";
 import { transform } from "../transform.js";
 import type { TransformOptions } from "../types.js";
@@ -142,7 +142,7 @@ export function solidity(options: TransformOptions = {}): SolidityPlugin {
     // from the compile cache, which is keyed on the Solidity.
     configureVitest(context) {
       const define = context.defineCacheKeyGenerator ?? context.experimental_defineCacheKeyGenerator;
-      define?.(({ sourceCode }) => (sourceCode.includes(SOLIDITY_SPECIFIER) ? false : undefined));
+      define?.(({ sourceCode }) => (MENTIONS_PACKAGE.test(sourceCode) ? false : undefined));
     },
   };
 }

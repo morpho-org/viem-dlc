@@ -20,14 +20,14 @@
  * cannot tell from the package's: that use is a located error too.
  */
 import { type AnyNode, is, keyName, unwrap, walk } from "./ast.js";
-import { SOLIDITY_SPECIFIER } from "./builtins.js";
+import { MENTIONS_PACKAGE, SOLIDITY_SPECIFIER } from "./builtins.js";
 import { fail, failOnExtraArgument } from "./errors.js";
 import { refusedName } from "./names.js";
 import { boundTo } from "./scopes.js";
 import type { LensSite, SourceModule } from "./types.js";
 
 /** True when a module's text can hold a lens. Checked before parsing, so other files cost nothing. */
-export const mentionsPackage = (code: string): boolean => code.includes(SOLIDITY_SPECIFIER);
+export const mentionsPackage = (code: string): boolean => MENTIONS_PACKAGE.test(code);
 
 const NOT_A_LENS =
   "contract is written in one expression with its implementation, as contract(name, functions).implementation({ … }): used in any other way, a lens is not compiled";

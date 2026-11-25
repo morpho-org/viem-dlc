@@ -14,7 +14,7 @@
  * read through it: see `import-target.ts`. An import that may name another file under other conditions
  * stops the build at the import, in every host alike. A host's resolver can refuse an import the same
  * way, by throwing {@link ImportRefused}. It returns null for a module with no lens, after
- * one substring test and no parse when the module does not mention the package. Every failure is a
+ * one test of its text and no parse when the module cannot name the package. Every failure is a
  * {@link LensError} whose diagnostics carry a TypeScript file, line and column.
  *
  * Nothing here evaluates anything or imports an application module.

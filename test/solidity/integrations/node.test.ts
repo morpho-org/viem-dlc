@@ -186,6 +186,36 @@ registerHooks({ resolve: (specifier, context, nextResolve) => nextResolve(${redi
     });
   });
 
+  // A string names the package whatever escapes spell it, and Node imports the package either way.
+  it("a lens whose module spells the package's specifier with an escape is compiled, by the hook and by the check command", async () => {
+    project.restore();
+    const lens = (specifier: string) => `import { contract, pure, uint256 } from "${specifier}";
+
+export const SpelledLens = contract("SpelledLens", { rate: pure().returns(uint256) }).implementation({ rate: () => 17n });
+`;
+    project.write("spelled/plain.ts", lens("@morpho-org/viem-dlc/solidity"));
+    project.write("spelled/escaped.ts", lens("@morpho-org/viem-dlc/solidi\\u0074y"));
+    expect(project.read("spelled/escaped.ts")).not.toContain("@morpho-org/viem-dlc/solidity");
+    project.write(
+      "spelled/script.ts",
+      `import { SpelledLens as escaped } from "./escaped.ts";
+import { SpelledLens as plain } from "./plain.ts";
+
+console.log(JSON.stringify({ plain: plain.bytecode, escaped: escaped.bytecode }));
+`,
+    );
+
+    const hook = await project.run(["--import", "@morpho-org/viem-dlc/solidity/register", "spelled/script.ts"]);
+    expect(hook.ok, hook.output).toBe(true);
+    const served = JSON.parse(hook.output) as { plain: string; escaped: string };
+    expect(served.plain).toMatch(/^0x60[0-9a-f]+$/);
+    expect(served.escaped).toBe(served.plain);
+
+    const check = await project.run([project.file(CLI), "check", "spelled"]);
+    expect(check.ok, check.output).toBe(true);
+    expect(check.output).toContain("2 lenses compiled, 0 files failed");
+  });
+
   // Node loads no package.json a script's import is resolved through, so only the build can report it.
   it("an edit to only the package.json an import is resolved through restarts node --watch, which then serves the other file", async () => {
     project.restore();

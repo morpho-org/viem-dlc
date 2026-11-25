@@ -154,6 +154,33 @@ export function GET() {
     expect(run.output).toContain(project.file(line));
   });
 
+  // The rule sends a module to the loader by its text, before anything has parsed it.
+  it("a lens whose module spells the package's specifier with an escape is compiled", async () => {
+    project.restore();
+    const lens = (specifier: string) => `import { contract, pure, uint256 } from "${specifier}";
+
+export const SpelledLens = contract("SpelledLens", { rate: pure().returns(uint256) }).implementation({ rate: () => 17n });
+`;
+    project.write("src/spelled/plain.ts", lens("@morpho-org/viem-dlc/solidity"));
+    project.write("src/spelled/lens.ts", lens("@morpho-org/viem-dlc/solidi\\u0074y"));
+    project.write(
+      "src/app/api/spelled/route.ts",
+      `import { SpelledLens } from "@/spelled/lens";
+
+export const dynamic = "force-static";
+
+export function GET() {
+  return Response.json({ bytecode: SpelledLens.bytecode });
+}
+`,
+    );
+    const built = await project.run([bin("next"), "build"]);
+    expect(built.ok, built.output).toBe(true);
+    expect(JSON.parse(project.read(".next/server/app/api/spelled.body"))).toEqual({
+      bytecode: (await project.expectedLens("src/spelled/plain.ts")).bytecode,
+    });
+  });
+
   it("an application's own rule for the same files still runs, on a module with a lens and on one without", async () => {
     project.restore();
     // The application's loader marks a module, and says so when a lens was still in it.
@@ -316,6 +343,17 @@ describe("withSolidity", () => {
       }),
       ...kept,
     ]);
+  });
+
+  it("sends a module to the loader however it spells the package's specifier", () => {
+    const rule = withSolidity().turbopack?.rules?.["*.{ts,tsx}"] as {
+      condition: { all: [unknown, { content: RegExp }] };
+    };
+    const { content } = rule.condition.all[1];
+    expect(content.test('import { contract } from "@morpho-org/viem-dlc/solidity";')).toBe(true);
+    expect(content.test('import { contract } from "@morpho-org/viem-dlc/solidi\\u0074y";')).toBe(true);
+    expect(content.test('import { contract } from "@morpho-org/viem-dlc/sol\\\nidity";')).toBe(true);
+    expect(content.test('import { cache } from "@morpho-org/viem-dlc/transports";')).toBe(false);
   });
 
   it("keys Turbopack's cache on the versions that decide the output", async () => {

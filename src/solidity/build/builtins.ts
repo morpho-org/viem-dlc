@@ -4,8 +4,25 @@
  */
 import type { ElementaryTypeName } from "./types.js";
 
-/** The specifier a lens module imports the DSL from. A file whose text lacks it is never parsed. */
+/** The specifier a lens module imports the DSL from. */
 export const SOLIDITY_SPECIFIER = "@morpho-org/viem-dlc/solidity";
+
+/**
+ * Matches a text that can spell {@link SOLIDITY_SPECIFIER} in a string: each character as it is or as an
+ * escape (`\t`, `\x74`, `\u0074`, `\u{74}`), with line continuations between them. A file whose text it
+ * does not match is never parsed. It only chooses the files to parse, so it matches too much rather than
+ * too little: what a string names is compared once the parser has decoded it.
+ */
+export const MENTIONS_PACKAGE = new RegExp(
+  [...SOLIDITY_SPECIFIER]
+    .map((character) => {
+      const hex = character.charCodeAt(0).toString(16);
+      return `(?:\\\\?${character}|\\\\x${hex}|\\\\u00${hex}|\\\\u\\{0*${hex}\\})`;
+    })
+    .join("(?:\\\\(?:\\r\\n|[\\n\\r\\u2028\\u2029]))*"),
+  "i",
+);
+
 /** The specifier typed-Yul opcodes are imported from. */
 export const YUL_SPECIFIER = "@morpho-org/viem-dlc/solidity/yul";
 

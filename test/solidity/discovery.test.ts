@@ -298,3 +298,41 @@ export const Lens = dsl.contract("Lens", { run: dsl.pure().returns(dsl.uint256) 
     expect(() => transformSync(code, FILE, HOST, { cache: false })).toThrow(LensError);
   });
 });
+
+describe("the package is the package however a module spells its specifier", () => {
+  const lens = (specifier: string) => `import { contract, pure, uint256 } from "${specifier}";
+export const Lens = contract("Lens", { run: pure().returns(uint256) }).implementation({ run: () => 17n });
+`;
+  const escaped = (character: string) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
+
+  it.each([
+    ["a Unicode escape", "@morpho-org/viem-dlc/solidi\\u0074y"],
+    ["a Unicode escape in capitals", "@morpho-org/viem-dlc/s\\u006Flidity"],
+    ["a code point escape", "\\u{000040}morpho-org/viem-dlc/solidity"],
+    ["a hexadecimal escape", "@morpho-org/viem-dlc/\\x73olidity"],
+    ["a character escaped as itself", "@morpho-org\\/viem-dlc/solidity"],
+    ["a line continuation", "@morpho-org/viem-dlc/sol\\\nidity"],
+    ["every character escaped", [...PACKAGE].map(escaped).join("")],
+  ])("finds the lens of a module that imports it with %s", async (_what, specifier) => {
+    const code = lens(specifier);
+    // The text does not hold the specifier, and the string it holds is the specifier.
+    expect(code).not.toContain(PACKAGE);
+    const [plain] = (await build(lens(PACKAGE), FILE, HOST, { cache: false }))?.lenses ?? [];
+    const built = await build(code, FILE, HOST, { cache: false });
+    expect(built?.lenses.map((found) => found.resolved.name)).toEqual(["Lens"]);
+    expect(built?.lenses[0]?.artifact.bytecode).toBe(plain?.artifact.bytecode);
+    expect(transformSync(code, FILE, HOST, { cache: false })?.code).toContain(
+      `"bytecode":"${plain?.artifact.bytecode}"`,
+    );
+  });
+
+  it("refuses a use of contract that is not a lens the same way", async () => {
+    const code = `export { contract } from "@morpho-org/viem-dlc/solidi\\u0074y";\n`;
+    await expectRejection(code, { message: SHAPE, ...positionIn(code, "contract }"), source: "transform" });
+  });
+
+  it("leaves a module that names another package alone", async () => {
+    const code = lens("@morpho-org/viem-dlc/solidi\\u0074ies");
+    expect(await build(code, FILE, HOST, { cache: false })).toBeNull();
+  });
+});
