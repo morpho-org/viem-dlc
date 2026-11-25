@@ -115,5 +115,5 @@
     "vite-node": "^6.0.0",
     "vitest": "4.1.12"
   },
-  "packageManager": "pnpm@11.20.0"
+  "packageManager": "pnpm@11.28.12"
 }
