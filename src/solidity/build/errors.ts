@@ -6,6 +6,12 @@ import type { Span } from "oxc-parser";
 
 import type { LensDiagnostic, SourceModule, SourcePosition } from "./types.js";
 
+/**
+ * What ends a line in ECMAScript: a line feed, a carriage return, the two together as one, U+2028 and
+ * U+2029. Every line the build counts, it counts with this.
+ */
+export const LINE_TERMINATOR = /\r\n|[\n\r\u2028\u2029]/g;
+
 /** The 1-based line and column of an offset into a module's text. */
 export const positionOf = (module: SourceModule, offset: number): SourcePosition => {
   const { lineStarts } = module;

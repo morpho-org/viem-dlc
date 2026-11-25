@@ -7,12 +7,12 @@
 import { parseSync, type Span, type Statement } from "oxc-parser";
 
 import { type AnyNode, is, keyName } from "./ast.js";
-import { LensError } from "./errors.js";
+import { LensError, LINE_TERMINATOR } from "./errors.js";
 import type { ModuleBinding, ModuleExport, SourceModule } from "./types.js";
 
 const lineStartsOf = (code: string): number[] => {
   const starts = [0];
-  for (let i = code.indexOf("\n"); i !== -1; i = code.indexOf("\n", i + 1)) starts.push(i + 1);
+  for (const terminator of code.matchAll(LINE_TERMINATOR)) starts.push(terminator.index + terminator[0].length);
   return starts;
 };
 
