@@ -23,6 +23,7 @@ import {
 } from "./builtins.js";
 import { fail } from "./errors.js";
 import { refusedName } from "./names.js";
+import { YUL_OPCODES } from "./print-yul.js";
 import { enclosingScopes } from "./scopes.js";
 import type {
   ConstantDeclaration,
@@ -107,27 +108,46 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
   /** The exports being looked up, as `file\0name`: modules may export each other's names in a circle. */
   const exporting = new Set<string>();
 
-  const hasExport = (
-    m: SourceModule,
-    name: string,
-    user: SourceModule,
-    at: Span,
-    seen = new Set<SourceModule>(),
-  ): boolean => {
-    // A module already being asked for this name is where the search came from.
-    if (seen.has(m) || exporting.has(`${m.file}\0${name}`)) return false;
-    seen.add(m);
-    if (m.exports.has(name)) return true;
-    return m.starExports.some(
-      (source) =>
-        source !== SOLIDITY_SPECIFIER &&
-        source !== YUL_SPECIFIER &&
-        hasExport(target(m, source, user, at), name, user, at, seen),
-    );
+  /** True when two values are one binding, however each was reached. */
+  const same = (a: Value, b: Value): boolean => {
+    if (a.kind === "declaration") return b.kind === "declaration" && a.declaration === b.declaration;
+    if (a.kind === "builtin") return b.kind === "builtin" && a.module === b.module && a.name === b.name;
+    return a.kind === b.kind && a.module === b.module;
   };
 
-  /** The value `from` exports as `name`. `user` and `at` are where it is asked for, for errors. */
-  const exportedValue = (from: SourceModule, name: string, user: SourceModule, at: Span): Value => {
+  /**
+   * What the `export *` declarations of `from` give as `name`, as a JavaScript engine links them: nothing
+   * for `default`, one binding however many declarations lead to it, and an error for two bindings.
+   */
+  const starredValue = (from: SourceModule, name: string, user: SourceModule, at: Span): Value | undefined => {
+    if (name === "default") return undefined;
+    let found: Value | undefined;
+    for (const source of from.starExports) {
+      let value: Value | undefined;
+      if (source === SOLIDITY_SPECIFIER) {
+        if (isElementaryTypeName(name) || DECLARATION_BUILTINS.has(name) || BODY_BUILTINS.has(name))
+          value = packageExport("solidity", name, user, at);
+      } else if (source === YUL_SPECIFIER) {
+        if (YUL_OPCODES.has(name)) value = packageExport("yul", name, user, at);
+      } else {
+        const next = target(from, source, user, at);
+        // A module already being asked for this name is where the search came from.
+        if (!exporting.has(`${next.file}\0${name}`)) value = exportedBy(next, name, user, at);
+      }
+      if (!value) continue;
+      if (found && !same(found, value))
+        return error(
+          user,
+          at,
+          `"${name}" is exported by more than one export * of ${from.file}, from different declarations: export it by name`,
+        );
+      found = value;
+    }
+    return found;
+  };
+
+  /** The value `from` exports as `name`, or undefined when it exports no such name. */
+  const exportedBy = (from: SourceModule, name: string, user: SourceModule, at: Span): Value | undefined => {
     const key = `${from.file}\0${name}`;
     if (exporting.has(key)) return error(user, at, `"${name}" is exported by ${from.file} in terms of itself`);
     exporting.add(key);
@@ -141,21 +161,22 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
           at,
           "a default export that is an expression cannot be used by a lens; export it under a name",
         );
-      for (const source of from.starExports) {
-        if (source === SOLIDITY_SPECIFIER || source === YUL_SPECIFIER) {
-          const pkg = source === SOLIDITY_SPECIFIER ? "solidity" : "yul";
-          if (pkg === "yul" || isElementaryTypeName(name) || DECLARATION_BUILTINS.has(name) || BODY_BUILTINS.has(name))
-            return packageExport(pkg, name, user, at);
-          continue;
-        }
-        const next = target(from, source, user, at);
-        if (hasExport(next, name, user, at)) return exportedValue(next, name, user, at);
-      }
-      return error(user, at, `"${name}" is not exported by ${from.file}`);
+      return starredValue(from, name, user, at);
     } finally {
       exporting.delete(key);
     }
   };
+
+  /** The value `from` exports as `name`. `user` and `at` are where it is asked for, for errors. */
+  const exportedValue = (from: SourceModule, name: string, user: SourceModule, at: Span): Value =>
+    exportedBy(from, name, user, at) ??
+    error(
+      user,
+      at,
+      name === "default" && from.starExports.length > 0
+        ? `"default" is not exported by ${from.file}: export * does not pass a default export on`
+        : `"${name}" is not exported by ${from.file}`,
+    );
 
   /** The names bound between the module's scope and the lens: the parameters and locals of the code around it. */
   const around = new Set(
