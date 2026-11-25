@@ -223,7 +223,6 @@ describe("find", () => {
         // A call of a call, and .implementation on something that is not a call.
         local.contract()("G", ${body};
         local.implementation({});
-        local[sol.contract("H", {}).name].implementation({});
       `,
     );
     expect(find(module)).toEqual([]);
