@@ -19,9 +19,11 @@ export const positionOf = (module: SourceModule, offset: number): SourcePosition
   let high = lineStarts.length - 1;
   while (low < high) {
     const mid = (low + high + 1) >> 1;
+    /* v8 ignore next -- @preserve: the index is in range, and the fallback after ?? is there for the type checker */
     if ((lineStarts[mid] ?? 0) <= offset) low = mid;
     else high = mid - 1;
   }
+  /* v8 ignore next -- @preserve: the index is in range, and the fallback after ?? is there for the type checker */
   return { file: module.file, line: low + 1, column: offset - (lineStarts[low] ?? 0) + 1 };
 };
 
@@ -63,6 +65,7 @@ export function fail(module: SourceModule, node: Span, message: string, lens?: s
  * {@link fail}, which is for what a lens may never contain: search for `notImplemented(` to find the
  * work that is left.
  */
+/* v8 ignore next -- @preserve: nothing a lens can hold is left unimplemented today, so nothing calls this */
 export function notImplemented(module: SourceModule, node: Span, what: string): never {
   return fail(module, node, `${what} is not implemented yet in @morpho-org/viem-dlc/solidity.`);
 }

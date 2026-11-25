@@ -47,6 +47,7 @@ export function rewrite(module: SourceModule, lenses: readonly BuiltLens[]): str
   const callee = unwrap(first.resolved.site.declaration.callee);
   const root = is(callee, "MemberExpression") ? unwrap(callee.object) : callee;
   const packageImport = module.bindings.get((root as AnyNode).name as string);
+  /* v8 ignore next -- @preserve: a lens is only found through the name an import of the package gives, so this guards a broken caller */
   if (packageImport?.kind !== "import") throw new Error("rewrite: the lens's contract is not an import");
   // On the line of the import that brought `contract`, so no line moves. The leading `;` ends that import
   // when it is written without one.

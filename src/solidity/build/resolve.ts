@@ -269,6 +269,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     const id = fn.id as { name: string } | null | undefined;
     if (id) scope.add(id.name);
     const body = fn.body as AnyNode | null;
+    /* v8 ignore next -- @preserve: a function written as an expression always has a body, and the check is there for the type checker */
     if (!body) return;
     if (is(body, "BlockStatement")) scanBlock(m, body.body as unknown as AnyNode[], [...scopes, scope], uses);
     else scan(m, body, [...scopes, scope], uses);
@@ -594,6 +595,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
   }
 
   // Other modules first, in the order they were first reached; then the lens's own. Source order within each.
+  /* v8 ignore next -- @preserve: a module was ranked when its first declaration was reached, and the fallback after ?? is there for the type checker */
   const rank = (m: SourceModule) => (m === module ? Number.POSITIVE_INFINITY : (moduleRank.get(m) ?? 0));
   const ordered = [...declarations.values()].sort(
     (a, b) =>

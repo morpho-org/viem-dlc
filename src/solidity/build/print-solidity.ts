@@ -318,6 +318,7 @@ class Printer {
       out.write(`) ${visibility} ${signature.mutability}${returns(signature)} {`);
       out.indented(() => {
         const block = body.body as AnyNode | null;
+        /* v8 ignore next -- @preserve: a function written as an expression always has a body, and the check is there for the type checker */
         if (!block) this.#fail(body, "a lens function needs a body");
         if (is(block, "BlockStatement")) {
           for (const statement of block.body) this.#statement(statement as unknown as AnyNode);
@@ -1220,6 +1221,7 @@ class Printer {
     if (typeof value === "boolean") return String(value);
     if (typeof value === "bigint" || typeof value === "number") {
       if (typeof value === "number" && !Number.isSafeInteger(value)) return this.#fail(node, UNSAFE_NUMBER);
+      /* v8 ignore next -- @preserve: a literal the parser read always has its text, and the fallback after ?? is there for the type checker */
       const text = String(node.raw ?? "")
         .replace(/_/g, "")
         .replace(/n$/, "");
