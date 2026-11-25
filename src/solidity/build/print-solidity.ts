@@ -877,7 +877,7 @@ class Printer {
         const fn = this.#interfaceFunction(object);
         if (fn || this.#interfaceFunction(node)) {
           if (!fn || property !== "selector") this.#fail(node, INTERFACE_MEMBER);
-          out.write(`${fn.interface.name}.${fn.name}.selector`);
+          out.write(`${this.#reach(object, fn.interface.name)}.${fn.name}.selector`);
           return;
         }
         this.#expression(object, true);
@@ -958,7 +958,7 @@ class Printer {
     const fields = unwrap(argument);
     if (rest.length || !is(fields, "ObjectExpression"))
       this.#fail(node, "a struct is built from an object literal of its fields: new T({ a, b })");
-    out.write(`${struct.name}({`);
+    out.write(`${this.#reach(node, struct.name)}({`);
     for (const [index, property] of fields.properties.entries()) {
       const name = is(property, "Property") && !property.computed ? keyName(property.key) : undefined;
       if (name === undefined || !is(property, "Property") || property.kind !== "init" || property.method)
@@ -988,7 +988,7 @@ class Printer {
           node,
           `"${declaration.name}" is not listed in the immutables of ${this.#lens.name}: contract(name, functions, { immutables: { ${declaration.name} } })`,
         );
-      this.#out.write(declaration.name);
+      this.#out.write(this.#reach(node, declaration.name));
     } else if (declaration.kind === "interface") this.#fail(node, INTERFACE_MEMBER);
     else this.#fail(node, `"${declaration.name}" is a ${declaration.kind} and cannot be used as a value here`);
   }
@@ -1032,7 +1032,7 @@ class Printer {
           `"${declaration.name}" is ${declaration.kind === "immutable" ? "an" : "a"} ${declaration.kind} and cannot be called`,
         );
       else if (this.#inLibrary) this.#outsideLibrary(node, declaration.name);
-      out.write(declaration.name);
+      out.write(this.#reach(callee, declaration.name));
       this.#arguments(args);
       return;
     }
@@ -1084,7 +1084,7 @@ class Printer {
     }
     const named = this.#lens.references.get(object);
     if (named?.kind === "declaration" && named.declaration.kind === "library") {
-      out.write(`${named.declaration.name}.${name}`);
+      out.write(`${this.#reach(object, named.declaration.name)}.${name}`);
       this.#arguments(args);
       return;
     }
@@ -1117,7 +1117,7 @@ class Printer {
     if (fn) {
       // `I.f.encode(a, b)` is `abi.encodeCall(I.f, (a, b))`.
       if (name !== "encode") this.#fail(node, INTERFACE_MEMBER);
-      out.write(`abi.encodeCall(${fn.interface.name}.${fn.name}, `);
+      out.write(`abi.encodeCall(${this.#reach(object, fn.interface.name)}.${fn.name}, `);
       this.#arguments(args);
       out.write(")");
       return;
@@ -1128,7 +1128,7 @@ class Printer {
     const [address, options, ...rest] = is(object, "CallExpression") ? (object.arguments as AnyNode[]) : [];
     if (made?.kind === "declaration" && made.declaration.kind === "interface" && address && options && !rest.length) {
       out.node({ module: this.#module, node: object }, () => {
-        out.write(`${made.declaration.name}(`);
+        out.write(`${this.#reach(object, made.declaration.name)}(`);
         this.#expression(address);
         out.write(")");
       });
@@ -1279,6 +1279,20 @@ class Printer {
     const refused = refusedName(id.name);
     if (refused) this.#fail(id, refused);
     this.#scopes.at(-1)?.set(id.name, type);
+  }
+
+  /**
+   * The Solidity name of a module-level declaration, where it is printed as a value. TypeScript reads the
+   * declaration under the name the module gave it, and Solidity under the one name it is declared with: a
+   * parameter or a local of that name would be read instead, so the two are refused together.
+   */
+  #reach(node: Span, name: string): string {
+    if (this.#scopes.some((scope) => scope.has(name)))
+      this.#fail(
+        node,
+        `this is "${name}" in Solidity, the name it is declared with, and a parameter or local named "${name}" hides it here: rename the parameter or local`,
+      );
+    return name;
   }
 
   #local(name: string): TypeRef | undefined {

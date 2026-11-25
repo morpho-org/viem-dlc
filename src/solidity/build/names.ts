@@ -1,7 +1,11 @@
 /**
  * Names: what the author wrote in TypeScript that is printed into Solidity as it is.
  *
- * Such a name has to be a name in Solidity too: an identifier, and not a word Solidity reserves.
+ * Such a name has to be a name in Solidity too: an identifier, and not a word Solidity reserves. Where
+ * Solidity looks a bare name up (a contract, a struct, an interface, a library, a function, an
+ * immutable, a parameter or a local), it also cannot be the name of a Solidity built-in, because a
+ * declaration of that name hides the built-in from everything printed in its scope. A struct's field
+ * and an interface's function are only ever reached through a dot, so they hide nothing.
  */
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
@@ -28,6 +32,14 @@ const isSizedType = (name: string): boolean => {
   return /^u?fixed[0-9]+x[0-9]+$/.test(name);
 };
 
+/** The names Solidity declares globally. A declaration of the same name hides the built-in. */
+export const SOLIDITY_BUILTINS: ReadonlySet<string> = new Set(
+  (
+    "abi addmod assert blobhash block blockhash ecrecover erc7201 gasleft keccak256 msg mulmod now require " +
+    "revert ripemd160 selfdestruct sha256 sha3 suicide super this tx"
+  ).split(" "),
+);
+
 /**
  * Why `name` cannot be printed as a Solidity name, or undefined when it can. A `member` is a struct's
  * field or an interface's function, which may share the name of a built-in. A `yul` name is one declared
@@ -39,5 +51,7 @@ export const refusedName = (name: string, kind: "scoped" | "member" | "yul" = "s
   if (kind === "yul") return undefined;
   if (RESERVED_WORDS.has(name) || isSizedType(name))
     return `"${name}" is a reserved word in Solidity, so it cannot be used as a name`;
+  if (kind === "scoped" && SOLIDITY_BUILTINS.has(name))
+    return `"${name}" is a Solidity built-in, and a declaration named "${name}" would hide it: choose another name`;
   return undefined;
 };

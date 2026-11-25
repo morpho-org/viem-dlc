@@ -603,7 +603,10 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     (a, b) =>
       (rank(a.module) === rank(b.module) ? 0 : rank(a.module) < rank(b.module) ? -1 : 1) || a.node.start - b.node.start,
   );
+  // A name is given once: a library's functions are in scope of everything the library's bodies name.
   const taken = new Set([lens, ...entries.map((entry) => entry.name)]);
+  for (const declaration of ordered)
+    if (declaration.kind === "library") for (const fn of declaration.functions) taken.add(fn.name);
   for (const declaration of ordered) {
     if (declaration.kind === "constant") continue;
     let name = declaration.name;
