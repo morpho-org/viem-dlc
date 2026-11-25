@@ -249,12 +249,17 @@ export function printYul(input: YulBlockInput): void {
       if (!is(id, "Identifier")) refuse(id, "a Yul local must be a plain name");
       if (!declarator.init) refuse(declarator, "a Yul local needs an initializer");
       const init = unwrap(declarator.init as Span);
-      if (is(init, "ArrowFunctionExpression")) {
-        out.node({ module, node: init }, () => fn(id.name, init));
-        continue;
-      }
-      out.write(`let ${id.name} := `);
-      expression(init);
+      // Each name is recorded as its own node, so what solc says about a name is reported at that name.
+      out.node({ module, node: declarator }, () => {
+        if (is(init, "ArrowFunctionExpression")) {
+          fn(id, init);
+          return;
+        }
+        out.write("let ");
+        out.node({ module, node: id }, () => out.write(id.name));
+        out.write(" := ");
+        expression(init);
+      });
     }
   };
 
@@ -358,10 +363,10 @@ export function printYul(input: YulBlockInput): void {
     });
 
   /** `function name(x, y) -> r { … }`, from an arrow function. */
-  const fn = (name: string, arrow: AnyNode): void => {
+  const fn = (name: Span & { readonly name: string }, arrow: AnyNode): void => {
     if (arrow.async) refuse(arrow, "a function inside an assembly block cannot be async");
     const parameters = (arrow.params as AnyNode[]).map((parameter) =>
-      is(parameter, "Identifier") ? parameter.name : refuse(parameter, "a parameter must be a plain name"),
+      is(parameter, "Identifier") ? parameter : refuse(parameter, "a parameter must be a plain name"),
     );
     const result = returned(arrow.body as AnyNode) ? FUNCTION_RESULT : undefined;
     // solc reads the name as the Solidity local and reports the function's own assignment to it.
@@ -370,7 +375,14 @@ export function printYul(input: YulBlockInput): void {
         arrow,
         `a function inside an assembly block names its value "${result}" in Yul, and "${result}" is a local here: rename the local`,
       );
-    out.write(`function ${name}(${parameters.join(", ")})${result ? ` -> ${result}` : ""} `);
+    out.write("function ");
+    out.node({ module, node: name }, () => out.write(name.name));
+    out.write("(");
+    for (const [index, parameter] of parameters.entries()) {
+      if (index) out.write(", ");
+      out.node({ module, node: parameter }, () => out.write(parameter.name));
+    }
+    out.write(`)${result ? ` -> ${result}` : ""} `);
     body(arrow.body as AnyNode, result);
   };
 

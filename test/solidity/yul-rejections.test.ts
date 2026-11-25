@@ -363,7 +363,7 @@ describe("typed Yul: rejections", () => {
       const code = block("let r = x;\n      const twice = (a) => add(a, a);\n      out = twice(r);");
       await expectRejection(code, {
         message: "Variable name r already taken in this scope.",
-        ...positionIn(code, "(a) => add"),
+        ...positionIn(code, "twice = (a) => add"),
         source: "solc",
       });
     });

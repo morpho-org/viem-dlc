@@ -1,6 +1,6 @@
 /**
  * Typed Yul as TypeScript writes it: what is only TypeScript is erased inside a block as it is outside
- * one.
+ * one, and what solc refuses about a name is reported at that name.
  */
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -149,6 +149,48 @@ export const Lens = contract("Lens", { f: pure(uint256).returns(uint256) }).impl
     await expectRejection(code, {
       message: "return word is the last statement of an assembly block",
       ...positionIn(code, "return x;"),
+    });
+  });
+});
+
+describe("typed Yul: what solc refuses about a name, at that name", () => {
+  const SHADOWS = "This declaration shadows a declaration outside the inline assembly block.";
+  const lens = (block: string) => `${HEAD}
+export const Lens = contract("Lens", { f: pure(uint256).returns(uint256) }).implementation({
+  f(x) {
+    const value = assembly("memory-safe", () => {
+${block}
+    });
+    return value;
+  },
+});
+`;
+
+  it("the second local of one declaration", async () => {
+    const code = lens("      const first = 1n,\n        x = 2n;\n      return first;");
+    await expectRejection(code, { message: SHADOWS, ...positionIn(code, "x = 2n"), source: "solc" });
+  });
+
+  it("the first local of one declaration", async () => {
+    const code = lens("      const x = 1n,\n        second = 2n;\n      return second;");
+    await expectRejection(code, { message: SHADOWS, ...positionIn(code, "x = 1n"), source: "solc" });
+  });
+
+  it("a parameter of a function", async () => {
+    const code = lens("      const pick = (y, mod) => y;\n      return pick(1n, 2n);");
+    await expectRejection(code, {
+      message: 'Cannot use builtin function name "mod" as identifier name.',
+      ...positionIn(code, "mod) =>"),
+      source: "solc",
+    });
+  });
+
+  it("the name of a function", async () => {
+    const code = lens("      const one = 1n,\n        sub = () => 2n;\n      return one;");
+    await expectRejection(code, {
+      message: 'Cannot use builtin function name "sub" as identifier name.',
+      ...positionIn(code, "sub = () =>"),
+      source: "solc",
     });
   });
 });
