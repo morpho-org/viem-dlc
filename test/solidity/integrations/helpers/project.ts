@@ -70,6 +70,48 @@ export const installPackage = (dir: string): void => {
   execFileSync("tar", ["-xzf", packedPackage(), "-C", target, "--strip-components=1"]);
 };
 
+/** Copies a directory as hard links to its files, or as copies where the file system cannot link them. */
+const linkTree = (from: string, to: string): void => {
+  fs.mkdirSync(to, { recursive: true });
+  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+    const [source, target] = [path.join(from, entry.name), path.join(to, entry.name)];
+    if (entry.isDirectory()) linkTree(source, target);
+    else
+      try {
+        fs.linkSync(fs.realpathSync(source), target);
+      } catch {
+        fs.copyFileSync(source, target);
+      }
+  }
+};
+
+/**
+ * Installs this repository's own copy of some packages, with everything they depend on, as real
+ * directories in `node_modules` of `dir`: what a project needs when nothing above it may be read.
+ */
+export const installWithDependencies = (dir: string, names: readonly string[]): void => {
+  /** A package by name, and the `node_modules` its own dependencies are found in. */
+  const install = (name: string, from: string): void => {
+    const target = path.join(dir, "node_modules", name);
+    if (fs.existsSync(target) || !fs.existsSync(path.join(from, name))) return;
+    const source = fs.realpathSync(path.join(from, name));
+    linkTree(source, target);
+    const manifest = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8")) as Record<
+      "dependencies" | "optionalDependencies" | "peerDependencies",
+      Record<string, string> | undefined
+    >;
+    // The package manager puts a package's dependencies beside it.
+    const beside = source.slice(0, source.length - name.length - 1);
+    for (const dependency of Object.keys({
+      ...manifest.dependencies,
+      ...manifest.optionalDependencies,
+      ...manifest.peerDependencies,
+    }))
+      install(dependency, beside);
+  };
+  for (const name of names) install(name, path.join(ROOT, "node_modules"));
+};
+
 /** The environment of a host process: this one's, without what Vitest set for itself. */
 const hostEnvironment = (extra: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = {};

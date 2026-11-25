@@ -30,7 +30,8 @@ registerHooks({
     const loaded = nextLoad(url, context);
     if (!url.startsWith("file:") || url.includes("/node_modules/") || !/\.[cm]?[jt]sx?$/.test(url) || !loaded.source)
       return loaded;
-    const code = loaded.source.toString();
+    // Text, or bytes in whichever container the hooks before this one hand them on in.
+    const code = typeof loaded.source === "string" ? loaded.source : new TextDecoder().decode(loaded.source);
     if (!mentionsPackage(code)) return loaded;
     const result = transformSync(code, fileURLToPath(url), {
       resolve: (specifier, importer) => resolveSync(specifier, importer, addDependency),

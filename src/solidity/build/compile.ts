@@ -10,6 +10,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
+import { requireStaticCall } from "./config.js";
 import type { CompiledArtifact, CompileInput, CompileResult, SolcDiagnostic, SolidityConfig } from "./types.js";
 
 /** Bump when the cache entry's shape or the compiler input's shape changes. */
@@ -74,6 +75,8 @@ interface CacheEntry {
 export function compile(input: CompileInput, config: SolidityConfig, options: { cache?: boolean } = {}): CompileResult {
   const { contractName, solidity } = input;
   const { version, settings } = config.solc;
+  // Before the cache is read: an entry compiled for such a target is refused too.
+  requireStaticCall(settings, config.path);
   const useCache = options.cache !== false;
   const key = createHash("sha256")
     .update(JSON.stringify([CACHE_FORMAT, version, settings, contractName, solidity]))
