@@ -6,8 +6,9 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { build, LensError, transformSync } from "../../src/solidity/build/index.js";
+import { build, find, LensError, parseModule, transformSync } from "../../src/solidity/build/index.js";
 
+import { emitJavaScript } from "./helpers/emit.js";
 import { expectRejection, positionIn } from "./helpers/harness.js";
 
 const PACKAGE = "@morpho-org/viem-dlc/solidity";
@@ -225,5 +226,75 @@ export const Real = contract("Real", { f: pure().returns(uint256) }).implementat
 `;
     const built = await build(code, FILE, HOST, { cache: false });
     expect(built?.lenses.map((lens) => lens.resolved.name)).toEqual(["Real"]);
+  });
+});
+
+describe("a declaration of the same name that a compiler erases does not hide the package's contract", () => {
+  const lensesOf = async (code: string, file = FILE) =>
+    (await build(code, file, HOST, { cache: false }))?.lenses.map((lens) => lens.resolved.name) ?? null;
+  const BODY = '("Lens", { run: pure().returns(uint256) }).implementation({ run: () => 29n })';
+
+  it.each([
+    [
+      "a type alias named like contract",
+      `import { contract as make, pure, uint256 } from "${PACKAGE}";
+type make = typeof make;
+export const Lens = make${BODY};
+`,
+    ],
+    [
+      "an interface named like contract",
+      `import { contract as make, pure, uint256 } from "${PACKAGE}";
+interface make { tag: string }
+export const Lens = make${BODY};
+`,
+    ],
+    [
+      "a namespace declared for its types, named like contract",
+      `import { contract as make, pure, uint256 } from "${PACKAGE}";
+declare namespace make { type Tag = string }
+export const Lens = make${BODY};
+`,
+    ],
+    [
+      "a type alias named like the namespace contract is read off",
+      `import * as dsl from "${PACKAGE}";
+type dsl = typeof dsl;
+export const Lens = dsl.contract("Lens", { run: dsl.pure().returns(dsl.uint256) }).implementation({ run: () => 29n });
+`,
+    ],
+  ])("finds the lens beside %s, in the module and in the JavaScript a compiler makes of it", async (_what, code) => {
+    expect(find(parseModule(FILE, code)).map((site) => site.name)).toEqual(["Lens"]);
+    expect(await lensesOf(code)).toEqual(["Lens"]);
+    const { lens } = emitJavaScript({ lens: code });
+    expect(await lensesOf(lens, FILE.replace(/\.ts$/, ".js"))).toEqual(["Lens"]);
+  });
+
+  // A namespace is a value when it holds one, and a compiler erases it when it holds only types. Which
+  // of the two a use names is not read off the tree, so the use is refused rather than passed over.
+  it.each([
+    [
+      "contract",
+      `import { contract as make, pure, uint256 } from "${PACKAGE}";
+namespace make { export type Tag = string }
+export const Lens = make${BODY};
+`,
+      'make("Lens"',
+    ],
+    [
+      "the namespace contract is read off",
+      `import * as dsl from "${PACKAGE}";
+namespace dsl { export type Tag = string }
+export const Lens = dsl.contract("Lens", { run: dsl.pure().returns(dsl.uint256) }).implementation({ run: () => 29n });
+`,
+      'dsl.contract("Lens"',
+    ],
+  ])("refuses a use of %s under a name a namespace of the module declares again", async (_what, code, at) => {
+    await expectRejection(code, {
+      message: "is imported from the package and declared again in this module",
+      ...positionIn(code, at),
+      source: "transform",
+    });
+    expect(() => transformSync(code, FILE, HOST, { cache: false })).toThrow(LensError);
   });
 });

@@ -14,6 +14,10 @@
  * namespace in any way but `namespace.contract`, would not be compiled, and would throw on first use.
  * The namespace itself is only ever the object of `namespace.name`, so no such read goes unseen, and
  * no module passes the package's names on with `export *`, which the parse refuses.
+ *
+ * A type alias or an interface named like the import is erased by a compiler, and hides nothing. A
+ * declaration of the same name that may be a value, such as a namespace, leaves a use the scope analysis
+ * cannot tell from the package's: that use is a located error too.
  */
 import { type AnyNode, is, keyName, unwrap, walk } from "./ast.js";
 import { SOLIDITY_SPECIFIER } from "./builtins.js";
@@ -35,9 +39,16 @@ export function find(module: SourceModule): LensSite[] {
   /** The export of the package a name is bound to where it is written: `"*"` for a namespace import. */
   const imported = (node: AnyNode): string | undefined => {
     const bound = is(node, "Identifier") || is(node, "JSXIdentifier") ? boundTo(module, node) : undefined;
-    return bound?.kind === "module" && bound.binding?.kind === "import" && bound.binding.source === SOLIDITY_SPECIFIER
-      ? bound.binding.imported
-      : undefined;
+    if (bound?.kind !== "module") return undefined;
+    const binding = bound.binding ?? module.bindings.get(node.name as string);
+    if (binding?.kind !== "import" || binding.source !== SOLIDITY_SPECIFIER) return undefined;
+    if (bound.binding) return binding.imported;
+    // The module declares the name of this import again, so the use may or may not be the package's.
+    return fail(
+      module,
+      node,
+      `"${binding.name}" is imported from the package and declared again in this module, so what a use of it names cannot be told, and a lens written with it may not be compiled. Give the other declaration another name`,
+    );
   };
   /** The namespace import of the package that `node` reads `name` off, when it is written `namespace.name`. */
   const namespaceOf = (node: AnyNode, name?: string): AnyNode | undefined => {

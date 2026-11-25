@@ -14,6 +14,7 @@
 import { analyze, type Variable } from "@typescript-eslint/scope-manager";
 import type { Span } from "oxc-parser";
 
+import { isErased } from "./ast.js";
 import { LensError } from "./errors.js";
 import type { ModuleBinding, SourceModule } from "./types.js";
 
@@ -21,7 +22,8 @@ import type { ModuleBinding, SourceModule } from "./types.js";
 export type Bound =
   /**
    * A binding of the module's own scope. `binding` is undefined for one the transform does not read: a
-   * name declared by destructuring, a `var` in a block, an enum, a namespace, a name declared twice.
+   * name declared by destructuring, a `var` in a block, an enum, a namespace, a name declared twice. A
+   * type alias, an interface or a `declare` of the same name is no second declaration: a compiler erases it.
    */
   | { readonly kind: "module"; readonly binding: ModuleBinding | undefined }
   /** A parameter or a local. `scope` is the function, block or class that declares it. */
@@ -99,7 +101,7 @@ export const boundTo = (module: SourceModule, identifier: Span): Bound | undefin
   if (analysis.moduleScope.get(variable.name) !== variable)
     return { kind: "local", scope: variable.scope.block as unknown as Span };
   const binding = module.bindings.get(variable.name);
-  const [declared, ...redeclared] = variable.defs;
+  const [declared, ...redeclared] = variable.defs.filter((def) => !isErased(def.node as unknown as Span));
   const read = binding && declared?.node === (binding.node as unknown) && !redeclared.length;
   return { kind: "module", binding: read ? binding : undefined };
 };
