@@ -6,8 +6,9 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { build, LensError, transformSync } from "../../src/solidity/build/index.js";
+import { build, find, LensError, parseModule, transformSync } from "../../src/solidity/build/index.js";
 
+import { emitJavaScript } from "./helpers/emit.js";
 import { expectRejection, positionIn } from "./helpers/harness.js";
 
 const PACKAGE = "@morpho-org/viem-dlc/solidity";
@@ -15,8 +16,8 @@ const FILE = path.join(import.meta.dirname, "__fixtures__", "lens.ts");
 const HOST = { resolve: () => undefined, addDependency: () => {} };
 const SHAPE = "contract is written in one expression with its implementation";
 
-/** [what is refused, the module, where the error points] */
-type Case = readonly [name: string, code: string, at: string];
+/** [what is refused, the module, where the error points, the module's file when it is not lens.ts] */
+type Case = readonly [name: string, code: string, at: string, file?: string];
 
 describe("a use of contract that is not a lens is refused where it is written", () => {
   const cases: readonly Case[] = [
@@ -65,6 +66,39 @@ export const tools = { contract };
 `,
       "contract };",
     ],
+    [
+      "contract exported, for another module to make a lens with",
+      `import { contract } from "${PACKAGE}";
+export { contract };
+`,
+      "contract };",
+    ],
+    [
+      "contract exported under another name",
+      `import { contract } from "${PACKAGE}";
+export { contract as make };
+`,
+      "contract as make",
+    ],
+    [
+      "contract exported straight from the package",
+      `export { pure, contract } from "${PACKAGE}";
+`,
+      "contract }",
+    ],
+    [
+      "contract exported straight from the package under another name",
+      `export { contract as make } from "${PACKAGE}";
+`,
+      "contract as make",
+    ],
+    [
+      "contract as the default export",
+      `import { contract } from "${PACKAGE}";
+export default contract;
+`,
+      "contract;",
+    ],
   ];
   for (const [name, code, at] of cases)
     it(`refuses ${name}`, async () => {
@@ -74,16 +108,117 @@ export const tools = { contract };
     });
 });
 
+describe("an export * of the package is refused, so contract is only ever imported from the package", () => {
+  const STAR = `export * from "${PACKAGE}" passes contract on to every module that imports from this one`;
+  const stars = [
+    ["every name of the package", `export * from "${PACKAGE}";\n`],
+    ["the package as a namespace", `export * as dsl from "${PACKAGE}";\n`],
+  ] as const;
+
+  it.each(stars)("refuses a module that exports %s", async (_what, barrel) => {
+    await expectRejection(barrel, { message: STAR, line: 1, column: 1, source: "transform" });
+    expect(() => transformSync(barrel, FILE, HOST, { cache: false })).toThrow(LensError);
+  });
+
+  it.each(stars)("refuses it where a lens reads a name through a module that exports %s", async (_what, barrel) => {
+    const lens = `import { contract, pure } from "${PACKAGE}";
+import * as names from "./barrel.js";
+export const Lens = contract("Lens", { run: pure().returns(names.uint256) }).implementation({ run: () => 3n });
+`;
+    await expectRejection(
+      { "lens.ts": lens, "barrel.ts": barrel },
+      { message: STAR, line: 1, column: 1, file: "barrel.ts", source: "transform" },
+    );
+  });
+
+  it("leaves a module that exports the package's types alone", async () => {
+    const code = `export type * from "${PACKAGE}";\n`;
+    expect(await build(code, FILE, HOST, { cache: false })).toBeNull();
+  });
+});
+
+describe("the package's namespace is only read as namespace.name, so no contract leaves it unseen", () => {
+  const NAMESPACE = "a namespace import of the package is only read as namespace.name";
+  const cases: readonly Case[] = [
+    [
+      "contract read by a computed name, and implemented in another statement",
+      `import * as s from "${PACKAGE}";
+const spec = s["contract"]("Split", { read: s.pure().returns(s.uint256) });
+export const Split = spec.implementation({ read: () => 3n });
+`,
+      's["contract"]',
+    ],
+    [
+      "contract read by a computed name, in one expression with its implementation",
+      `import * as s from "${PACKAGE}";
+export const Computed = s["contract"]("Computed", { read: s.pure().returns(s.uint256) }).implementation({ read: () => 3n });
+`,
+      's["contract"]',
+    ],
+    [
+      "a name read by a name that is computed",
+      `import * as s from "${PACKAGE}";
+const name = "contract";
+export const made = s[name];
+`,
+      "s[name]",
+    ],
+    [
+      "contract taken out by destructuring",
+      `import * as s from "${PACKAGE}";
+const { contract: make } = s;
+export const Lens = make("Lens", { read: s.pure().returns(s.uint256) }).implementation({ read: () => 3n });
+`,
+      "s;",
+    ],
+    [
+      "the namespace under another name",
+      `import * as s from "${PACKAGE}";
+const dsl = s;
+export const Lens = dsl.contract("Lens", { read: s.pure().returns(s.uint256) }).implementation({ read: () => 3n });
+`,
+      "s;",
+    ],
+    [
+      "the namespace passed to a function",
+      `import * as s from "${PACKAGE}";
+export const names = Object.keys(s);
+`,
+      "s);",
+    ],
+    [
+      "the namespace exported",
+      `import * as s from "${PACKAGE}";
+export { s };
+`,
+      "s };",
+    ],
+    [
+      "the namespace as the element of a tag",
+      `import * as s from "${PACKAGE}";
+export const element = <s.contract />;
+`,
+      "s.contract />",
+      "lens.tsx",
+    ],
+  ];
+  for (const [name, code, at, file = "lens.ts"] of cases)
+    it(`refuses ${name}`, async () => {
+      await expectRejection({ [file]: code }, { message: NAMESPACE, ...positionIn(code, at), source: "transform" });
+      expect(() => transformSync(code, path.join(path.dirname(FILE), file), HOST, { cache: false })).toThrow(LensError);
+    });
+});
+
 describe("what only shares the name is left as it is", () => {
-  it("builds the lens beside a property, a key, a type and a re-export named contract", async () => {
+  it("builds the lens beside a property, a key and a type named contract", async () => {
     const code = `import { contract, pure, uint256 } from "${PACKAGE}";
 import * as sol from "${PACKAGE}";
-export { contract };
-interface Options { contract: string; sol: typeof sol }
+export type { contract as Contract } from "${PACKAGE}";
+interface Options { contract: string; sol: typeof sol; made: (typeof sol)["contract"] }
 type Factory = typeof contract;
 const options = { contract: "by key", nested: { contract: () => "a method" } };
 export const viaProperty = options.nested.contract();
-export const viaComputed = sol["contract"];
+export const viaOther = sol.pure;
 export function annotated(make: Factory, given: Options): string {
   return given.contract;
 }
@@ -91,5 +226,180 @@ export const Real = contract("Real", { f: pure().returns(uint256) }).implementat
 `;
     const built = await build(code, FILE, HOST, { cache: false });
     expect(built?.lenses.map((lens) => lens.resolved.name)).toEqual(["Real"]);
+  });
+});
+
+describe("a declaration of the same name that a compiler erases does not hide the package's contract", () => {
+  const lensesOf = async (code: string, file = FILE) =>
+    (await build(code, file, HOST, { cache: false }))?.lenses.map((lens) => lens.resolved.name) ?? null;
+  const BODY = '("Lens", { run: pure().returns(uint256) }).implementation({ run: () => 29n })';
+
+  it.each([
+    [
+      "a type alias named like contract",
+      `import { contract as make, pure, uint256 } from "${PACKAGE}";
+type make = typeof make;
+export const Lens = make${BODY};
+`,
+    ],
+    [
+      "an interface named like contract",
+      `import { contract as make, pure, uint256 } from "${PACKAGE}";
+interface make { tag: string }
+export const Lens = make${BODY};
+`,
+    ],
+    [
+      "a namespace declared for its types, named like contract",
+      `import { contract as make, pure, uint256 } from "${PACKAGE}";
+declare namespace make { type Tag = string }
+export const Lens = make${BODY};
+`,
+    ],
+    [
+      "a type alias named like the namespace contract is read off",
+      `import * as dsl from "${PACKAGE}";
+type dsl = typeof dsl;
+export const Lens = dsl.contract("Lens", { run: dsl.pure().returns(dsl.uint256) }).implementation({ run: () => 29n });
+`,
+    ],
+  ])("finds the lens beside %s, in the module and in the JavaScript a compiler makes of it", async (_what, code) => {
+    expect(find(parseModule(FILE, code)).map((site) => site.name)).toEqual(["Lens"]);
+    expect(await lensesOf(code)).toEqual(["Lens"]);
+    const { lens } = emitJavaScript({ lens: code });
+    expect(await lensesOf(lens, FILE.replace(/\.ts$/, ".js"))).toEqual(["Lens"]);
+  });
+
+  // A namespace is a value when it holds one, and a compiler erases it when it holds only types. Which
+  // of the two a use names is not read off the tree, so the use is refused rather than passed over.
+  it.each([
+    [
+      "contract",
+      `import { contract as make, pure, uint256 } from "${PACKAGE}";
+namespace make { export type Tag = string }
+export const Lens = make${BODY};
+`,
+      'make("Lens"',
+    ],
+    [
+      "the namespace contract is read off",
+      `import * as dsl from "${PACKAGE}";
+namespace dsl { export type Tag = string }
+export const Lens = dsl.contract("Lens", { run: dsl.pure().returns(dsl.uint256) }).implementation({ run: () => 29n });
+`,
+      'dsl.contract("Lens"',
+    ],
+  ])("refuses a use of %s under a name a namespace of the module declares again", async (_what, code, at) => {
+    await expectRejection(code, {
+      message: "is imported from the package and declared again in this module",
+      ...positionIn(code, at),
+      source: "transform",
+    });
+    expect(() => transformSync(code, FILE, HOST, { cache: false })).toThrow(LensError);
+  });
+});
+
+describe("the package is the package however a module spells its specifier", () => {
+  const lens = (specifier: string) => `import { contract, pure, uint256 } from "${specifier}";
+export const Lens = contract("Lens", { run: pure().returns(uint256) }).implementation({ run: () => 17n });
+`;
+  const escaped = (character: string) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
+
+  it.each([
+    ["a Unicode escape", "@morpho-org/viem-dlc/solidi\\u0074y"],
+    ["a Unicode escape in capitals", "@morpho-org/viem-dlc/s\\u006Flidity"],
+    ["a code point escape", "\\u{000040}morpho-org/viem-dlc/solidity"],
+    ["a hexadecimal escape", "@morpho-org/viem-dlc/\\x73olidity"],
+    ["a character escaped as itself", "@morpho-org\\/viem-dlc/solidity"],
+    ["a line continuation", "@morpho-org/viem-dlc/sol\\\nidity"],
+    ["every character escaped", [...PACKAGE].map(escaped).join("")],
+  ])("finds the lens of a module that imports it with %s", async (_what, specifier) => {
+    const code = lens(specifier);
+    // The text does not hold the specifier, and the string it holds is the specifier.
+    expect(code).not.toContain(PACKAGE);
+    const [plain] = (await build(lens(PACKAGE), FILE, HOST, { cache: false }))?.lenses ?? [];
+    const built = await build(code, FILE, HOST, { cache: false });
+    expect(built?.lenses.map((found) => found.resolved.name)).toEqual(["Lens"]);
+    expect(built?.lenses[0]?.artifact.bytecode).toBe(plain?.artifact.bytecode);
+    expect(transformSync(code, FILE, HOST, { cache: false })?.code).toContain(
+      `"bytecode":"${plain?.artifact.bytecode}"`,
+    );
+  });
+
+  it("refuses a use of contract that is not a lens the same way", async () => {
+    const code = `export { contract } from "@morpho-org/viem-dlc/solidi\\u0074y";\n`;
+    await expectRejection(code, { message: SHAPE, ...positionIn(code, "contract }"), source: "transform" });
+  });
+
+  it("leaves a module that names another package alone", async () => {
+    const code = lens("@morpho-org/viem-dlc/solidi\\u0074ies");
+    expect(await build(code, FILE, HOST, { cache: false })).toBeNull();
+  });
+});
+
+describe("the package is loaded by an import declaration, and in no way that hides its contract", () => {
+  const LOADED = "loads the package when the module runs";
+  const BODY = '("Lens", { run: pure().returns(uint256) }).implementation({ run: () => 17n })';
+  const cases: readonly Case[] = [
+    [
+      "a dynamic import",
+      `const { contract, pure, uint256 } = await import("${PACKAGE}");
+export const Lens = contract${BODY};
+`,
+      'import("',
+    ],
+    [
+      "a dynamic import whose specifier is a template",
+      `const { contract, pure, uint256 } = await import(\`${PACKAGE}\`);
+export const Lens = contract${BODY};
+`,
+      "import(`",
+    ],
+    [
+      "a dynamic import whose specifier is spelled with an escape",
+      `const { contract, pure, uint256 } = await import("@morpho-org/viem-dlc/solidi\\u0074y");
+export const Lens = contract${BODY};
+`,
+      'import("',
+    ],
+    [
+      "a dynamic import that nothing is taken from",
+      `export const loading = import("${PACKAGE}");
+`,
+      'import("',
+    ],
+    [
+      "a require",
+      `const { contract, pure, uint256 } = require("${PACKAGE}");
+export const Lens = contract${BODY};
+`,
+      'require("',
+    ],
+    [
+      "an import that is assigned a require",
+      `import dsl = require("${PACKAGE}");
+export const Lens = dsl.contract("Lens", { run: dsl.pure().returns(dsl.uint256) }).implementation({ run: () => 17n });
+`,
+      'require("',
+    ],
+  ];
+  for (const [name, code, at] of cases)
+    it(`refuses ${name}`, async () => {
+      await expectRejection(code, { message: LOADED, ...positionIn(code, at), source: "transform" });
+      expect(() => transformSync(code, FILE, HOST, { cache: false })).toThrow(LensError);
+    });
+
+  it("leaves another module loaded that way, and the package named as a type, as they are", async () => {
+    const code = `import { contract, pure, uint256 } from "${PACKAGE}";
+type Dsl = typeof import("${PACKAGE}");
+export const other = import("./other.js");
+export const named = (name: string) => import(name);
+export const joined = import(\`${PACKAGE}/\${"yul"}\`);
+export const required = [require("node:fs"), require(), (0, eval)("require")("${PACKAGE}")];
+export const made = (make: Dsl["contract"]) => make;
+export const Lens = contract${BODY};
+`;
+    const built = await build(code, FILE, HOST, { cache: false });
+    expect(built?.lenses.map((lens) => lens.resolved.name)).toEqual(["Lens"]);
   });
 });

@@ -311,3 +311,86 @@ describePairs("an outer local is read where no nearer one is declared", {
     calls: [{ functionName: "read", args: [5n] }],
   },
 });
+
+describe("a binding of the same name that is not in scope where a lens is written does not hide it", () => {
+  const LENS = 'contract("Lens", { run: pure().returns(uint256) }).implementation({ run: () => 3n })';
+  it.each([
+    [
+      "the default of a parameter, beside a var of the function's body",
+      `export function make(lens = ${LENS}) {
+  var contract = 1;
+  return [lens, contract];
+}
+`,
+    ],
+    [
+      "the body of a function, beside a var of a static block of a class",
+      `export function make() {
+  class Inner {
+    static {
+      var contract = 1;
+    }
+  }
+  return [Inner, ${LENS}];
+}
+`,
+    ],
+    [
+      "the discriminant of a switch, beside a const of one of its cases",
+      `export function make() {
+  switch (${LENS}.name) {
+    case "":
+      return 0;
+    default:
+      const contract = 1;
+      return contract;
+  }
+}
+`,
+    ],
+  ])("finds a lens written in %s", async (_where, rest) => {
+    const code = `import { contract, pure, uint256 } from "${PACKAGE}";\n${rest}`;
+    expect(find(parseModule(FILE, code)).map((site) => site.name)).toEqual(["Lens"]);
+    expect(await lensesOf(code)).toEqual(["Lens"]);
+  });
+});
+
+describe("a module-level binding the transform does not read is not taken for a global", () => {
+  const UNREAD = (name: string) => `"${name}" is a module-level binding a lens cannot read`;
+  const lens = (declaration: string, body: string) => `import { contract, pure, uint256 } from "${PACKAGE}";
+${declaration}
+export const Lens = contract("Lens", { run: pure(uint256).returns(uint256) }).implementation({
+  run: (x) => ${body},
+});
+`;
+  const cases = [
+    [
+      "a conversion named by destructuring",
+      lens("const { Number } = { Number: (x) => x + 8n };", "Number(x)"),
+      "Number(x)",
+      UNREAD("Number"),
+    ],
+    [
+      "a conversion named by a var inside a block",
+      lens("if (true) {\n  var Number = (x) => x + 8n;\n}", "Number(x)"),
+      "Number(x)",
+      UNREAD("Number"),
+    ],
+    [
+      "a name declared by destructuring an array",
+      lens("const [LIMIT] = [8n];", "x + LIMIT"),
+      "LIMIT,",
+      UNREAD("LIMIT"),
+    ],
+    ["a name declared twice", lens("var LIMIT = 8n;\nvar LIMIT = 9n;", "x + LIMIT"), "LIMIT,", UNREAD("LIMIT")],
+    ["an enum", lens("enum Side {\n  Left,\n}", "x + Side.Left"), "Side.Left", UNREAD("Side")],
+  ] as const;
+  refuses(cases);
+
+  it.each(cases.slice(0, 2))(
+    "refuses %s in the JavaScript a compiler makes of the module",
+    async (_name, code, at, message) => {
+      await expectRejection({ "lens.js": code }, { message, ...positionIn(code, at), source: "transform" });
+    },
+  );
+});

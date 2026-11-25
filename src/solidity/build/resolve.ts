@@ -7,12 +7,18 @@
  * those, followed through re-exports, `export *` and namespace imports with the host's resolver.
  * Anything else stops the build with the file, line and column.
  *
+ * What a name is bound to where it is written is read from the scope analysis of its module. A name
+ * bound to a module-level binding the transform does not read is an error, and never a global.
+ *
+ * An `export *` is followed only where it is the one `export *` of its module that offers the name.
+ * How a JavaScript engine links two that offer it is not worked out here: the import is refused.
+ *
  * What a declaration is, is read from the syntax of its initializer and nothing else: no initializer is
  * evaluated, and no TypeScript type is read.
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, children, is, keyName, patternNames, unwrap } from "./ast.js";
+import { type AnyNode, children, is, keyName, unwrap } from "./ast.js";
 import {
   BODY_BUILTINS,
   DECLARATION_BUILTINS,
@@ -24,7 +30,7 @@ import {
 import { fail, failOnExtraArgument } from "./errors.js";
 import { refusedName } from "./names.js";
 import { YUL_OPCODES } from "./print-yul.js";
-import { enclosingScopes } from "./scopes.js";
+import { boundTo } from "./scopes.js";
 import type {
   ConstantDeclaration,
   FunctionBody,
@@ -62,6 +68,9 @@ const CONSTANT_UNARY = new Set(["-", "~"]);
 
 const NAMES =
   "A lens can name its own parameters and locals, and module-level imports, constants, structs, interfaces, immutables, libraries and internal(…) helpers";
+
+const unread = (name: string): string =>
+  `"${name}" is a module-level binding a lens cannot read: it is declared by destructuring, by a var inside a block, more than once, or as an enum or a namespace. ${NAMES}, each declared alone by a statement of the module's own level.`;
 
 export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoader): ResolvedLens {
   const lens = site.name;
@@ -108,45 +117,49 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     return imported === "*" ? { kind: "namespace", module: from } : exportedValue(from, imported, user, at);
   };
 
-  /** The exports being looked up, as `file\0name`: modules may export each other's names in a circle. */
+  /** The exports being followed, as `file\0name`: modules may export each other's names in a circle. */
   const exporting = new Set<string>();
 
-  /** True when two values are one binding, however each was reached. */
-  const same = (a: Value, b: Value): boolean => {
-    if (a.kind === "declaration") return b.kind === "declaration" && a.declaration === b.declaration;
-    if (a.kind === "builtin") return b.kind === "builtin" && a.module === b.module && a.name === b.name;
-    return a.kind === b.kind && a.module === b.module;
+  /**
+   * True when `from` has an export named `name`: one it writes, or one an `export *` of it passes on.
+   * Every export counts, whatever it exports, and none is followed to what it names. A module that is
+   * already being asked for the name is where the search came from, and offers nothing more.
+   */
+  const offers = (from: SourceModule, name: string, user: SourceModule, at: Span, seen: Set<SourceModule>): boolean => {
+    if (seen.has(from) || exporting.has(`${from.file}\0${name}`)) return false;
+    seen.add(from);
+    return from.exports.has(name) || from.starExports.some((source) => passesOn(from, source, name, user, at, seen));
   };
 
+  /** True when the `export * from "source"` of `from` passes on a name `name`. */
+  const passesOn = (
+    from: SourceModule,
+    source: string,
+    name: string,
+    user: SourceModule,
+    at: Span,
+    seen: Set<SourceModule>,
+  ): boolean =>
+    source === YUL_SPECIFIER ? YUL_OPCODES.has(name) : offers(target(from, source, user, at), name, user, at, seen);
+
   /**
-   * What the `export *` declarations of `from` give as `name`, as a JavaScript engine links them: nothing
-   * for `default`, one binding however many declarations lead to it, and an error for two bindings.
+   * What the `export *` declarations of `from` give as `name`: nothing for `default`, and otherwise what the
+   * one declaration that offers the name gives. Two that offer it are refused, where they lead to one
+   * binding too: which binding each leads to is not compared.
    */
   const starredValue = (from: SourceModule, name: string, user: SourceModule, at: Span): Value | undefined => {
     if (name === "default") return undefined;
-    let found: Value | undefined;
-    for (const source of from.starExports) {
-      let value: Value | undefined;
-      if (source === SOLIDITY_SPECIFIER) {
-        if (isElementaryTypeName(name) || DECLARATION_BUILTINS.has(name) || BODY_BUILTINS.has(name))
-          value = packageExport("solidity", name, user, at);
-      } else if (source === YUL_SPECIFIER) {
-        if (YUL_OPCODES.has(name)) value = packageExport("yul", name, user, at);
-      } else {
-        const next = target(from, source, user, at);
-        // A module already being asked for this name is where the search came from.
-        if (!exporting.has(`${next.file}\0${name}`)) value = exportedBy(next, name, user, at);
-      }
-      if (!value) continue;
-      if (found && !same(found, value))
-        return error(
-          user,
-          at,
-          `"${name}" is exported by more than one export * of ${from.file}, from different declarations: export it by name`,
-        );
-      found = value;
-    }
-    return found;
+    const [source, ...others] = from.starExports.filter((candidate) =>
+      passesOn(from, candidate, name, user, at, new Set()),
+    );
+    if (source === undefined) return undefined;
+    if (others.length)
+      return error(
+        user,
+        at,
+        `"${name}" is offered by more than one export * of ${from.file}: from "${[source, ...others].join('" and from "')}". The build does not work out whether they lead to one declaration. Export it by name there, as export { ${name} } from "…", or import it from the module that declares it`,
+      );
+    return importedValue(from, source, name, user, at);
   };
 
   /** The value `from` exports as `name`, or undefined when it exports no such name. */
@@ -181,42 +194,55 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
         : `"${name}" is not exported by ${from.file}`,
     );
 
-  /** The names bound between the module's scope and the lens: the parameters and locals of the code around it. */
-  const around = new Set(
-    enclosingScopes(module.program as unknown as AnyNode, site.node).flatMap((scope) => [...scope]),
-  );
-
   /**
-   * The value of a name written in `m`. A name means its nearest binding, and inside the lens a binding of the
-   * code around it is nearer than the module's: that is a capture, which a lens compiled ahead of time cannot make.
+   * The value of a name written in `m`, by what the scope analysis binds it to there. Undefined for a
+   * parameter or a local declared inside `within`, and for an identifier that uses no value: a property
+   * name, a key, or a name being declared.
+   *
+   * A binding of the code around a lens is a capture, which a lens compiled ahead of time cannot make. A
+   * module-level binding the transform does not read is an error too, whatever it is named: only a name
+   * that nothing in the module declares can be a global.
    */
-  const valueOfIdentifier = (m: SourceModule, node: Span, name: string): Value => {
-    if (m === module && around.has(name) && node.start >= site.node.start && node.end <= site.node.end)
+  const valueOfIdentifier = (
+    m: SourceModule,
+    node: Span & { readonly name: string },
+    within?: Span,
+  ): Value | undefined => {
+    const bound = boundTo(m, node);
+    if (!bound) return undefined;
+    const { name } = node;
+    if (bound.kind === "global") {
+      if (GLOBAL_BUILTINS.has(name)) return { kind: "builtin", module: "global", name };
+      return error(m, node, `"${name}" is not a module-level name. ${NAMES}.`);
+    }
+    if (bound.kind === "local") {
+      if (within && bound.scope.start >= within.start && bound.scope.end <= within.end) return undefined;
       return error(
         m,
         node,
         `"${name}" is a parameter or a local of the code around this lens, which a lens cannot capture. ${NAMES}.`,
       );
-    return valueOfName(m, name, m, node);
+    }
+    return bound.binding ? valueOfBinding(m, bound.binding) : error(m, node, unread(name));
   };
 
-  /** The value of the module-level name `name` of `m`. `user` and `at` are where it is used. */
+  /** The value of the module-level name `name` of `m`, which `m` exports. `user` and `at` are where it is used. */
   const valueOfName = (m: SourceModule, name: string, user: SourceModule, at: Span): Value => {
     const binding = m.bindings.get(name);
-    if (!binding) {
-      if (GLOBAL_BUILTINS.has(name)) return { kind: "builtin", module: "global", name };
-      return error(user, at, `"${name}" is not a module-level name. ${NAMES}.`);
-    }
-    if (binding.kind === "import") return importedValue(m, binding.source, binding.imported, m, binding.node);
-    return { kind: "declaration", declaration: declarationOf(m, binding) };
+    return binding ? valueOfBinding(m, binding) : error(user, at, unread(name));
   };
+
+  const valueOfBinding = (m: SourceModule, binding: ModuleBinding): Value =>
+    binding.kind === "import"
+      ? importedValue(m, binding.source, binding.imported, m, binding.node)
+      : { kind: "declaration", declaration: declarationOf(m, binding) };
 
   /**
    * The value an expression names without being evaluated: a name, or `namespace.name`. Undefined for any
    * other expression.
    */
   const staticValue = (m: SourceModule, node: AnyNode): Value | undefined => {
-    if (is(node, "Identifier")) return valueOfIdentifier(m, node, node.name);
+    if (is(node, "Identifier")) return valueOfIdentifier(m, node);
     if (is(node, "MemberExpression") && !node.computed) {
       const object = unwrap(node.object);
       if (!is(object, "Identifier") && !is(object, "MemberExpression")) return undefined;
@@ -301,102 +327,32 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     return node;
   };
 
-  type Scopes = readonly ReadonlySet<string>[];
-  const hoisted = (statements: readonly AnyNode[]): Set<string> => {
-    const scope = new Set<string>();
-    for (const statement of statements) {
-      if (is(statement, "VariableDeclaration"))
-        for (const declarator of statement.declarations)
-          for (const name of patternNames(declarator.id)) scope.add(name);
-      else if ((is(statement, "FunctionDeclaration") || is(statement, "ClassDeclaration")) && statement.id)
-        scope.add(statement.id.name);
+  /**
+   * Records what every name under `node` resolves to, unless the function `fn` that holds it declares the
+   * name itself. Which is which is read from the scope analysis; a property name and a key use no name.
+   */
+  const scan = (m: SourceModule, node: AnyNode, fn: Span, uses: Uses): void => {
+    if (is(node, "Identifier")) {
+      const value = valueOfIdentifier(m, node, fn);
+      if (value) use(uses, asReference(value, m, node), node);
+      return;
     }
-    return scope;
-  };
-
-  const scanFunction = (m: SourceModule, fn: AnyNode, scopes: Scopes, uses: Uses): void => {
-    const scope = new Set<string>();
-    for (const parameter of fn.params as Span[]) for (const name of patternNames(parameter)) scope.add(name);
-    const id = fn.id as { name: string } | null | undefined;
-    if (id) scope.add(id.name);
-    const body = fn.body as AnyNode | null;
-    /* v8 ignore next -- @preserve: a function written as an expression always has a body, and the check is there for the type checker */
-    if (!body) return;
-    if (is(body, "BlockStatement")) scanBlock(m, body.body as unknown as AnyNode[], [...scopes, scope], uses);
-    else scan(m, body, [...scopes, scope], uses);
-  };
-
-  const scanBlock = (m: SourceModule, statements: readonly AnyNode[], scopes: Scopes, uses: Uses): void => {
-    const inner = [...scopes, hoisted(statements)];
-    for (const statement of statements) scan(m, statement, inner, uses);
-  };
-
-  /** Records what every free name under `node` resolves to. Locals, parameters and property names are skipped. */
-  const scan = (m: SourceModule, node: AnyNode, scopes: Scopes, uses: Uses): void => {
-    const isLocal = (name: string) => scopes.some((scope) => scope.has(name));
-    switch (node.type) {
-      case "Identifier": {
-        const name = node.name as string;
-        if (!isLocal(name)) use(uses, asReference(valueOfIdentifier(m, node, name), m, node), node);
+    if (is(node, "MemberExpression") && !node.computed) {
+      // A path through namespaces, such as `math.mulDivDown` or `lib.math.mulDivDown`, is one name.
+      let root = unwrap(node.object);
+      while (is(root, "MemberExpression") && !root.computed) root = unwrap(root.object);
+      const base = is(root, "Identifier") ? valueOfIdentifier(m, root, fn) : undefined;
+      const value = base?.kind === "namespace" || base?.kind === "package" ? staticValue(m, node) : undefined;
+      if (value) {
+        use(uses, asReference(value, m, node), node);
         return;
       }
-      case "MemberExpression": {
-        const object = unwrap(node.object as Span);
-        // A path through namespaces, such as `math.mulDivDown` or `lib.math.mulDivDown`, is one name.
-        let root = object;
-        while (is(root, "MemberExpression") && !root.computed) root = unwrap(root.object);
-        if (!node.computed && is(root, "Identifier") && !isLocal(root.name)) {
-          const base = valueOfIdentifier(m, root, root.name);
-          const value = base.kind === "namespace" || base.kind === "package" ? staticValue(m, node) : undefined;
-          if (value) {
-            use(uses, asReference(value, m, node), node);
-            return;
-          }
-        }
-        scan(m, object, scopes, uses);
-        if (node.computed) scan(m, node.property as AnyNode, scopes, uses);
-        return;
-      }
-      case "Property":
-        if (node.computed) scan(m, node.key as AnyNode, scopes, uses);
-        scan(m, node.value as AnyNode, scopes, uses);
-        return;
-      case "BlockStatement":
-        scanBlock(m, node.body as AnyNode[], scopes, uses);
-        return;
-      case "ForStatement":
-      case "ForInStatement":
-      case "ForOfStatement": {
-        const head = (node.init ?? node.left) as AnyNode | null | undefined;
-        const inner = [...scopes, hoisted(head ? [head] : [])];
-        for (const child of children(node)) scan(m, child, inner, uses);
-        return;
-      }
-      case "CatchClause":
-        scanBlock(
-          m,
-          (node.body as AnyNode).body as AnyNode[],
-          [...scopes, new Set(patternNames(node.param as Span | null))],
-          uses,
-        );
-        return;
-      case "ArrowFunctionExpression":
-      case "FunctionExpression":
-      case "FunctionDeclaration":
-        scanFunction(m, node, scopes, uses);
-        return;
-      case "VariableDeclaration":
-        for (const declarator of node.declarations as AnyNode[])
-          if (declarator.init) scan(m, declarator.init as AnyNode, scopes, uses);
-        return;
-      // A type declared inside a body is only TypeScript, and names nothing a lens uses.
-      case "TSTypeAliasDeclaration":
-      case "TSInterfaceDeclaration":
-        return;
-      default:
-        for (const child of children(node)) scan(m, child, scopes, uses);
     }
+    for (const child of children(node)) scan(m, child, fn, uses);
   };
+
+  const scanFunction = (m: SourceModule, fn: FunctionBody, uses: Uses): void =>
+    scan(m, fn as unknown as AnyNode, fn, uses);
 
   /** The functions of a contract or a library: each declared signature with its implementation. */
   const functionsOf = (
@@ -430,7 +386,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       const dependencies: Uses = [];
       const resolved = signature(m, property.value, dependencies);
       const body = functionLiteral(m, implemented.value as Span, implemented, `the implementation of "${name}"`);
-      scanFunction(m, body as unknown as AnyNode, [], dependencies);
+      scanFunction(m, body, dependencies);
       functions.push({ name, signature: resolved, body, module: m, dependencies });
     }
     for (const [name, property] of bodies)
@@ -545,6 +501,15 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       if (!is(superClass, "CallExpression") || !isBuiltin(staticValue(m, unwrap(superClass.callee)), "Struct"))
         return error(m, key, `class "${binding.name}" does not extend Struct({ … })`);
       takes(m, superClass, 1, "Struct(…)");
+      // The rewrite removes the class with the lens once nothing else reads it, and a decorator is code
+      // that runs where the class is declared.
+      const [decorator] = binding.node.decorators;
+      if (decorator)
+        return error(
+          m,
+          decorator,
+          "a struct class has no decorator: the class goes from the module with the lens, and what the decorator does would go with it",
+        );
       // A member that is only a type is erased by a compiler, and is no member.
       const members = binding.node.body.body.filter(
         (member) => !is(member, "TSIndexSignature") && !(is(member, "PropertyDefinition") && member.declare),
@@ -583,7 +548,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
         });
         helper.signature = signature(m, init.arguments[0] ?? init, helper.dependencies as Uses);
         helper.body = functionLiteral(m, init.arguments[1], init, "the second argument of internal(…)");
-        scanFunction(m, helper.body as unknown as AnyNode, [], helper.dependencies as Uses);
+        scanFunction(m, helper.body, helper.dependencies as Uses);
         return helper;
       }
       if (isBuiltin(called, "iface")) {
@@ -687,16 +652,34 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     (a, b) =>
       (rank(a.module) === rank(b.module) ? 0 : rank(a.module) < rank(b.module) ? -1 : 1) || a.node.start - b.node.start,
   );
-  // A name is given once: a library's functions are in scope of everything the library's bodies name.
-  const taken = new Set([lens, ...entries.map((entry) => entry.name)]);
-  for (const declaration of ordered)
-    if (declaration.kind === "library") for (const fn of declaration.functions) taken.add(fn.name);
+  // A name is printed as it is written and is never changed, so no two declarations share one, and none
+  // shares the contract's or an entry point's. A library's functions are in scope of everything the
+  // library's bodies name, so a declaration shares no name with one of them either. The second is refused.
+  const taken = new Map([
+    [lens, `contract ${lens}`],
+    ...entries.map((entry) => [entry.name, "an entry point"] as const),
+  ]);
+  const declared = new Map<string, string>();
+  const inLibraries = new Map<string, string>();
+  const shared = (m: SourceModule, at: Span, name: string, other: string | undefined): void => {
+    if (other !== undefined)
+      error(
+        m,
+        at,
+        `"${name}" is also the name of ${other}. A name is printed in Solidity as it is written and is never changed, so two declarations of a lens cannot share one: rename one of them`,
+      );
+  };
   for (const declaration of ordered) {
     if (declaration.kind === "constant") continue;
-    let name = declaration.name;
-    for (let n = 2; taken.has(name); n++) name = `${declaration.name}_${n}`;
-    taken.add(name);
-    declaration.name = name;
+    const { name, kind } = declaration;
+    shared(declaration.module, declaration.node, name, taken.get(name) ?? declared.get(name) ?? inLibraries.get(name));
+    declared.set(name, kind === "interface" || kind === "immutable" ? `an ${kind}` : `a ${kind}`);
+    if (kind !== "library") continue;
+    for (const fn of declaration.functions) {
+      // A function of a library is reached as Library.f, so it shares a name with an entry point freely.
+      shared(fn.module, fn.body, fn.name, declared.get(fn.name));
+      inLibraries.set(fn.name, `a function of library ${name}`);
+    }
   }
 
   return { site, module, name: lens, entries, immutables, declarations: ordered, references, files: [...files] };

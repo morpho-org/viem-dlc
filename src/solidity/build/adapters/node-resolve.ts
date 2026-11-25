@@ -2,9 +2,14 @@
  * The resolver of the two adapters that run in plain Node: the import hook and the check command.
  *
  * An import names the file this Node process would load for it: Node's own resolution is asked first,
- * through every resolve hook registered before this module was loaded, under the conditions the process
- * runs with. So a lens reads the module the application imports, whatever `--conditions` and package
- * `exports` select, and an explicit `./unit.js` is that file even beside a `unit.ts`.
+ * through every resolve hook registered before this module was loaded. So an explicit `./unit.js` is
+ * that file even beside a `unit.ts`, and a hook's alias is followed as the application follows it.
+ *
+ * A resolve hook registered after this module is one the question cannot be put to: Node runs the
+ * newest hook first, on the placeholder below, before this module's hook restores the import asked
+ * about. Such a hook can send the application's import to another file than a lens would read, so
+ * while one is registered every import of a lens is refused. Hooks added with `module.register` run
+ * after all of these, and see the import itself.
  *
  * Only an import Node cannot resolve falls back to TypeScript's conventions: an extensionless path, a
  * `.js` specifier that names a `.ts` file, and the `paths` aliases of the nearest `tsconfig.json`.
@@ -14,11 +19,13 @@
  * `oxc-resolver` is an optional peer dependency, needed only by these two adapters.
  */
 import fs from "node:fs";
-import { createRequire, registerHooks } from "node:module";
+import nodeModule, { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ResolverFactory } from "oxc-resolver";
+
+import { ImportRefused } from "../import-target.js";
 
 /**
  * Node resolves an import against a parent only while importing. `import.meta.resolve` runs the same
@@ -27,18 +34,31 @@ import { ResolverFactory } from "oxc-resolver";
  */
 const REQUEST = "viem-dlc-solidity:resolve";
 let pending: { specifier: string; parentURL: string } | undefined;
-/** The conditions Node resolves an `import` with in this process, as its resolver last reported them. */
-let conditions: readonly string[] = ["node", "import"];
+
+/** Node's own function, kept: the name every module reads from `node:module` is replaced below. */
+const { registerHooks } = nodeModule;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier !== REQUEST || !pending) return nextResolve(specifier, context);
     const request = pending;
     pending = undefined;
-    conditions = context.conditions;
     return nextResolve(request.specifier, { ...context, parentURL: request.parentURL });
   },
 });
+
+/**
+ * Node has no list of the hooks registered, so a later registration is seen where it is made: through
+ * `registerHooks` itself, which every module reads from `node:module` when it calls it.
+ */
+let hookedAfter = false;
+Object.assign(nodeModule, {
+  registerHooks(...[hooks]: Parameters<typeof registerHooks>) {
+    if (hooks.resolve) hookedAfter = true;
+    return registerHooks(hooks);
+  },
+});
+nodeModule.syncBuiltinESMExports();
 
 const isFile = (file: string): boolean => fs.statSync(file, { throwIfNoEntry: false })?.isFile() === true;
 
@@ -117,13 +137,18 @@ const resolvers = new Map<string | undefined, { key: string; resolver: ResolverF
 
 /**
  * The absolute path `specifier` names when imported from the file `importer`. `addDependency` receives
- * every configuration file the answer was read from, whether or not the import resolved.
+ * every configuration file the answer was read from, whether or not the import resolved. Throws
+ * {@link ImportRefused} while a resolve hook this module cannot ask is registered.
  */
 export function resolveSync(
   specifier: string,
   importer: string,
   addDependency: (file: string) => void = () => {},
 ): string | undefined {
+  if (hookedAfter)
+    throw new ImportRefused(
+      `cannot tell which file "${specifier}" names: a resolve hook was registered with registerHooks after @morpho-org/viem-dlc/solidity/register, and can send this import to another file than a lens would read. Register @morpho-org/viem-dlc/solidity/register last: put its --import after the others.`,
+    );
   const url = nodeResolve(specifier, importer);
   if (url !== undefined) return url.startsWith("file:") ? fileURLToPath(url) : undefined;
 
@@ -132,13 +157,14 @@ export function resolveSync(
   const inputs = tsconfig ? [...tsconfigInputs(tsconfig)] : [];
   for (const [file] of inputs) addDependency(file);
   // Keyed on the text of the configuration, so an edit to an alias makes a new resolver.
-  const key = JSON.stringify([conditions, inputs]);
+  const key = JSON.stringify(inputs);
   let entry = resolvers.get(tsconfig);
   if (entry?.key !== key) {
     entry = {
       key,
       resolver: new ResolverFactory({
-        conditionNames: [...conditions, "default"],
+        // Which condition matches cannot matter: an entry that answers by condition is refused.
+        conditionNames: ["node", "import", "default"],
         extensions: [".ts", ".tsx", ".mts", ".js", ".mjs", ".jsx"],
         extensionAlias: { ".js": [".ts", ".tsx", ".js"], ".mjs": [".mts", ".mjs"] },
         ...(tsconfig ? { tsconfig: { configFile: tsconfig, references: "auto" as const } } : {}),

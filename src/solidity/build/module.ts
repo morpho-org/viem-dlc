@@ -3,11 +3,19 @@
  *
  * It records what the file declares at module level and what it imports and exports, and evaluates
  * nothing. TypeScript and TSX are parsed as such; a package's built `.js` is parsed the same way.
+ *
+ * A binding is recorded when the transform can read it: an import, or a name declared alone by a
+ * statement of the module's own level. An export is recorded whatever it exports, because which names a
+ * module exports decides what an `export *` of it passes on.
+ *
+ * An `export *` of the package is refused here, in every module the transform reads: it would pass
+ * `contract` on, and a lens is found by the direct import of `contract` alone.
  */
 import { parseSync, type Span, type Statement } from "oxc-parser";
 
-import { type AnyNode, is, keyName, unwrap } from "./ast.js";
-import { LensError, LINE_TERMINATOR } from "./errors.js";
+import { type AnyNode, is, isErased, keyName, patternNames, unwrap } from "./ast.js";
+import { SOLIDITY_SPECIFIER } from "./builtins.js";
+import { fail, LensError, LINE_TERMINATOR } from "./errors.js";
 import type { ModuleBinding, ModuleExport, SourceModule } from "./types.js";
 
 const lineStartsOf = (code: string): number[] => {
@@ -17,7 +25,8 @@ const lineStartsOf = (code: string): number[] => {
 };
 
 export function parseModule(file: string, code: string): SourceModule {
-  const parsed = parseSync(file, code, { sourceType: "module", preserveParens: true });
+  // Every node carries its range and TypeScript's fields, whatever the file's extension: the scope analyzer reads both.
+  const parsed = parseSync(file, code, { sourceType: "module", preserveParens: true, range: true, astType: "ts" });
   const lineStarts = lineStartsOf(code);
   const bindings = new Map<string, ModuleBinding>();
   const exports = new Map<string, ModuleExport>();
@@ -44,10 +53,15 @@ export function parseModule(file: string, code: string): SourceModule {
   }
 
   const declare = (node: Span, statement: Statement, exported: boolean) => {
+    if (isErased(node)) return;
     if (is(node, "VariableDeclaration")) {
-      if (node.declare) return;
       for (const declarator of node.declarations) {
-        if (!is(declarator.id, "Identifier")) continue;
+        if (!is(declarator.id, "Identifier")) {
+          // A name declared by destructuring is no binding a lens reads. Exported, it is still an export.
+          if (exported)
+            for (const name of patternNames(declarator.id)) exports.set(name, { kind: "local", local: name });
+          continue;
+        }
         const name = declarator.id.name;
         bindings.set(name, {
           kind: "variable",
@@ -62,7 +76,7 @@ export function parseModule(file: string, code: string): SourceModule {
         if (exported) exports.set(name, { kind: "local", local: name });
       }
     } else if (is(node, "ClassDeclaration") || is(node, "FunctionDeclaration")) {
-      if (!node.id || node.declare) return;
+      if (!node.id) return;
       const name = node.id.name;
       bindings.set(
         name,
@@ -71,6 +85,13 @@ export function parseModule(file: string, code: string): SourceModule {
           : { kind: "function", name, node, statement, exported },
       );
       if (exported) exports.set(name, { kind: "local", local: name });
+    } else if (exported) {
+      // An enum, a namespace or an import alias: a value the module exports, and no binding a lens reads.
+      // A namespace written A.B exports A.
+      let id = (node as AnyNode).id as AnyNode;
+      while (is(id, "TSQualifiedName")) id = id.left as AnyNode;
+      const name = id.name as string;
+      exports.set(name, { kind: "local", local: name });
     }
   };
 
@@ -112,6 +133,13 @@ export function parseModule(file: string, code: string): SourceModule {
       }
     } else if (is(statement, "ExportAllDeclaration")) {
       if (statement.exportKind === "type") continue;
+      // contract is only ever imported from the package itself, so a lens is found without following an import.
+      if (statement.source.value === SOLIDITY_SPECIFIER)
+        fail(
+          module,
+          statement,
+          `export * from "${SOLIDITY_SPECIFIER}" passes contract on to every module that imports from this one, where a lens written with it is not found, and not compiled. Export the package's names by name, as export { pure, uint256 } from "…", and import contract from the package itself`,
+        );
       const exported = keyName(statement.exported);
       if (exported === undefined) starExports.push(statement.source.value);
       else exports.set(exported, { kind: "reexport", source: statement.source.value, imported: "*" });
@@ -121,7 +149,7 @@ export function parseModule(file: string, code: string): SourceModule {
         declare(declaration, statement, false);
         const name = keyName(declaration.id as Span | null);
         if (name !== undefined) exports.set("default", { kind: "local", local: name });
-      } else if (!unwrap(declaration).type.startsWith("TS")) {
+      } else if (!isErased(unwrap(declaration))) {
         // A default export that is a name is that binding, as `export { name as default }` is.
         const value = unwrap(declaration);
         exports.set(

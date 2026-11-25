@@ -6,11 +6,18 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { withSolidity } from "../../../src/solidity/build/adapters/next.js";
 import { type Evm, requireAnvil, startAnvil } from "../helpers/anvil.js";
-import { positionIn } from "../helpers/harness.js";
 
 import { describeHost } from "./helpers/host-suite.js";
-import { type Background, bin, freePort, Project, ROOT, waitFor } from "./helpers/project.js";
-import { expectHostResolution, REPORT, type Reported, VALUES, writeResolutionFixture } from "./helpers/resolution.js";
+import { type Background, bin, freePort, installWithDependencies, Project, ROOT, waitFor } from "./helpers/project.js";
+import {
+  expectHostResolution,
+  REFUSED,
+  REPORT,
+  REPORTED_NAMES,
+  type Reported,
+  writeRefusedImport,
+  writeResolutionFixture,
+} from "./helpers/resolution.js";
 import { expectNoLensSourceInMaps } from "./helpers/source-maps.js";
 
 const startDev = async (project: Project, ...flags: string[]) => {
@@ -101,34 +108,78 @@ describe("a Next build, beyond the shared suite", { timeout: 240_000 }, () => {
     project?.remove();
   });
 
-  const RESOLVED_ROUTE = `import { DUAL, ResolvedLens, SCALE, UNIT } from "@/resolved/lens";
+  // The loader asks Turbopack's resolver, which is not told for a loader whether a module is imported or
+  // required, and answers for the layer a module is built for. The route reports what its own imports
+  // gave, and the lens it serves is executed: the two are the same, for each import that names one file.
+  it.skipIf(!requireAnvil())("a lens reads the module Next bundles, in a route built for production", async () => {
+    project.restore();
+    // Turbopack resolves no `./only.js` to an `only.ts`, in an application module or for a loader.
+    writeResolutionFixture(project, "src/resolved", { sourceOnly: false });
+    project.write(
+      "src/app/api/resolved/route.ts",
+      `import { ${REPORTED_NAMES} } from "@/resolved/lens";
 
 export const dynamic = "force-static";
 
 export function GET() {
   return new Response(${REPORT});
 }
-`;
+`,
+    );
+    const built = await project.run([bin("next"), "build"]);
+    expect(built.ok, built.output).toBe(true);
+    await expectHostResolution(evm as Evm, JSON.parse(project.read(".next/server/app/api/resolved.body")) as Reported, {
+      sourceOnly: false,
+    });
+  });
 
-  // The loader asks Turbopack's resolver, which answers for the layer a module is built for: a route
-  // handler is built for the server, where a package's "react-server" answer is the one imported.
-  it.skipIf(!requireAnvil())(
-    "a lens reads the module Next bundles, under the conditions of the layer it is built for",
-    async () => {
-      project.restore();
-      // Turbopack resolves no `./only.js` to an `only.ts`, in an application module or for a loader.
-      writeResolutionFixture(project, "src/resolved", { dual: "import", sourceOnly: false });
-      project.write("src/app/api/resolved/route.ts", RESOLVED_ROUTE);
-      const built = await project.run([bin("next"), "build"]);
-      expect(built.ok, built.output).toBe(true);
-      await expectHostResolution(
-        evm as Evm,
-        JSON.parse(project.read(".next/server/app/api/resolved.body")) as Reported,
-        VALUES["fixture-units, under the condition 'react-server'"],
-        { sourceOnly: false },
-      );
-    },
-  );
+  // An import that names one file to import and another to require is one Turbopack's resolver can answer
+  // for a loader with the file the application does not load. No such import is read: the build stops.
+  it.each(REFUSED)("$name stops a production build, at the import", async (refused) => {
+    project.restore();
+    const line = writeRefusedImport(project, "src/refused/lens.ts", refused);
+    project.write(
+      "src/app/api/refused/route.ts",
+      `import { RATE, RefusedLens } from "@/refused/lens";
+
+export const dynamic = "force-static";
+
+export function GET() {
+  return Response.json({ bytecode: RefusedLens.bytecode, imported: String(RATE) });
+}
+`,
+    );
+    const run = await project.run([bin("next"), "build"]);
+    expect(run.ok, run.output).toBe(false);
+    expect(run.output).toContain(project.file(line));
+  });
+
+  // The rule sends a module to the loader by its text, before anything has parsed it.
+  it("a lens whose module spells the package's specifier with an escape is compiled", async () => {
+    project.restore();
+    const lens = (specifier: string) => `import { contract, pure, uint256 } from "${specifier}";
+
+export const SpelledLens = contract("SpelledLens", { rate: pure().returns(uint256) }).implementation({ rate: () => 17n });
+`;
+    project.write("src/spelled/plain.ts", lens("@morpho-org/viem-dlc/solidity"));
+    project.write("src/spelled/lens.ts", lens("@morpho-org/viem-dlc/solidi\\u0074y"));
+    project.write(
+      "src/app/api/spelled/route.ts",
+      `import { SpelledLens } from "@/spelled/lens";
+
+export const dynamic = "force-static";
+
+export function GET() {
+  return Response.json({ bytecode: SpelledLens.bytecode });
+}
+`,
+    );
+    const built = await project.run([bin("next"), "build"]);
+    expect(built.ok, built.output).toBe(true);
+    expect(JSON.parse(project.read(".next/server/app/api/spelled.body"))).toEqual({
+      bytecode: (await project.expectedLens("src/spelled/plain.ts")).bytecode,
+    });
+  });
 
   it("an application's own rule for the same files still runs, on a module with a lens and on one without", async () => {
     project.restore();
@@ -206,22 +257,46 @@ export default function Page() {
     expect(found.external.filter((map) => map.startsWith(".next/static/"))).not.toEqual([]);
     expect(found.external.filter((map) => map.startsWith(".next/server/"))).not.toEqual([]);
   });
+});
 
-  // Turbopack's resolver is not told, for a loader, whether a module is imported or required, and
-  // gives the first of a package's two answers. Where "require" comes first, that is not what the
-  // application's import loads.
-  it("refuses an import that a package answers differently to require, at the import", async () => {
-    project.restore();
-    writeResolutionFixture(project, "src/resolved", { dual: "require", sourceOnly: false });
-    project.write("src/app/api/resolved/route.ts", RESOLVED_ROUTE);
-    const run = await project.run([bin("next"), "build"]);
-    expect(run.ok, run.output).toBe(false);
-    const lens = project.file("src/resolved/lens.ts");
-    const { line, column } = positionIn(project.read("src/resolved/lens.ts"), "DUAL } from");
-    expect(run.output).toContain(`${lens}:${line}:${column} - error: cannot resolve "fixture-dual" from ${lens}`);
-    expect(run.output).toContain(
-      `${lens}: cannot tell which file an import of "fixture-dual" loads. ${project.file("node_modules/fixture-dual/package.json")} gives require.js to "require", and Turbopack does not tell a loader whether a module is imported or required. A lens cannot read from a module resolved this way.`,
+// Turbopack reads nothing above its root, and stops a build whose loader names a file there as a
+// dependency. An application whose root is its own directory, below another package, is such a build
+// the moment a manifest above it is named.
+describe("a Next application that is Turbopack's root, below another package", { timeout: 240_000 }, () => {
+  let project: Project;
+  let evm: Evm | undefined;
+  beforeAll(async () => {
+    project = new Project("next");
+    // Next, React and the lens's runtime inside the root, where the fixture finds them above it.
+    installWithDependencies(project.dir, ["next", "react", "react-dom", "viem"]);
+    project.edit("next.config.mjs", 'new URL("../../../../..", import.meta.url)', 'new URL(".", import.meta.url)');
+    if (requireAnvil()) evm = await startAnvil();
+  }, 120_000);
+  afterAll(() => {
+    evm?.stop();
+    project?.remove();
+  });
+
+  it.skipIf(!requireAnvil())("builds a lens that reads a package's module and a # import", async () => {
+    // The package above the application is this repository's.
+    expect(project.dir.startsWith(`${ROOT}/`)).toBe(true);
+    writeResolutionFixture(project, "src/resolved", { sourceOnly: false });
+    project.write(
+      "src/app/api/resolved/route.ts",
+      `import { ${REPORTED_NAMES} } from "@/resolved/lens";
+
+export const dynamic = "force-static";
+
+export function GET() {
+  return new Response(${REPORT});
+}
+`,
     );
+    const built = await project.run([project.file("node_modules/next/dist/bin/next"), "build"]);
+    expect(built.ok, built.output).toBe(true);
+    await expectHostResolution(evm as Evm, JSON.parse(project.read(".next/server/app/api/resolved.body")) as Reported, {
+      sourceOnly: false,
+    });
   });
 });
 
@@ -270,11 +345,23 @@ describe("withSolidity", () => {
     ]);
   });
 
+  it("sends a module to the loader however it spells the package's specifier", () => {
+    const rule = withSolidity().turbopack?.rules?.["*.{ts,tsx}"] as {
+      condition: { all: [unknown, { content: RegExp }] };
+    };
+    const { content } = rule.condition.all[1];
+    expect(content.test('import { contract } from "@morpho-org/viem-dlc/solidity";')).toBe(true);
+    expect(content.test('import { contract } from "@morpho-org/viem-dlc/solidi\\u0074y";')).toBe(true);
+    expect(content.test('import { contract } from "@morpho-org/viem-dlc/sol\\\nidity";')).toBe(true);
+    expect(content.test('import { cache } from "@morpho-org/viem-dlc/transports";')).toBe(false);
+  });
+
   it("keys Turbopack's cache on the versions that decide the output", async () => {
     const { default: manifest } = await import("../../../package.json", { with: { type: "json" } });
-    const [own, solc, parser] = loaderOf(withSolidity())?.options.cacheKey.split("+") ?? [];
+    const [own, solc, parser, scopes] = loaderOf(withSolidity())?.options.cacheKey.split("+") ?? [];
     expect(own).toBe(manifest.version);
     expect(solc).toBe(manifest.devDependencies.solc);
     expect(parser).toBe(manifest.devDependencies["oxc-parser"]);
+    expect(scopes).toBe(manifest.devDependencies["@typescript-eslint/scope-manager"]);
   });
 });

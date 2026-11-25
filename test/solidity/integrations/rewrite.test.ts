@@ -275,6 +275,18 @@ describe("what the rewritten module keeps, by binding", () => {
       "export function ruler(deep: boolean) {\n  if (deep) {\n    const scale = 3n;\n    return scale;\n  }\n  return scale;\n}",
     ],
     ["a default of a parameter", "export const ruler = (helper = scale) => helper;"],
+    [
+      "a default of a parameter, beside a var of the function's body",
+      "export function ruler(helper = scale) {\n  var scale = 3n;\n  return [helper, scale];\n}",
+    ],
+    [
+      "the discriminant of a switch, beside a const of one of its cases",
+      "export const pick = () => {\n  switch (scale) {\n    default:\n      const scale = 3n;\n      return scale;\n  }\n};",
+    ],
+    [
+      "a function, beside a var of a static block of a class",
+      "export function ruler() {\n  class Inner {\n    static {\n      var scale = 3n;\n    }\n  }\n  return [Inner, scale];\n}",
+    ],
     ["an export under another name", "export { scale as ruler };"],
     ["a use in a type", "export type Ruler = typeof scale;"],
   ])("%s that reads the helper keeps it", async (_what, rest) => {
@@ -321,12 +333,107 @@ describe("what the rewritten module keeps, by binding", () => {
   });
 });
 
+/** A view library as an application has one: a value a lens reads, and what JSX is compiled to call. */
+const VIEW = `export const RATE = 17n;
+export const createElement = (tag: unknown, _props: unknown, ...children: unknown[]) => \`\${String(tag)}:\${children.join("")}\`;
+export const Fragment = "fragment";
+`;
+
+/** A module whose lens reads a value off the namespace its JSX is compiled to call. */
+const jsxModule = (pragma: string, element: string) => `${pragma}import * as ui from "./view.js";
+import { contract, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
+
+export const JsxLens = contract("JsxLens", { read: pure().returns(uint256) }).implementation({ read: () => ui.RATE });
+
+export const render = () => ${element};
+`;
+
+describe("what the rewritten module keeps where it holds JSX", () => {
+  const rewritten = async (source: string) => {
+    const code = (await transformSnippet({ "main.tsx": source, "view.ts": VIEW })).result?.code ?? "";
+    expect(parseSync("main.tsx", code).errors).toEqual([]);
+    expect(code.split("\n")).toHaveLength(source.split("\n").length);
+    expect(code).toContain("export const JsxLens = /*#__PURE__*/ __viemDlcCompiledLens({");
+    return code;
+  };
+
+  // JSX is compiled to calls of a factory that the module does not write: a pragma names it, or an option
+  // of the compiler, which the transform does not read.
+  it.each([
+    ["a pragma of the module", "/** @jsx ui.createElement */\n", "<p>ready</p>"],
+    ["a pragma of the module, for a fragment", "/** @jsx ui.createElement @jsxFrag ui.Fragment */\n", "<>ready</>"],
+    ["an option of the compiler", "", "<p>ready</p>"],
+    ["an option of the compiler, for a fragment", "", "<>ready</>"],
+  ])("the import its lens reads, which %s may name as the factory", async (_what, pragma, element) => {
+    const code = await rewritten(jsxModule(pragma, element));
+    expect(code).toContain('import * as ui from "./view.js";');
+    expect(code).toContain(`export const render = () => ${element};`);
+  });
+
+  it("every declaration of its own, any of which a compiler's option may name", async () => {
+    const source = `import { contract, internal, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
+
+const scale = internal(pure(uint256).returns(uint256), (x) => x * 123456789n);
+
+export const ScaleLens = contract("ScaleLens", { read: pure(uint256).returns(uint256) }).implementation({
+  read: (x) => scale(x),
+});
+
+export const render = () => <p>ready</p>;
+`;
+    const code = (await transformSnippet({ "main.tsx": source })).result?.code ?? "";
+    expect(code).toContain("const scale = internal(pure(uint256).returns(uint256), (x) => x * 123456789n);");
+    expect(code).toContain('import { contract, internal, pure, uint256 } from "@morpho-org/viem-dlc/solidity";');
+    expect(code).not.toContain(".implementation(");
+  });
+
+  it("and not the same import where the module holds no JSX", async () => {
+    const source = jsxModule("", '"ready"');
+    const code = (await transformSnippet({ "main.tsx": source, "view.ts": VIEW })).result?.code ?? "";
+    expect(code).not.toMatch(/\bui\b|view\.js/);
+  });
+});
+
 describe("the rewritten module, bundled as a library whose runtime is external", { timeout: 120_000 }, () => {
   let project: Project;
   beforeAll(() => {
     project = new Project("app");
   });
   afterAll(() => project?.remove());
+
+  it("still renders the JSX of a module whose lens reads the namespace the JSX is compiled to call", async () => {
+    project.write("jsx/view.ts", VIEW);
+    project.write("jsx/index.tsx", jsxModule("/** @jsx ui.createElement */\n", "<p>ready</p>"));
+    project.write(
+      "vite.jsx.config.ts",
+      `import { solidity } from "@morpho-org/viem-dlc/solidity/vite";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [solidity()],
+  build: {
+    minify: false,
+    outDir: "dist/jsx",
+    lib: { entry: "jsx/index.tsx", formats: ["es"], fileName: "index" },
+    rollupOptions: { external: ["viem", "@morpho-org/viem-dlc/solidity"] },
+  },
+});
+`,
+    );
+    const built = await project.run([bin("vite"), "build", "--config", "vite.jsx.config.ts"]);
+    expect(built.ok, built.output).toBe(true);
+    // The module's own export, which is no lens, run as the application runs it.
+    project.write(
+      "jsx/run.mjs",
+      'import { JsxLens, render } from "../dist/jsx/index.js";\n\nconsole.log(JSON.stringify({ rendered: render(), bytecode: JsxLens.bytecode }));\n',
+    );
+    const run = await project.run(["jsx/run.mjs"]);
+    expect(run.ok, run.output).toBe(true);
+    expect(JSON.parse(run.output)).toEqual({
+      rendered: "p:ready",
+      bytecode: expect.stringMatching(/^0x60[0-9a-f]+$/),
+    });
+  });
 
   it("ships no helper body for a name the module also uses as a property key, and keeps the module's exports", async () => {
     project.write(
@@ -385,5 +492,33 @@ throw new Error(\`reached \${reached}\`);
     expect(run.ok).toBe(false);
     expect(run.output).toContain("Error: reached QuoteLens");
     expect(run.output).toContain(`src/throws.ts:${positionIn(script, "throw new Error").line}`);
+  });
+
+  it("still has a constant its own code reads where a nearer binding of the name is not yet in scope", async () => {
+    // The lens reads the constant too, so the rewrite has to tell the module's own read of it from the
+    // case's binding of the same name. What is run is the module's function, not the lens.
+    project.write(
+      "src/tiers.ts",
+      `import { contract, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
+
+const rate = 3n;
+export const RateLens = contract("RateLens", { read: pure().returns(uint256) }).implementation({ read: () => rate });
+
+export function tier() {
+  switch (rate) {
+    case 3n:
+      return "low";
+    default:
+      const rate = "high";
+      return rate;
+  }
+}
+
+console.log("tier", tier(), "of", RateLens.name);
+`,
+    );
+    const run = await project.run(["--import", "@morpho-org/viem-dlc/solidity/register", "src/tiers.ts"]);
+    expect(run.ok, run.output).toBe(true);
+    expect(run.output).toContain("tier low of RateLens");
   });
 });

@@ -349,7 +349,7 @@ describe("rejections: try and catch", () => {
   it("a call through a handle whose interface the source does not declare", async () => {
     await refuses(
       attempt("{ x = (x > 0n ? FEED : IFeed(feed)).price(feed); }"),
-      ".price(…) is not a call a lens can make here",
+      ".price(…) is called off an expression whose type no declaration gives. A member needs a receiver with a declared type",
       "(x > 0n",
     );
   });

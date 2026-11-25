@@ -14,11 +14,17 @@
  * A lens is compiled as its module is loaded, not in a later transform. What a bundler takes for a
  * module's source, and embeds in a source map as `sourcesContent`, is what `load` returned: the
  * rewritten module, which holds no lens body and keeps every line on its line.
+ *
+ * A module this plugin does not load is one whose source it cannot choose: a module asked for with a
+ * query or a fragment, which may ask for something other than the module as written, and a module
+ * another plugin loads. A build stops at a lens in such a module, because a map would embed the lens
+ * body. A dev server or a test run ships no map, and compiles the lens in its transform.
  */
+import { statSync } from "node:fs";
 import fs from "node:fs/promises";
 
-import { SOLIDITY_SPECIFIER } from "../builtins.js";
-import { formatDiagnostic, LensError } from "../errors.js";
+import { MENTIONS_PACKAGE } from "../builtins.js";
+import { diagnosticAt, formatDiagnostic, LensError } from "../errors.js";
 import { transform } from "../transform.js";
 import type { TransformOptions } from "../types.js";
 
@@ -55,6 +61,7 @@ interface VitestContext {
 export interface SolidityPlugin {
   name: string;
   enforce: "pre";
+  configResolved(config: { command: string }): void;
   load(this: PluginContext, id: string): Promise<{ code: string; map: null } | null>;
   transform(this: PluginContext, code: string, id: string): Promise<{ code: string; map: null } | null>;
   configureServer(server: DevServer): void;
@@ -63,19 +70,51 @@ export interface SolidityPlugin {
 
 const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
 
+const isFile = (file: string): boolean => {
+  try {
+    return statSync(file, { throwIfNoEntry: false })?.isFile() === true;
+  } catch {
+    // No path at all: the id of a module another plugin made up.
+    return false;
+  }
+};
+
+/**
+ * The file of a module: its id without the query and the fragment it was asked for with, whatever they
+ * hold. Everything that asks what kind of file a module is asks about this, never about the id.
+ *
+ * A query starts at the first `?`. A `#` starts a fragment, unless it is a character of the path, which
+ * Vite's resolver allows: so the file is the longest of the id's ends that is a file on disk, and where
+ * none is, what comes before the first `#`.
+ */
+const fileOf = (id: string): string => {
+  const [path = id] = id.split("?");
+  if (!path.includes("#")) return path;
+  const ends = [path, ...[...path.matchAll(/#/g)].map((mark) => path.slice(0, mark.index)).reverse()];
+  return ends.find(isFile) ?? (ends.at(-1) as string);
+};
+
+const NOT_LOADED =
+  "the solidity plugin did not load this module: it was asked for with a query or a fragment, or another plugin loaded it. A source map of the build would then embed the module as it is written, with the body of this lens. Import the module by its path alone, and put solidity() before any plugin that loads source files";
+
 export function solidity(options: TransformOptions = {}): SolidityPlugin {
   /** A file a lens was compiled from, to the modules holding such a lens. */
   const dependents = new Map<string, Set<string>>();
   /** The modules whose lens did not build when last asked for. */
   const failed = new Set<string>();
+  /** True in a dev server and in a test run, which ship no source map. Rolldown and tsdown only build. */
+  let serving = false;
   const firstParty = (file: string) => SOURCE_FILE.test(file) && !file.includes("/node_modules/");
-  const compile = async (context: PluginContext, code: string, file: string) => {
+  const compile = async (context: PluginContext, code: string, file: string, loaded: boolean) => {
     try {
       const result = await transform(
         code,
         file,
         {
-          resolve: async (specifier, importer) => (await context.resolve(specifier, importer))?.id.split("?")[0],
+          resolve: async (specifier, importer) => {
+            const resolved = await context.resolve(specifier, importer);
+            return resolved ? fileOf(resolved.id) : undefined;
+          },
           addDependency: (dependency) => {
             context.addWatchFile(dependency);
             const lensModules = dependents.get(dependency) ?? new Set<string>();
@@ -86,6 +125,12 @@ export function solidity(options: TransformOptions = {}): SolidityPlugin {
         },
         options,
       );
+      if (result && !loaded && !serving)
+        throw new LensError(
+          result.lenses.map(({ resolved }) =>
+            diagnosticAt(result.module, resolved.site.node, NOT_LOADED, resolved.name),
+          ),
+        );
       failed.delete(file);
       return result ? { code: result.code, map: null } : null;
     } catch (cause) {
@@ -103,20 +148,24 @@ export function solidity(options: TransformOptions = {}): SolidityPlugin {
     name: "viem-dlc-solidity",
     // Before the host strips types, so the transform sees the module as written and its positions hold.
     enforce: "pre",
+    configResolved(config) {
+      serving = config.command === "serve";
+    },
     async load(id) {
-      // A query asks for something other than the module as written; the transform below sees those.
-      if (id.includes("?") || !firstParty(id)) return null;
+      // A query or a fragment may ask for something other than the module as written: those are left to
+      // the loader that answers them, and the transform below sees what it returned.
+      if (fileOf(id) !== id || !firstParty(id)) return null;
       const code = await fs.readFile(id, "utf8").catch(() => undefined);
       if (code === undefined) return null;
-      const result = await compile(this, code, id);
+      const result = await compile(this, code, id, true);
       // The host's own loader, which this one stood in for, is what watches a module's file.
       if (result) this.addWatchFile(id);
       return result;
     },
-    // What `load` did not read: a module another plugin loaded, or one asked for with a query.
+    // What `load` did not read: a module another plugin loaded, or one asked for with a query or a fragment.
     async transform(code, id) {
-      const file = id.split("?")[0] as string;
-      return firstParty(file) ? compile(this, code, file) : null;
+      const file = fileOf(id);
+      return firstParty(file) ? compile(this, code, file, false) : null;
     },
     // Vite keeps a transform until the module itself changes, so declaring a watched file reruns tests on
     // the old bytecode. A change to a dependency therefore drops the transform of every lens built from it.
@@ -142,7 +191,7 @@ export function solidity(options: TransformOptions = {}): SolidityPlugin {
     // from the compile cache, which is keyed on the Solidity.
     configureVitest(context) {
       const define = context.defineCacheKeyGenerator ?? context.experimental_defineCacheKeyGenerator;
-      define?.(({ sourceCode }) => (sourceCode.includes(SOLIDITY_SPECIFIER) ? false : undefined));
+      define?.(({ sourceCode }) => (MENTIONS_PACKAGE.test(sourceCode) ? false : undefined));
     },
   };
 }

@@ -108,33 +108,27 @@ const pairs = {
       { functionName: "run", args: [MAX_UINT256] },
     ],
   },
-  "one declaration reached by two paths, and two declarations that share a name": {
+  "one declaration reached by two paths": {
     ts: {
       "main.ts": `
         import { contract, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
 
         import { half as halfThroughEntry } from "./lib.js";
         import { half } from "./math.js";
-        import { scale as otherScale } from "./other.js";
         import { scale } from "./scale.js";
 
         export const NamesLens = contract("NamesLens", {
           run: pure(uint256).returns(uint256),
         }).implementation({
-          run: (x) => half(halfThroughEntry(scale(x))) + otherScale(x),
+          run: (x) => half(halfThroughEntry(scale(x))),
         });
-      `,
-      "other.ts": `
-        import { internal, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
-
-        export const scale = internal(pure(uint256).returns(uint256), (x) => x * 5n);
       `,
       ...library,
     },
     solidity: `
       contract NamesLens {
           function run(uint256 x) external pure returns (uint256) {
-              return half(half(scale(x))) + scale_2(x);
+              return half(half(scale(x)));
           }
 
           function half(uint256 x) internal pure returns (uint256) {
@@ -143,10 +137,6 @@ const pairs = {
 
           function scale(uint256 x) internal pure returns (uint256) {
               return x * 3;
-          }
-
-          function scale_2(uint256 x) internal pure returns (uint256) {
-              return x * 5;
           }
       }
     `,
@@ -172,7 +162,7 @@ const pairs = {
         });
       `,
       "dsl.ts": `
-        export * from "@morpho-org/viem-dlc/solidity";
+        export { internal, pure, uint128, uint256 } from "@morpho-org/viem-dlc/solidity";
       `,
     },
     solidity: `
@@ -243,6 +233,26 @@ export const Lens = contract("Lens", {
   },
 });
 `;
+
+  it("two declarations of two modules that share a name, at the second", async () => {
+    const code = main(
+      'import { scale as otherScale } from "./other.js";\nimport { scale } from "./scale.js";',
+      "return scale(x) + otherScale(x);",
+    );
+    const other = `import { internal, pure, uint256 } from "@morpho-org/viem-dlc/solidity";
+export const scale = internal(pure(uint256).returns(uint256), (x) => x * 5n);
+`;
+    await expectRejection(
+      { "lens.ts": code, "other.ts": other, ...library },
+      {
+        message:
+          '"scale" is also the name of a helper. A name is printed in Solidity as it is written and is never changed',
+        file: "other.ts",
+        ...positionIn(other, "internal(pure"),
+        source: "transform",
+      },
+    );
+  });
 
   it("an import the host cannot resolve, at the import", async () => {
     const code = main('import { half } from "./nowhere.js";', "return half(x);");

@@ -8,18 +8,26 @@
  *
  * For one module it finds the lenses, and takes each through resolve, print and compile, then rewrites
  * the module. Every file it reads is reported to the host as it is read, so a build that then fails
- * has still told the host which files can repair it. It returns null for a module with no lens, after
- * one substring test and no parse when the module does not mention the package. Every failure is a
+ * has still told the host which files can repair it.
+ *
+ * The host's resolver finds the file an import names, and every answer is checked before a module is
+ * read through it: see `import-target.ts`. An import that may name another file under other conditions
+ * stops the build at the import, in every host alike. A host's resolver can refuse an import the same
+ * way, by throwing {@link ImportRefused}. It returns null for a module with no lens, after
+ * one test of its text and no parse when the module cannot name the package. Every failure is a
  * {@link LensError} whose diagnostics carry a TypeScript file, line and column.
  *
  * Nothing here evaluates anything or imports an application module.
  */
 import fs from "node:fs";
 
+import type { Span } from "oxc-parser";
+
 import { compile, SolcUnavailableError } from "./compile.js";
 import { ConfigError, findConfigFile, readConfig } from "./config.js";
 import { diagnosticAt, LensError } from "./errors.js";
 import { find, mentionsPackage } from "./find.js";
+import { checkImport, ImportRefused } from "./import-target.js";
 import { parseModule } from "./module.js";
 import { printSolidity } from "./print-solidity.js";
 import { resolve } from "./resolve.js";
@@ -60,6 +68,16 @@ const reporter = (id: string, host: TransformHost): ((file: string) => void) => 
   };
 };
 
+/** Where a module names an import: the specifier of its first import or re-export of it. */
+const specifierNode = (module: SourceModule, specifier: string): Span => {
+  for (const statement of module.program.body) {
+    const { source } = statement as { source?: (Span & { value: string }) | null };
+    if (source?.value === specifier) return source;
+  }
+  /* v8 ignore next -- @preserve: a stage asks only about a specifier it read in this module */
+  return module.program;
+};
+
 const buildOnce = (
   code: string,
   id: string,
@@ -71,8 +89,26 @@ const buildOnce = (
 ): BuiltModule | null => {
   if (!mentionsPackage(code)) return null;
   const readFile = host.readFile ?? ((file: string) => fs.readFileSync(file, "utf8"));
+  const dependencies = new Set<string>();
+  /** The lens being built, for an error at an import. */
+  let lens: string | undefined;
   const loader: ModuleLoader = {
-    resolve: resolveImport,
+    resolve(specifier, importer) {
+      try {
+        const file = resolveImport(specifier, importer);
+        if (file !== undefined)
+          checkImport(specifier, importer, file, (manifest) => {
+            report(manifest);
+            dependencies.add(manifest);
+          });
+        return file;
+      } catch (cause) {
+        if (!(cause instanceof ImportRefused)) throw cause;
+        // A stage asks about the imports of a module it has loaded.
+        const importing = parsed.get(importer) as SourceModule;
+        throw new LensError([diagnosticAt(importing, specifierNode(importing, specifier), cause.message, lens)]);
+      }
+    },
     load(file) {
       let module = parsed.get(file);
       if (!module) {
@@ -92,9 +128,9 @@ const buildOnce = (
   const [firstSite] = sites;
   if (!firstSite) return null;
 
-  const dependencies = new Set<string>();
   const lenses: BuiltLens[] = [];
   for (const site of sites) {
+    lens = site.name;
     const resolved = resolve(site, module, loader);
     for (const file of resolved.files) if (file !== id) dependencies.add(file);
     const printed = printSolidity(resolved);
@@ -117,6 +153,7 @@ const buildOnce = (
       result = compile({ contractName: resolved.name, solidity: printed.solidity }, config, { cache: options.cache });
     } catch (cause) {
       if (cause instanceof SolcUnavailableError) refuse(`the lens ${site.name} needs compiling: ${cause.message}`);
+      if (cause instanceof ConfigError) refuse(cause.message);
       throw cause;
     }
     for (const warning of mapSolcDiagnostics(result.warnings, printed, resolved)) host.warn?.(warning);
@@ -138,20 +175,32 @@ export async function build(
 ): Promise<BuiltModule | null> {
   // The stages are synchronous and the host's resolver may not be. An import the host has not been asked
   // about raises PendingResolution; it is awaited and the build runs again, reusing every parse.
-  const resolved = new Map<string, string | undefined>();
+  const answers = new Map<string, () => string | undefined>();
   const parsed = new Map<string, SourceModule>();
   const report = reporter(id, host);
   const lookup: Resolver = (specifier, importer) => {
-    const key = `${importer}\0${specifier}`;
-    if (!resolved.has(key)) throw new PendingResolution(specifier, importer);
-    return resolved.get(key);
+    const answer = answers.get(`${importer}\0${specifier}`);
+    if (!answer) throw new PendingResolution(specifier, importer);
+    return answer();
   };
   for (;;) {
     try {
       return buildOnce(code, id, lookup, host, options, parsed, report);
     } catch (cause) {
       if (!(cause instanceof PendingResolution)) throw cause;
-      resolved.set(`${cause.importer}\0${cause.specifier}`, await host.resolve(cause.specifier, cause.importer));
+      const { specifier, importer } = cause;
+      // What the host answers, or throws, is given each time the stage asks again.
+      answers.set(
+        `${importer}\0${specifier}`,
+        await Promise.resolve()
+          .then(() => host.resolve(specifier, importer))
+          .then(
+            (file) => () => file,
+            (refusal: unknown) => () => {
+              throw refusal;
+            },
+          ),
+      );
     }
   }
 }

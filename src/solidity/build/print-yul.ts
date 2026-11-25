@@ -30,12 +30,14 @@
  * inside a block must be a single such literal, because Yul has no operators. Anything that is not in
  * the table is a located error.
  *
- * What is only TypeScript is erased as it is outside a block: annotations, a `this` parameter of the
- * callback, and a type declared in the block, which is not a statement when the last one is looked for.
+ * What is only TypeScript is erased as it is outside a block, before anything is read: annotations, a
+ * `this` parameter, and a type or anything else declared in the block that a compiler emits nothing for.
+ * Such a declaration is not a statement when the last one is looked for, and its name is no name of the
+ * block: it is not checked, it hides nothing, and it changes no name the printer chooses.
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, ERASED_STATEMENTS, is, isThisParameter, unwrap, walk } from "./ast.js";
+import { type AnyNode, is, isErased, isThisParameter, printsNothing, unwrap, walk } from "./ast.js";
 import { YUL_SPECIFIER } from "./builtins.js";
 import { fail, UNSAFE_NUMBER } from "./errors.js";
 import { refusedName } from "./names.js";
@@ -147,7 +149,7 @@ export function printYul(input: YulBlockInput): void {
   const within = (statements: readonly AnyNode[], print: () => void, parameters: readonly string[] = []): void => {
     const scope = new Map(parameters.map((name) => [name, false]));
     for (const statement of statements)
-      if (is(statement, "VariableDeclaration"))
+      if (is(statement, "VariableDeclaration") && !isErased(statement))
         for (const { id, init } of statement.declarations)
           if (is(id, "Identifier")) scope.set(id.name, !!init && is(unwrap(init), "ArrowFunctionExpression"));
     scopes.push(scope);
@@ -308,7 +310,7 @@ export function printYul(input: YulBlockInput): void {
   };
 
   const statement = (node: AnyNode): void => {
-    if (ERASED_STATEMENTS.has(node.type)) return;
+    if (printsNothing(node)) return;
     out.line();
     out.node({ module, node }, () => {
       switch (node.type) {
@@ -386,7 +388,7 @@ export function printYul(input: YulBlockInput): void {
   /** What a callback or a function returns: its expression body, or the `return word` that ends its block. */
   const returned = (body: AnyNode): { readonly at: Span; readonly word: Span } | undefined => {
     if (!is(body, "BlockStatement")) return { at: body, word: body };
-    const last = body.body.filter((inner) => !ERASED_STATEMENTS.has(inner.type)).at(-1);
+    const last = body.body.filter((inner) => !printsNothing(inner)).at(-1);
     if (!is(last, "ReturnStatement")) return undefined;
     return { at: last, word: last.argument ?? refuse(last, "return is followed by the word it gives") };
   };
@@ -414,9 +416,11 @@ export function printYul(input: YulBlockInput): void {
   /** `function name(x, y) -> r { … }`, from an arrow function. */
   const fn = (name: Span & { readonly name: string }, arrow: AnyNode): void => {
     if (arrow.async) refuse(arrow, "a function inside an assembly block cannot be async");
-    const parameters = (arrow.params as AnyNode[]).map((parameter) =>
-      is(parameter, "Identifier") ? parameter : refuse(parameter, "a parameter must be a plain name"),
-    );
+    const parameters = (arrow.params as AnyNode[])
+      .filter((parameter) => !isThisParameter(parameter))
+      .map((parameter) =>
+        is(parameter, "Identifier") ? parameter : refuse(parameter, "a parameter must be a plain name"),
+      );
     let result = returned(arrow.body as AnyNode) ? FUNCTION_RESULT : undefined;
     // Yul lets a function inside another not give its value the name the other gives its own.
     while (result && (written.has(result) || results.includes(result))) result += "_";

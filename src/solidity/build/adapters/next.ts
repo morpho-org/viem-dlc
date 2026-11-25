@@ -6,8 +6,8 @@
  * export default withSolidity(nextConfig);
  * ```
  *
- * It adds one loader rule. The rule applies to first-party `.ts` and `.tsx` files whose text mentions
- * the package, so every other file skips the loader without leaving Turbopack. The rule's option
+ * It adds one loader rule. The rule applies to first-party `.ts` and `.tsx` files whose text can spell
+ * the package's specifier, so every other file skips the loader without leaving Turbopack. The rule's option
  * carries the versions that decide the output, because Turbopack's persistent cache keys a loader's
  * result on its options and not on the loader's own code.
  *
@@ -16,6 +16,8 @@
  */
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+
+import { MENTIONS_PACKAGE } from "../builtins.js";
 
 const require = createRequire(import.meta.url);
 
@@ -44,7 +46,7 @@ const isLoader = (item: unknown): boolean =>
 
 export function withSolidity<C extends NextConfigLike>(config: C = {} as C): C {
   const rule = {
-    condition: { all: [{ not: "foreign" }, { content: /@morpho-org\/viem-dlc\/solidity/ }] },
+    condition: { all: [{ not: "foreign" }, { content: MENTIONS_PACKAGE }] },
     loaders: [
       {
         loader: "@morpho-org/viem-dlc/solidity/next/loader",
@@ -54,6 +56,7 @@ export function withSolidity<C extends NextConfigLike>(config: C = {} as C): C {
             versionIn(new URL("../../../../package.json", import.meta.url)),
             versionOf("solc"),
             versionOf("oxc-parser"),
+            versionOf("@typescript-eslint/scope-manager"),
           ].join("+"),
         },
       },

@@ -2,13 +2,24 @@
  * The plugin in Vite: a production build, and the dev server as its watch mode.
  * Runs the built package: `pnpm test` builds first.
  */
+import fs from "node:fs";
+
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { type Evm, requireAnvil, startAnvil } from "../helpers/anvil.js";
+import { positionIn } from "../helpers/harness.js";
 
-import { describeHost } from "./helpers/host-suite.js";
-import { bin, bytecodeIn, freePort, Project } from "./helpers/project.js";
-import { expectHostResolution, REPORT, type Reported, VALUES, writeResolutionFixture } from "./helpers/resolution.js";
+import { describeHost, LENS_SOURCE } from "./helpers/host-suite.js";
+import { bin, bytecodeIn, freePort, lastPrintedBytecode, Project, waitFor } from "./helpers/project.js";
+import {
+  expectHostResolution,
+  REFUSED,
+  REPORT,
+  REPORTED_NAMES,
+  type Reported,
+  writeRefusedImport,
+  writeResolutionFixture,
+} from "./helpers/resolution.js";
 import { expectNoLensSourceInMaps } from "./helpers/source-maps.js";
 
 describeHost({
@@ -62,21 +73,164 @@ describe("a Vite build, beyond the shared suite", { timeout: 120_000 }, () => {
         expected,
       );
     });
-  });
 
-  // The plugin asks Vite's own resolver, so this holds by construction: the control for the same check
-  // on the hosts that have no resolver to ask.
-  it.skipIf(!requireAnvil())(
-    "a lens reads the module Vite bundles, under the conditions Vite resolves with",
-    async () => {
-      writeResolutionFixture(project, "resolved");
+    /** A library build with source maps, of an entry that exports from the modules it is given. */
+    const buildVersioned = (...modules: string[]) => {
+      project.clean();
       project.write(
-        "resolved/entry.ts",
-        `import { DUAL, ResolvedLens, SCALE, UNIT } from "./lens";\n\nconsole.log(${REPORT});\n`,
+        "versioned/entry.ts",
+        modules.map((module, index) => `export * as module${index} from "${module}";\n`).join(""),
       );
       project.write(
-        "vite.resolved.config.ts",
-        `import { solidity } from "@morpho-org/viem-dlc/solidity/vite";
+        "vite.versioned.config.ts",
+        `import { fileURLToPath } from "node:url";
+
+import { solidity } from "@morpho-org/viem-dlc/solidity/vite";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [solidity()],
+  resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
+  build: {
+    minify: false,
+    sourcemap: true,
+    outDir: "dist/versioned",
+    lib: { entry: "versioned/entry.ts", formats: ["es"], fileName: "entry" },
+    rollupOptions: { external: ["viem", "@morpho-org/viem-dlc/solidity"] },
+  },
+});
+`,
+      );
+      return project.run([bin("vite"), "build", "--config", "vite.versioned.config.ts"]);
+    };
+    /** What the build wrote that holds the source of a lens: a script, or a map with a module as written. */
+    const writtenLensSource = (pattern: RegExp) =>
+      fs.existsSync(project.file("dist/versioned")) ? project.search(pattern, ["dist/versioned"]) : [];
+
+    // The source a map embeds for a module is what the module's loader returned. A module asked for with
+    // a query or a fragment is another module of the same file, which Vite's own loader reads as written.
+    it.each([
+      { asked: "a query", suffix: "?revision=2" },
+      { asked: "a fragment", suffix: "#second" },
+      { asked: "a fragment that holds a slash", suffix: "#section/2" },
+      { asked: "a fragment that ends like a source file", suffix: "#section/2.ts" },
+      { asked: "a query and a fragment", suffix: "?revision=2#section/2" },
+    ])("a lens module asked for with $asked stops the build at the lens, and no map is written", async ({ suffix }) => {
+      project.restore();
+      const run = await buildVersioned("../src/lens.ts", `../src/lens.ts${suffix}`);
+      expect(run.ok, run.output).toBe(false);
+      const { line, column } = positionIn(project.read("src/lens.ts"), 'contract("QuoteLens"');
+      expect(run.output).toContain(
+        `${project.file("src/lens.ts")}:${line}:${column} - error: the solidity plugin did not load`,
+      );
+      expect(writtenLensSource(LENS_SOURCE)).toEqual([]);
+    });
+
+    // The same pair of modules, asked for by path and with a fragment that holds a slash: no form of a
+    // module's name leaves its lens unread. The lens that fits compiles or is refused, and the lens that
+    // does not fit stops the build at its error.
+    describe.each([
+      { asked: "by its path alone", suffix: "" },
+      { asked: "with a fragment that holds a slash", suffix: "#section/2" },
+    ])("a module asked for $asked", ({ suffix }) => {
+      const narrow = (value: string) => `import { contract, pure, uint8 } from "@morpho-org/viem-dlc/solidity";
+
+export const NarrowLens = contract("NarrowLens", { read: pure().returns(uint8) }).implementation({ read: () => ${value} });
+`;
+      const BODY = /\.implementation\(/;
+
+      it("whose lens compiles is built with no lens body, or stops the build at the lens", async () => {
+        project.restore();
+        project.write("src/narrow.ts", narrow("255n"));
+        const run = await buildVersioned(`../src/narrow.ts${suffix}`);
+        expect(writtenLensSource(BODY)).toEqual([]);
+        if (suffix) {
+          expect(run.ok, run.output).toBe(false);
+          const { line, column } = positionIn(narrow("255n"), 'contract("NarrowLens"');
+          expect(run.output).toContain(
+            `${project.file("src/narrow.ts")}:${line}:${column} - error: the solidity plugin did not load`,
+          );
+        } else {
+          expect(run.ok, run.output).toBe(true);
+          expect(project.bytecodeUnder("dist/versioned")).toBe((await project.expectedLens("src/narrow.ts")).bytecode);
+        }
+      });
+
+      it("whose lens does not compile stops the build at solc's error", async () => {
+        project.restore();
+        project.write("src/narrow.ts", narrow("256n"));
+        const run = await buildVersioned(`../src/narrow.ts${suffix}`);
+        expect(run.ok, run.output).toBe(false);
+        const { line, column } = positionIn(narrow("256n"), "256n");
+        expect(run.output).toContain(`${project.file("src/narrow.ts")}:${line}:${column} - error: `);
+        expect(run.output).toContain("uint8");
+        expect(writtenLensSource(BODY)).toEqual([]);
+      });
+    });
+
+    // A # can also be a character of a directory's name, and is then no fragment.
+    it("a lens module under a directory whose name holds a # is compiled, and no map holds its body", async () => {
+      project.restore();
+      const lens = project.read("src/lens.ts").replace('"./lib/constants"', '"../src/lib/constants"');
+      project.write("part#1/lens.ts", lens);
+      const run = await buildVersioned("../part#1/lens.ts");
+      expect(run.ok, run.output).toBe(true);
+      expect(project.bytecodeUnder("dist/versioned")).toBe((await project.expectedLens()).bytecode);
+      expect(writtenLensSource(LENS_SOURCE)).toEqual([]);
+    });
+  });
+
+  // No map is shipped from the dev server, which serves each module of a file as the plugin compiled it.
+  it("the dev server compiles a lens module asked for with a query", async () => {
+    project.restore();
+    const port = await freePort();
+    const server = project.start([bin("vite"), "--host", "127.0.0.1", "--port", String(port), "--strictPort"]);
+    try {
+      const served = await waitFor(
+        async () => {
+          try {
+            return bytecodeIn(await (await fetch(`http://127.0.0.1:${port}/src/lens.ts?revision=2`)).text());
+          } catch {
+            return undefined;
+          }
+        },
+        "the dev server to serve the lens",
+        server.output,
+      );
+      expect(served).toBe((await project.expectedLens()).bytecode);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  // A test run ships no map either. Each module Vitest makes of the file holds the compiled lens.
+  it("Vitest compiles a lens module asked for with a query or a fragment, a slash in it or not", async () => {
+    project.restore();
+    project.write(
+      "src/versioned.spec.ts",
+      `import { expect, it } from "vitest";
+
+import { QuoteLens as plain } from "./lens";
+import { QuoteLens as queried } from "./lens.ts?revision=2";
+import { QuoteLens as fragment } from "./lens.ts#second";
+import { QuoteLens as section } from "./lens.ts#section/2";
+
+it("each module of the file holds the compiled lens", () => {
+  expect([queried.bytecode, fragment.bytecode, section.bytecode]).toEqual([plain.bytecode, plain.bytecode, plain.bytecode]);
+  console.log(JSON.stringify({ bytecode: section.bytecode }));
+});
+`,
+    );
+    const run = await project.run([bin("vitest"), "run", "src/versioned.spec.ts"]);
+    expect(run.ok, run.output).toBe(true);
+    expect(lastPrintedBytecode(run.output)).toBe((await project.expectedLens()).bytecode);
+  });
+
+  /** A library build of one entry, under a condition of the application's own. */
+  const buildEntry = (entry: string) => {
+    project.write(
+      "vite.resolved.config.ts",
+      `import { solidity } from "@morpho-org/viem-dlc/solidity/vite";
 import { defineConfig } from "vite";
 
 export default defineConfig({
@@ -85,21 +239,37 @@ export default defineConfig({
   build: {
     minify: false,
     outDir: "dist/resolved",
-    lib: { entry: "resolved/entry.ts", formats: ["es"], fileName: "entry" },
+    lib: { entry: "${entry}", formats: ["es"], fileName: "entry" },
     rollupOptions: { external: ["viem", "@morpho-org/viem-dlc/solidity"] },
   },
 });
 `,
-      );
-      const built = await project.run([bin("vite"), "build", "--config", "vite.resolved.config.ts"]);
-      expect(built.ok, built.output).toBe(true);
-      const run = await project.run(["dist/resolved/entry.js"]);
-      expect(run.ok, run.output).toBe(true);
-      await expectHostResolution(
-        evm as Evm,
-        JSON.parse(run.output) as Reported,
-        VALUES["fixture-units, under the condition 'fixture'"],
-      );
-    },
-  );
+    );
+    return project.run([bin("vite"), "build", "--config", "vite.resolved.config.ts"]);
+  };
+
+  // The plugin asks Vite's own resolver, and the build takes its answer for an import that names one
+  // file whatever the conditions.
+  it.skipIf(!requireAnvil())("a lens reads the module Vite bundles", async () => {
+    project.restore();
+    writeResolutionFixture(project, "resolved");
+    project.write("resolved/entry.ts", `import { ${REPORTED_NAMES} } from "./lens";\n\nconsole.log(${REPORT});\n`);
+    const built = await buildEntry("resolved/entry.ts");
+    expect(built.ok, built.output).toBe(true);
+    const run = await project.run(["dist/resolved/entry.js"]);
+    expect(run.ok, run.output).toBe(true);
+    await expectHostResolution(evm as Evm, JSON.parse(run.output) as Reported);
+  });
+
+  it.each(REFUSED)("$name is refused at the import", async (refused) => {
+    project.restore();
+    const line = writeRefusedImport(project, "refused/lens.ts", refused);
+    project.write(
+      "refused/entry.ts",
+      'import { RATE, RefusedLens } from "./lens";\n\nconsole.log(RefusedLens.bytecode, RATE);\n',
+    );
+    const built = await buildEntry("refused/entry.ts");
+    expect(built.ok, built.output).toBe(false);
+    expect(built.output).toContain(project.file(line));
+  });
 });
