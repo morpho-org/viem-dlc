@@ -105,7 +105,7 @@ export const QuoteLens = contract("QuoteLens", {
     solcType: "ParserError",
     message: "Expected identifier but got 'leave'",
     file: LENS,
-    at: "const leave",
+    at: "leave = assets",
   },
   {
     // A warning is reported and does not stop the build.

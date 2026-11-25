@@ -267,8 +267,16 @@ export interface AddressToken extends Token<"address"> {
   // biome-ignore lint/suspicious/noExplicitAny: any interface handle converts to an address
   (value: bigint | number | address | Address | Handle<any>): address;
 }
+/**
+ * What converts to a fixed-size bytes type, as in Solidity: an integer of its size, a literal, a
+ * fixed-size bytes type of any size (a wider one is cut, a narrower one is padded), and `bytes`.
+ */
+type FixedBytesInput = bigint | number | Hex | bytes4 | bytes32 | bytes;
+export interface Bytes4Token extends Token<"bytes4"> {
+  (value: FixedBytesInput): bytes4;
+}
 export interface Bytes32Token extends Token<"bytes32"> {
-  (value: bigint | number | Hex): bytes32;
+  (value: FixedBytesInput): bytes32;
 }
 
 // ---- declarations ------------------------------------------------------------------------------------
@@ -355,6 +363,21 @@ export type Returns<T extends readonly unknown[]> = T extends readonly []
   : T extends readonly [infer O]
     ? In<O>
     : InArgs<T>;
+
+/**
+ * `internal(signature, body)`. A body that returns several values is checked against a tuple written out
+ * in its own signature, so that tsc reads `(x) => [x, x + 1n]` as a pair and not as an array.
+ */
+export interface Internal {
+  <I extends readonly SolType[], O extends readonly [SolType, SolType, ...SolType[]], M extends Mutability>(
+    signature: Sig<I, O, M>,
+    body: (...args: OutArgs<I>) => [...InArgs<O>],
+  ): (...args: InArgs<I>) => OutArgs<O>;
+  <S extends Sig>(
+    signature: S,
+    body: (...args: OutArgs<S["inputs"]>) => Returns<S["outputs"]>,
+  ): (...args: InArgs<S["inputs"]>) => Returned<S["outputs"]>;
+}
 
 /** What a call may be given besides its arguments: `IPriceFeed(feed, { gas: 100_000 })`. */
 export interface CallOptions {
@@ -510,16 +533,16 @@ export interface Yul {
   gas: Op0;
   pop: (x: Word) => void;
 }
-type YulType = Bytes32Token | Token<"bytes"> | Token<"string">;
 /**
- * A block that ends in `return word` is a value: a uint256, or the type named first (the word is then
- * the bytes32 itself, or the memory pointer of the string or bytes). The type is an argument and not a
- * type parameter because a type parameter is erased before the transform reads the source. A block
- * with no `return` is a statement. Every block is `"memory-safe"`, and says so.
+ * A block that ends in `return word` is a value: a uint256, or the elementary type named first (the
+ * word is then the value itself, or the memory pointer of a string or bytes). The word is anything a
+ * block computes, a comparison included. The type is an argument and not a type parameter because a
+ * type parameter is erased before the transform reads the source. A block with no `return` is a
+ * statement. Every block is `"memory-safe"`, and says so.
  */
 export interface Assembly {
-  <T extends YulType>(type: T, flag: "memory-safe", block: () => bigint): Out<T>;
-  (flag: "memory-safe", block: () => bigint): uint256;
+  <T extends Token>(type: T, flag: "memory-safe", block: () => Word): Out<T>;
+  (flag: "memory-safe", block: () => Word): uint256;
   (flag: "memory-safe", block: () => void): void;
 }
 
@@ -528,7 +551,7 @@ export type Tokens = { [K in IntegerName]: IntToken<K> } & {
   address: AddressToken;
   bytes32: Bytes32Token;
   bool: Token<"bool">;
-  bytes4: Token<"bytes4">;
+  bytes4: Bytes4Token;
   bytes: Token<"bytes">;
   string: Token<"string">;
 };

@@ -12,11 +12,13 @@ import type { Span } from "oxc-parser";
 
 import { type AnyNode, is, unwrap } from "./ast.js";
 import { SOLIDITY_SPECIFIER } from "./builtins.js";
+import { LINE_TERMINATOR } from "./errors.js";
 import type { BuiltLens, ModuleBinding, SourceModule } from "./types.js";
 
 type Edit = readonly [start: number, end: number, text: string];
 
-const lineBreaks = (text: string): number => text.split("\n").length - 1;
+/** The line terminators of a text, each as it is written. */
+const lineBreaks = (text: string): string[] => text.match(LINE_TERMINATOR) ?? [];
 
 /** Every identifier under a node, TypeScript types included: a name used only as a type still counts as used. */
 const identifiers = (node: unknown, into: (Span & { name: string })[]): void => {
@@ -45,6 +47,7 @@ export function rewrite(module: SourceModule, lenses: readonly BuiltLens[]): str
   const callee = unwrap(first.resolved.site.declaration.callee);
   const root = is(callee, "MemberExpression") ? unwrap(callee.object) : callee;
   const packageImport = module.bindings.get((root as AnyNode).name as string);
+  /* v8 ignore next -- @preserve: a lens is only found through the name an import of the package gives, so this guards a broken caller */
   if (packageImport?.kind !== "import") throw new Error("rewrite: the lens's contract is not an import");
   // On the line of the import that brought `contract`, so no line moves. The leading `;` ends that import
   // when it is written without one.
@@ -128,7 +131,8 @@ export function rewrite(module: SourceModule, lenses: readonly BuiltLens[]): str
   // ---- apply, last edit first, padding each with the line breaks it removed -------------------------------------
   let out = code;
   for (const [start, end, text] of edits.sort((a, b) => b[0] - a[0] || b[1] - a[1])) {
-    const padding = "\n".repeat(Math.max(0, lineBreaks(code.slice(start, end)) - lineBreaks(text)));
+    // The terminators the replaced text held, as they were written, so a module keeps the kind it uses.
+    const padding = lineBreaks(code.slice(start, end)).slice(lineBreaks(text).length).join("");
     out = out.slice(0, start) + text + padding + out.slice(end);
   }
   return out;

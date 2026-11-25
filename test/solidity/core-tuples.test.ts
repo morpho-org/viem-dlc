@@ -187,8 +187,73 @@ export const Lens = contract("Lens", { f: ${signature} }).implementation({
   it("several values outside a return have no Solidity form", async () => {
     const code = lens("let a = 0n;\n    let b = 1n;\n    [a, b] = [b, a];\n    return [a, b];");
     await expectRejection(code, {
-      message: "cannot contain this expression (ArrayExpression)",
+      message: "several values are assigned from one call whose return types are declared",
       ...positionIn(code, "[b, a]"),
+    });
+  });
+
+  it("a pattern does not take the one value of a call", async () => {
+    const code = `${IMPORTS}
+const word = internal(pure().returns(string), () => "abc");
+export const Lens = contract("Lens", { f: pure().returns(string) }).implementation({
+  f() {
+    const [letter] = word();
+    return letter;
+  },
+});
+`;
+    await expectRejection(code, {
+      message: "a pattern takes the values of a call that returns several, and this call returns 1",
+      ...positionIn(code, "word();"),
+    });
+  });
+
+  it("a pattern is not assigned the one value of a call", async () => {
+    const code = `${IMPORTS}
+const word = internal(pure().returns(string), () => "abc");
+export const Lens = contract("Lens", { f: pure().returns(string) }).implementation({
+  f() {
+    let letter = "";
+    [letter] = word();
+    return letter;
+  },
+});
+`;
+    await expectRejection(code, {
+      message: "a pattern takes the values of a call that returns several, and this call returns 1",
+      ...positionIn(code, "word();"),
+    });
+  });
+
+  it("a pattern is not assigned a value that is not a call", async () => {
+    const code = `${IMPORTS}
+export const Lens = contract("Lens", { f: pure().returns(string) }).implementation({
+  f() {
+    let letter = "";
+    [letter] = "abc";
+    return letter;
+  },
+});
+`;
+    await expectRejection(code, {
+      message: "several values are assigned from one call whose return types are declared",
+      ...positionIn(code, '"abc";'),
+    });
+  });
+
+  it("a pattern is not assigned from a call whose return types are not in the source", async () => {
+    const code = lens("let q = 0n;\n    let r = 0n;\n    [q, r] = require(x > 0n);\n    return [q, r];");
+    await expectRejection(code, {
+      message: "several values are assigned from one call whose return types are declared",
+      ...positionIn(code, "require(x > 0n);\n    return"),
+    });
+  });
+
+  it("an assigned pattern has one place for each value the call returns", async () => {
+    const more = lens("let q = 0n;\n    [q, q, q] = divMod(x, 2n);\n    return [q, q];");
+    await expectRejection(more, {
+      message: "this pattern has 3 places and the call returns 2 values",
+      ...positionIn(more, "[q, q, q]"),
     });
   });
 
@@ -284,12 +349,12 @@ export const Lens = contract("Lens", { f: pure(uint256) }).implementation({
     });
   });
 
-  it("solc counts the targets of an assignment, at the TypeScript position", async () => {
+  it("the targets of an assignment are counted before solc sees them", async () => {
     const code = lens("let q = 0n;\n    [q] = divMod(x, 2n);\n    return [q, q];");
     await expectRejection(code, {
-      message: "Type tuple(uint256,uint256) is not implicitly convertible to expected type uint256.",
-      ...positionIn(code, "divMod(x, 2n)"),
-      source: "solc",
+      message: "this pattern has 1 places and the call returns 2 values",
+      ...positionIn(code, "[q]"),
+      source: "transform",
     });
   });
 

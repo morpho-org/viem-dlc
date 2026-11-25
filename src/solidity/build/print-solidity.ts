@@ -12,7 +12,9 @@
  *   else is `memory`: locals, helper parameters and return values.
  * - **The spelling of a literal.** `0n` is `0`, `60_000` is `60000`, `'text'` is `"text"`, a string
  *   outside ASCII is a `unicode"…"` literal, `'0x313ce567'` is `hex"313ce567"`, and a `'0x…'` of 40
- *   digits is an address literal.
+ *   digits is an address literal. An integer written with 39 to 41 hexadecimal digits is padded with
+ *   leading zeros, so that solc reads a number and not an address. A Number literal that is not a safe
+ *   integer has no spelling: it is a located error asking for a bigint.
  *
  * What is only TypeScript is erased before anything is read: annotations, generics, `as`, `satisfies`,
  * `!`, a `this` parameter, and a type declared in a body. `Number(x)` and `BigInt(x)` print as `x`.
@@ -31,9 +33,19 @@
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, children, is, keyName, patternNames, unwrap, walk } from "./ast.js";
+import {
+  type AnyNode,
+  children,
+  ERASED_STATEMENTS,
+  is,
+  isThisParameter,
+  keyName,
+  patternNames,
+  unwrap,
+  walk,
+} from "./ast.js";
 import { isElementaryTypeName } from "./builtins.js";
-import { fail } from "./errors.js";
+import { fail, UNSAFE_NUMBER } from "./errors.js";
 import { refusedName } from "./names.js";
 import { Writer } from "./position-map.js";
 import { printYul } from "./print-yul.js";
@@ -88,9 +100,6 @@ const OPERATORS = new Set([
   "AssignmentExpression",
   "UpdateExpression",
 ]);
-
-/** Statements that print as nothing: the empty statement, and a type declared in a body, which is only TypeScript. */
-const ERASED_STATEMENTS = new Set(["EmptyStatement", "TSTypeAliasDeclaration", "TSInterfaceDeclaration"]);
 
 const UINT256: TypeRef = { kind: "elementary", name: "uint256" };
 const BOOL: TypeRef = { kind: "elementary", name: "bool" };
@@ -303,7 +312,7 @@ class Printer {
     this.#module = fn.module;
     this.#scopes = [new Map()];
     // A `this` parameter is a TypeScript annotation, and is erased with the others.
-    const params = body.params.filter((parameter) => !(is(parameter, "Identifier") && parameter.name === "this"));
+    const params = body.params.filter((parameter) => !isThisParameter(parameter));
     if (params.length !== signature.inputs.length)
       this.#fail(
         body,
@@ -323,6 +332,7 @@ class Printer {
       out.write(`) ${visibility} ${signature.mutability}${returns(signature)} {`);
       out.indented(() => {
         const block = body.body as AnyNode | null;
+        /* v8 ignore next -- @preserve: a function written as an expression always has a body, and the check is there for the type checker */
         if (!block) this.#fail(body, "a lens function needs a body");
         if (is(block, "BlockStatement")) {
           this.#hoist(block.body as unknown as AnyNode[]);
@@ -623,18 +633,12 @@ class Printer {
   /** `const [a, , c] = f(x)`: `(T a, , U c) = f(x);`, each type the one `f` declares for that value. */
   #tuple(pattern: AnyNode, init: AnyNode): void {
     const out = this.#out;
-    const outputs = is(init, "CallExpression") ? this.#outputs(init) : undefined;
-    if (!outputs)
-      this.#fail(
-        init,
-        "several locals are declared from one call whose return types are declared, as in const [a, b] = f(x)",
-      );
+    const outputs = this.#destructured(
+      pattern,
+      init,
+      "several locals are declared from one call whose return types are declared, as in const [a, b] = f(x)",
+    );
     const elements = pattern.elements as (AnyNode | null)[];
-    if (elements.length !== outputs.length)
-      this.#fail(
-        pattern,
-        `this pattern has ${elements.length} places and the call returns ${outputs.length} values: a value that is not used is left as a hole, as in [a, , c]`,
-      );
     const declared: [Span & { name: string }, TypeRef][] = [];
     out.write("(");
     for (const [index, element] of elements.entries()) {
@@ -649,6 +653,28 @@ class Printer {
     this.#expression(init);
     out.write(";");
     for (const [element, type] of declared) this.#declare(element, type);
+  }
+
+  /**
+   * The values a pattern takes, on the declaring side and on the assigning side: those of one call whose
+   * declaration returns several, one for each place of the pattern. Solidity reads `(a) = e` as `a = e`,
+   * so a pattern of one place takes no tuple, and anything that is not such a call has no tuple to give.
+   */
+  #destructured(pattern: AnyNode, init: AnyNode, notACall: string): readonly TypeRef[] {
+    const outputs = is(init, "CallExpression") ? this.#outputs(init) : undefined;
+    if (!outputs) this.#fail(init, notACall);
+    if (outputs.length < 2)
+      this.#fail(
+        init,
+        `a pattern takes the values of a call that returns several, and this call returns ${outputs.length}: one value is taken without the brackets`,
+      );
+    const places = (pattern.elements as unknown[]).length;
+    if (places !== outputs.length)
+      this.#fail(
+        pattern,
+        `this pattern has ${places} places and the call returns ${outputs.length} values: a value that is not used is left as a hole, as in [a, , c]`,
+      );
+    return outputs;
   }
 
   // ---- the type of a local ------------------------------------------------------------------------------------
@@ -890,6 +916,17 @@ class Printer {
           return;
         }
         this.#expression(object, true);
+        // What is left is a field its struct declares, or the length of an array. A native member of a
+        // Solidity type, such as the balance of an address, has no form in a lens.
+        const receiver = this.#declaredType(object);
+        if (receiver?.kind === "struct") {
+          if (!receiver.declaration.fields.some((field) => field.name === property))
+            this.#fail(node, `struct ${receiver.declaration.name} has no field "${property}"`);
+        } else if (receiver?.kind !== "array" || property !== "length")
+          this.#fail(
+            node,
+            `"${property}" is not a member a lens can read here. A member is a field of a struct, the length of an array, block.timestamp, block.number, or I.f.selector`,
+          );
         out.write(`.${property}`);
         return;
       }
@@ -924,6 +961,11 @@ class Printer {
         const target = unwrap(node.left as Span);
         if (is(target, "ArrayPattern")) {
           // `[r.a, , r.b] = f(x)`: the tuple `(r.a, , r.b) = f(x)`, a hole where a value is not used.
+          this.#destructured(
+            target,
+            this.#strip(node.right as Span),
+            "several values are assigned from one call whose return types are declared, as in [a, b] = f(x)",
+          );
           out.write("(");
           for (const [index, element] of target.elements.entries()) {
             if (index) out.write(", ");
@@ -1145,6 +1187,12 @@ class Printer {
       this.#options(options);
     } else {
       this.#expression(object, true);
+      // A native member of a Solidity type, such as the call of an address, has no form in a lens.
+      if (this.#declaredType(object)?.kind !== "interface")
+        this.#fail(
+          node,
+          `.${name}(…) is not a call a lens can make here. A member is called on a handle of a declared interface, on a library, on this, or as abi.encode, abi.decode and I.f.encode`,
+        );
       out.write(`.${name}`);
     }
     this.#arguments(args);
@@ -1194,11 +1242,18 @@ class Printer {
     const { value } = node;
     if (typeof value === "boolean") return String(value);
     if (typeof value === "bigint" || typeof value === "number") {
+      if (typeof value === "number" && !Number.isSafeInteger(value)) return this.#fail(node, UNSAFE_NUMBER);
+      /* v8 ignore next -- @preserve: a literal the parser read always has its text, and the fallback after ?? is there for the type checker */
       const text = String(node.raw ?? "")
         .replace(/_/g, "")
         .replace(/n$/, "");
       if (/^(?:0|[1-9][0-9]*)$/.test(text)) return text;
-      if (/^0[xX][0-9a-fA-F]+$/.test(text)) return `0x${text.slice(2)}`;
+      if (/^0[xX][0-9a-fA-F]+$/.test(text)) {
+        // solc reads 40 hexadecimal digits as an address, and refuses 39 and 41 as a misspelled one.
+        // An integer stays an integer: leading zeros make it 42 digits, which solc reads as a number.
+        const digits = text.slice(2);
+        return `0x${digits.length >= 39 && digits.length <= 41 ? digits.padStart(42, "0") : digits}`;
+      }
       return this.#fail(node, "an integer literal is written in decimal or in hexadecimal");
     }
     if (typeof value === "string") {

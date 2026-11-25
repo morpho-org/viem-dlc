@@ -25,15 +25,19 @@
  * own value that name, the name is `r_`, then `r__`, and so on. A name that is called is an opcode or a
  * function declared in the block.
  *
- * A literal is an integer, respelled as in Solidity (`0n` is `0`, `0x1fn` is `0x1f`). A constant named
+ * A literal is an integer, respelled as in Solidity (`0n` is `0`, `0x1fn` is `0x1f`), and a Number
+ * literal that is not a safe integer is refused there as it is in Solidity. A constant named
  * inside a block must be a single such literal, because Yul has no operators. Anything that is not in
  * the table is a located error.
+ *
+ * What is only TypeScript is erased as it is outside a block: annotations, a `this` parameter of the
+ * callback, and a type declared in the block, which is not a statement when the last one is looked for.
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, is, unwrap, walk } from "./ast.js";
+import { type AnyNode, ERASED_STATEMENTS, is, isThisParameter, unwrap, walk } from "./ast.js";
 import { YUL_SPECIFIER } from "./builtins.js";
-import { fail } from "./errors.js";
+import { fail, UNSAFE_NUMBER } from "./errors.js";
 import { refusedName } from "./names.js";
 import type { Reference, YulBlockInput } from "./types.js";
 
@@ -217,6 +221,7 @@ export function printYul(input: YulBlockInput): void {
       }
       switch (node.type) {
         case "Literal":
+          if (typeof node.value === "number" && !Number.isSafeInteger(node.value)) refuse(node, UNSAFE_NUMBER);
           out.write(
             integer(node) ??
               refuse(node, "inside an assembly block a literal is an integer, written in decimal or in hexadecimal"),
@@ -282,12 +287,17 @@ export function printYul(input: YulBlockInput): void {
       if (!is(id, "Identifier")) refuse(id, "a Yul local must be a plain name");
       if (!declarator.init) refuse(declarator, "a Yul local needs an initializer");
       const init = unwrap(declarator.init as Span);
-      if (is(init, "ArrowFunctionExpression")) {
-        out.node({ module, node: init }, () => fn(id.name, init));
-        continue;
-      }
-      out.write(`let ${id.name} := `);
-      expression(init);
+      // Each name is recorded as its own node, so what solc says about a name is reported at that name.
+      out.node({ module, node: declarator }, () => {
+        if (is(init, "ArrowFunctionExpression")) {
+          fn(id, init);
+          return;
+        }
+        out.write("let ");
+        out.node({ module, node: id }, () => out.write(id.name));
+        out.write(" := ");
+        expression(init);
+      });
     }
   };
 
@@ -298,7 +308,7 @@ export function printYul(input: YulBlockInput): void {
   };
 
   const statement = (node: AnyNode): void => {
-    if (is(node, "EmptyStatement")) return;
+    if (ERASED_STATEMENTS.has(node.type)) return;
     out.line();
     out.node({ module, node }, () => {
       switch (node.type) {
@@ -376,7 +386,7 @@ export function printYul(input: YulBlockInput): void {
   /** What a callback or a function returns: its expression body, or the `return word` that ends its block. */
   const returned = (body: AnyNode): { readonly at: Span; readonly word: Span } | undefined => {
     if (!is(body, "BlockStatement")) return { at: body, word: body };
-    const last = body.body.at(-1);
+    const last = body.body.filter((inner) => !ERASED_STATEMENTS.has(inner.type)).at(-1);
     if (!is(last, "ReturnStatement")) return undefined;
     return { at: last, word: last.argument ?? refuse(last, "return is followed by the word it gives") };
   };
@@ -402,23 +412,34 @@ export function printYul(input: YulBlockInput): void {
     });
 
   /** `function name(x, y) -> r { … }`, from an arrow function. */
-  const fn = (name: string, arrow: AnyNode): void => {
+  const fn = (name: Span & { readonly name: string }, arrow: AnyNode): void => {
     if (arrow.async) refuse(arrow, "a function inside an assembly block cannot be async");
     const parameters = (arrow.params as AnyNode[]).map((parameter) =>
-      is(parameter, "Identifier") ? parameter.name : refuse(parameter, "a parameter must be a plain name"),
+      is(parameter, "Identifier") ? parameter : refuse(parameter, "a parameter must be a plain name"),
     );
     let result = returned(arrow.body as AnyNode) ? FUNCTION_RESULT : undefined;
     // Yul lets a function inside another not give its value the name the other gives its own.
     while (result && (written.has(result) || results.includes(result))) result += "_";
-    out.write(`function ${name}(${parameters.join(", ")})${result ? ` -> ${result}` : ""} `);
+    out.write("function ");
+    out.node({ module, node: name }, () => out.write(name.name));
+    out.write("(");
+    for (const [index, parameter] of parameters.entries()) {
+      if (index) out.write(", ");
+      out.node({ module, node: parameter }, () => out.write(parameter.name));
+    }
+    out.write(`)${result ? ` -> ${result}` : ""} `);
     if (result) results.push(result);
-    body(arrow.body as AnyNode, result, parameters);
+    body(
+      arrow.body as AnyNode,
+      result,
+      parameters.map((parameter) => parameter.name),
+    );
     if (result) results.pop();
   };
 
   // ---- the block ------------------------------------------------------------------------------------------------
   const { block } = input;
-  const [parameter] = block.params;
+  const [parameter] = block.params.filter((declared) => !isThisParameter(declared));
   if (parameter) refuse(parameter, "the callback of an assembly block takes no parameters");
   if (block.async || block.generator) refuse(block, "the callback of an assembly block cannot be async or a generator");
   const blockBody = block.body as AnyNode;

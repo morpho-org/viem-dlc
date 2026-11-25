@@ -39,6 +39,16 @@ export const unwrap = (node: Span): AnyNode => {
   return current;
 };
 
+/** Statements that print as nothing: the empty statement, and a type declared in a body, which is only TypeScript. */
+export const ERASED_STATEMENTS: ReadonlySet<string> = new Set([
+  "EmptyStatement",
+  "TSTypeAliasDeclaration",
+  "TSInterfaceDeclaration",
+]);
+
+/** True for a `this` parameter, which is a TypeScript annotation and is erased with the others. */
+export const isThisParameter = (parameter: Span): boolean => is(parameter, "Identifier") && parameter.name === "this";
+
 /** Keys of a node that hold TypeScript types, labels or back-pointers, which no stage reads. */
 export const SKIPPED_KEYS = new Set([
   "type",

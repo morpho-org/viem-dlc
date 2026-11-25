@@ -7,12 +7,12 @@
 import { parseSync, type Span, type Statement } from "oxc-parser";
 
 import { type AnyNode, is, keyName, unwrap } from "./ast.js";
-import { LensError } from "./errors.js";
+import { LensError, LINE_TERMINATOR } from "./errors.js";
 import type { ModuleBinding, ModuleExport, SourceModule } from "./types.js";
 
 const lineStartsOf = (code: string): number[] => {
   const starts = [0];
-  for (let i = code.indexOf("\n"); i !== -1; i = code.indexOf("\n", i + 1)) starts.push(i + 1);
+  for (const terminator of code.matchAll(LINE_TERMINATOR)) starts.push(terminator.index + terminator[0].length);
   return starts;
 };
 
@@ -28,7 +28,9 @@ export function parseModule(file: string, code: string): SourceModule {
   if (error) {
     const offset = error.labels[0]?.start ?? 0;
     let line = 0;
+    /* v8 ignore next -- @preserve: the index is in range, and the fallback after ?? is there for the type checker */
     while (line + 1 < lineStarts.length && (lineStarts[line + 1] ?? 0) <= offset) line++;
+    /* v8 ignore next -- @preserve: the index is in range, and the fallback after ?? is there for the type checker */
     throw new LensError([
       {
         file,
@@ -77,6 +79,7 @@ export function parseModule(file: string, code: string): SourceModule {
       if (statement.importKind === "type") continue;
       for (const specifier of statement.specifiers) {
         if (is(specifier, "ImportSpecifier") && specifier.importKind === "type") continue;
+        /* v8 ignore next -- @preserve: an imported name is an identifier or a string, so the fallback after ?? is there for the type checker */
         const imported = is(specifier, "ImportDefaultSpecifier")
           ? "default"
           : is(specifier, "ImportNamespaceSpecifier")
@@ -98,6 +101,7 @@ export function parseModule(file: string, code: string): SourceModule {
         if (specifier.exportKind === "type") continue;
         const exported = keyName(specifier.exported);
         const local = keyName(specifier.local);
+        /* v8 ignore next -- @preserve: an exported name and the local it names are each an identifier or a string */
         if (exported === undefined || local === undefined) continue;
         exports.set(
           exported,

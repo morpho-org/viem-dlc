@@ -320,6 +320,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     const id = fn.id as { name: string } | null | undefined;
     if (id) scope.add(id.name);
     const body = fn.body as AnyNode | null;
+    /* v8 ignore next -- @preserve: a function written as an expression always has a body, and the check is there for the type checker */
     if (!body) return;
     if (is(body, "BlockStatement")) scanBlock(m, body.body as unknown as AnyNode[], [...scopes, scope], uses);
     else scan(m, body, [...scopes, scope], uses);
@@ -476,11 +477,24 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
       return error(
         m,
         node,
-        `${what} cannot be part of a constant a lens reads. Such a constant is built only from literals, other such constants, and the operators + - * ** % << >> & | ^ ~`,
+        `${what} cannot be part of a constant a lens reads. Such a constant is built only from bigint literals, booleans, strings, other such constants, and the operators + - * ** % << >> & | ^ ~`,
       );
     }
     if (is(node, "Literal")) {
-      if (!["bigint", "number", "boolean", "string"].includes(typeof node.value)) refused("this literal");
+      // JavaScript and a lens both read the constant, so it holds only what means the same to both.
+      if (typeof node.value === "number")
+        error(
+          m,
+          node,
+          "a Number literal cannot be part of a constant a lens reads: JavaScript computes with Numbers as floats, and in 32 bits where it shifts, and solc computes exactly, so the constant would mean two different values. Write it as a bigint, with the n suffix",
+        );
+      if (typeof node.value === "string" && node.value.startsWith("0x"))
+        error(
+          m,
+          node,
+          "a string that starts with 0x cannot be a constant a lens reads: a body can read it as a hex literal or an address, and JavaScript reads it as text, so the constant would mean two different values. Write the literal in the body",
+        );
+      if (!["bigint", "boolean", "string"].includes(typeof node.value)) refused("this literal");
       return;
     }
     if (is(node, "Identifier") || is(node, "MemberExpression")) {
@@ -496,10 +510,13 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     }
     if (is(node, "BinaryExpression")) {
       if (node.operator === "/") {
-        const at = m.code.indexOf("/", node.left.end);
+        // The operator is the one slash between the operands that is not in a comment.
+        const between = m.code.slice(node.left.end, node.right.start);
+        const comments = /\/\*[\s\S]*?\*\/|\/\/.*/g;
+        const at = node.left.end + between.replace(comments, (comment) => " ".repeat(comment.length)).indexOf("/");
         error(
           m,
-          at >= 0 && at < node.right.start ? { start: at, end: at + 1 } : node,
+          { start: at, end: at + 1 },
           "a constant a lens reads cannot use /: solc divides literals exactly and JavaScript's BigInt truncates, so the constant would mean two different values. Divide inside the body, where the division is Solidity's",
         );
       }
@@ -664,6 +681,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
   }
 
   // Other modules first, in the order they were first reached; then the lens's own. Source order within each.
+  /* v8 ignore next -- @preserve: a module was ranked when its first declaration was reached, and the fallback after ?? is there for the type checker */
   const rank = (m: SourceModule) => (m === module ? Number.POSITIVE_INFINITY : (moduleRank.get(m) ?? 0));
   const ordered = [...declarations.values()].sort(
     (a, b) =>
