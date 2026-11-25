@@ -135,6 +135,20 @@ export function printYul(input: YulBlockInput): void {
   /** The names given to the values of the functions being printed, outermost first. */
   const results: string[] = [];
 
+  /** The locals of the block in scope of what is being printed, innermost last. True for a function. */
+  const scopes: Map<string, boolean>[] = [];
+  /** Prints with the locals that `statements` declare, and `parameters`, in scope. */
+  const within = (statements: readonly AnyNode[], print: () => void, parameters: readonly string[] = []): void => {
+    const scope = new Map(parameters.map((name) => [name, false]));
+    for (const statement of statements)
+      if (is(statement, "VariableDeclaration"))
+        for (const { id, init } of statement.declarations)
+          if (is(id, "Identifier")) scope.set(id.name, !!init && is(unwrap(init), "ArrowFunctionExpression"));
+    scopes.push(scope);
+    print();
+    scopes.pop();
+  };
+
   const braces = (print: () => void): void => {
     out.write("{");
     out.indented(print);
@@ -174,7 +188,12 @@ export function printYul(input: YulBlockInput): void {
         : YUL_OPCODES.has(reference.name)
           ? reference.name
           : refuse(callee, `"${reference.name}" is not an opcode ${YUL_SPECIFIER} exports`)
-      : is(callee, "Identifier")
+      : // A name means its nearest binding, which must be a function: a word cannot be called.
+        is(callee, "Identifier") &&
+          scopes
+            .filter((scope) => scope.has(callee.name))
+            .at(-1)
+            ?.get(callee.name)
         ? callee.name
         : uncallable();
     out.write(`${name}(`);
@@ -310,22 +329,24 @@ export function printYul(input: YulBlockInput): void {
           return;
         case "ForStatement":
           if (!node.test) refuse(node, "a for loop inside an assembly block needs a condition");
-          out.write("for {");
-          if (node.init) {
-            out.write(" ");
-            simple(node.init as AnyNode);
-            out.write(" ");
-          }
-          out.write("} ");
-          expression(node.test as Span);
-          out.write(" {");
-          if (node.update) {
-            out.write(" ");
-            effect(node.update as Span);
-            out.write(" ");
-          }
-          out.write("} ");
-          nested(node.body as AnyNode);
+          within(node.init ? [node.init as AnyNode] : [], () => {
+            out.write("for {");
+            if (node.init) {
+              out.write(" ");
+              simple(node.init as AnyNode);
+              out.write(" ");
+            }
+            out.write("} ");
+            expression(node.test as Span);
+            out.write(" {");
+            if (node.update) {
+              out.write(" ");
+              effect(node.update as Span);
+              out.write(" ");
+            }
+            out.write("} ");
+            nested(node.body as AnyNode);
+          });
           return;
         case "BreakStatement":
         case "ContinueStatement":
@@ -343,7 +364,10 @@ export function printYul(input: YulBlockInput): void {
   /** The body of an `if`, an `else` or a loop, which Yul always writes in braces. */
   const nested = (node: AnyNode): void =>
     braces(() => {
-      for (const inner of is(node, "BlockStatement") ? (node.body as unknown as AnyNode[]) : [node]) statement(inner);
+      const statements = is(node, "BlockStatement") ? (node.body as unknown as AnyNode[]) : [node];
+      within(statements, () => {
+        for (const inner of statements) statement(inner);
+      });
     });
 
   // ---- bodies that give a word ----------------------------------------------------------------------------------
@@ -356,17 +380,23 @@ export function printYul(input: YulBlockInput): void {
   };
 
   /** The body of a callback or of a function. What it returns is assigned to `result`. */
-  const body = (node: AnyNode, result: string | undefined): void =>
+  const body = (node: AnyNode, result: string | undefined, parameters: readonly string[] = []): void =>
     braces(() => {
       const final = returned(node);
-      if (is(node, "BlockStatement"))
-        for (const inner of node.body as unknown as AnyNode[]) if (inner !== final?.at) statement(inner);
-      if (!final) return;
-      out.line();
-      out.node({ module, node: final.at }, () => {
-        out.write(`${result} := `);
-        expression(final.word);
-      });
+      const statements = is(node, "BlockStatement") ? (node.body as unknown as AnyNode[]) : [];
+      within(
+        statements,
+        () => {
+          for (const inner of statements) if (inner !== final?.at) statement(inner);
+          if (!final) return;
+          out.line();
+          out.node({ module, node: final.at }, () => {
+            out.write(`${result} := `);
+            expression(final.word);
+          });
+        },
+        parameters,
+      );
     });
 
   /** `function name(x, y) -> r { … }`, from an arrow function. */
@@ -380,7 +410,7 @@ export function printYul(input: YulBlockInput): void {
     while (result && (written.has(result) || results.includes(result))) result += "_";
     out.write(`function ${name}(${parameters.join(", ")})${result ? ` -> ${result}` : ""} `);
     if (result) results.push(result);
-    body(arrow.body as AnyNode, result);
+    body(arrow.body as AnyNode, result, parameters);
     if (result) results.pop();
   };
 

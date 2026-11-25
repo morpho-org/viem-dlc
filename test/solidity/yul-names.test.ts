@@ -1,6 +1,7 @@
 /**
  * Typed Yul: the names in a block. A function inside a block names its value in Yul, where TypeScript
- * names nothing, and that name is one the block does not use.
+ * names nothing, and that name is one the block does not use. A name that is called is a function declared
+ * in the block, or an opcode.
  */
 import { describe, expect, it } from "vitest";
 
@@ -143,4 +144,56 @@ describe("a function inside a block does not read a local of the block, whatever
     });
     expect(diagnostic.code).toBe("8198");
   });
+});
+
+const CALL =
+  "inside an assembly block a call is to an opcode imported from @morpho-org/viem-dlc/solidity/yul, or to a function declared in the block";
+
+describe("a name that is called inside a block is a function declared in the block", () => {
+  const cases: readonly (readonly [name: string, block: string, at: string])[] = [
+    ["a Yul local that is a word", "const word = x;\n      return word(1n);", "word(1n)"],
+    ["a Solidity local", "return x(1n);", "x(1n)"],
+    ["a parameter of a function", "const apply = (g) => g(1n);\n      return apply(x);", "g(1n)"],
+    [
+      "a word that is nearer than the function of its name",
+      "const twice = (a) => add(a, a);\n      const use = (twice) => twice(1n);\n      return use(twice(x));",
+      "twice(1n)",
+    ],
+  ];
+  for (const [name, block, at] of cases)
+    it(`refuses a call of ${name}`, async () => {
+      const code = lens(`const value = assembly("memory-safe", () => {\n      ${block}\n    });\n    return value;`);
+      await expectRejection(code, { message: CALL, ...positionIn(code, at), source: "transform" });
+    });
+});
+
+describePairs("what a block can call", {
+  "a function declared further down, from a nested block and from another function, and an opcode under another name": {
+    ts: lens(`const value = assembly("memory-safe", () => {
+      let total = 0n;
+      for (let i = 0n; twice(i) < x; i = plus(i, 1n)) {
+        total = thrice(total);
+      }
+      const thrice = (a) => plus(twice(a), plus(a, 1n));
+      const twice = (a) => add(a, a);
+      return total;
+    });
+    return value;`),
+    solidity: handwritten(`uint256 value;
+          assembly ("memory-safe") {
+              let total := 0
+              for { let i := 0 } lt(twice(i), x) { i := add(i, 1) } {
+                  total := thrice(total)
+              }
+              function thrice(a) -> r {
+                  r := add(twice(a), add(a, 1))
+              }
+              function twice(a) -> r {
+                  r := add(a, a)
+              }
+              value := total
+          }
+          return value;`),
+    calls,
+  },
 });
