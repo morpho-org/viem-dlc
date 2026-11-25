@@ -615,18 +615,12 @@ class Printer {
   /** `const [a, , c] = f(x)`: `(T a, , U c) = f(x);`, each type the one `f` declares for that value. */
   #tuple(pattern: AnyNode, init: AnyNode): void {
     const out = this.#out;
-    const outputs = is(init, "CallExpression") ? this.#outputs(init) : undefined;
-    if (!outputs)
-      this.#fail(
-        init,
-        "several locals are declared from one call whose return types are declared, as in const [a, b] = f(x)",
-      );
+    const outputs = this.#destructured(
+      pattern,
+      init,
+      "several locals are declared from one call whose return types are declared, as in const [a, b] = f(x)",
+    );
     const elements = pattern.elements as (AnyNode | null)[];
-    if (elements.length !== outputs.length)
-      this.#fail(
-        pattern,
-        `this pattern has ${elements.length} places and the call returns ${outputs.length} values: a value that is not used is left as a hole, as in [a, , c]`,
-      );
     const declared: [string, TypeRef][] = [];
     out.write("(");
     for (const [index, element] of elements.entries()) {
@@ -641,6 +635,28 @@ class Printer {
     this.#expression(init);
     out.write(";");
     for (const [name, type] of declared) this.#declare(name, type);
+  }
+
+  /**
+   * The values a pattern takes, on the declaring side and on the assigning side: those of one call whose
+   * declaration returns several, one for each place of the pattern. Solidity reads `(a) = e` as `a = e`,
+   * so a pattern of one place takes no tuple, and anything that is not such a call has no tuple to give.
+   */
+  #destructured(pattern: AnyNode, init: AnyNode, notACall: string): readonly TypeRef[] {
+    const outputs = is(init, "CallExpression") ? this.#outputs(init) : undefined;
+    if (!outputs) this.#fail(init, notACall);
+    if (outputs.length < 2)
+      this.#fail(
+        init,
+        `a pattern takes the values of a call that returns several, and this call returns ${outputs.length}: one value is taken without the brackets`,
+      );
+    const places = (pattern.elements as unknown[]).length;
+    if (places !== outputs.length)
+      this.#fail(
+        pattern,
+        `this pattern has ${places} places and the call returns ${outputs.length} values: a value that is not used is left as a hole, as in [a, , c]`,
+      );
+    return outputs;
   }
 
   // ---- the type of a local ------------------------------------------------------------------------------------
@@ -916,6 +932,11 @@ class Printer {
         const target = unwrap(node.left as Span);
         if (is(target, "ArrayPattern")) {
           // `[r.a, , r.b] = f(x)`: the tuple `(r.a, , r.b) = f(x)`, a hole where a value is not used.
+          this.#destructured(
+            target,
+            this.#strip(node.right as Span),
+            "several values are assigned from one call whose return types are declared, as in [a, b] = f(x)",
+          );
           out.write("(");
           for (const [index, element] of target.elements.entries()) {
             if (index) out.write(", ");
