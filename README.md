@@ -874,6 +874,11 @@ Every integration runs the same transform, and holds to the same rules:
   that a pragma or a compiler option names, and the build does not read which of the module's names
   that is. A struct class with a decorator stops the build, because removing the class would also
   remove what the decorator does.
+- **No lens body reaches the output**, in a script or in a source map: a map embeds the module as it
+  was rewritten. The Vite plugin holds to that for the modules it loads itself. A build stops at a
+  lens in a module that was imported with a query or a fragment, such as `./lens.ts?v=2`, or that
+  another plugin loaded: import a lens module by its path alone, and put `solidity()` before any
+  plugin that loads source files. The dev server and Vitest ship no map, and compile such a module.
 - **Nothing is written into the source tree.** The only files written are the tool's own output and
   the cache described below.
 
