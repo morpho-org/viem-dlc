@@ -1,6 +1,7 @@
 /**
  * Typed Yul as TypeScript writes it: what is only TypeScript is erased inside a block as it is outside
- * one, and what solc refuses about a name is reported at that name.
+ * one, a block's value may be a comparison or have a named elementary type, and what solc refuses about
+ * a name is reported at that name.
  */
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -53,6 +54,37 @@ export const ErasedLens = contract("ErasedLens", {
 });
 `;
 
+const values = `${HEAD}
+export const ValueLens = contract("ValueLens", {
+  compared: pure(uint256).returns(uint256, uint256),
+  small: pure(uint256).returns(uint8),
+  flag: pure(uint256).returns(bool),
+  account: pure(uint256).returns(address),
+}).implementation({
+  // A comparison is a word: 1 or 0.
+  compared(x) {
+    const atLeast = assembly("memory-safe", () => x >= 3n);
+    const below = assembly("memory-safe", () => {
+      return x < 3n;
+    });
+    return [atLeast, below];
+  },
+  // The type named first is the type of the local, whatever elementary type it is.
+  small(x) {
+    const value = assembly(uint8, "memory-safe", () => add(x, 1n));
+    return value;
+  },
+  flag(x) {
+    const value = assembly(bool, "memory-safe", () => lt(x, 3n));
+    return value;
+  },
+  account(x) {
+    const value = assembly(address, "memory-safe", () => x);
+    return value;
+  },
+});
+`;
+
 const pairs: Record<string, ExecutedPair> = {
   "a block that declares types and takes a this parameter": {
     ts: erased,
@@ -91,6 +123,58 @@ const pairs: Record<string, ExecutedPair> = {
       { functionName: "tripled", args: [3n] },
       { functionName: "tripled", args: [101n] },
       { functionName: "stored", args: [7n] },
+    ],
+  },
+  "a block whose value is a comparison, or has a named elementary type": {
+    ts: values,
+    solidity: `
+      contract ValueLens {
+          function compared(uint256 x) external pure returns (uint256, uint256) {
+              uint256 atLeast;
+              assembly ("memory-safe") {
+                  atLeast := iszero(lt(x, 3))
+              }
+              uint256 below;
+              assembly ("memory-safe") {
+                  below := lt(x, 3)
+              }
+              return (atLeast, below);
+          }
+
+          function small(uint256 x) external pure returns (uint8) {
+              uint8 value;
+              assembly ("memory-safe") {
+                  value := add(x, 1)
+              }
+              return value;
+          }
+
+          function flag(uint256 x) external pure returns (bool) {
+              bool value;
+              assembly ("memory-safe") {
+                  value := lt(x, 3)
+              }
+              return value;
+          }
+
+          function account(uint256 x) external pure returns (address) {
+              address value;
+              assembly ("memory-safe") {
+                  value := x
+              }
+              return value;
+          }
+      }
+    `,
+    calls: [
+      { functionName: "compared", args: [0n] },
+      { functionName: "compared", args: [3n] },
+      { functionName: "compared", args: [6n] },
+      { functionName: "small", args: [0n] },
+      { functionName: "small", args: [6n] },
+      { functionName: "flag", args: [0n] },
+      { functionName: "flag", args: [3n] },
+      { functionName: "account", args: [0x1234n] },
     ],
   },
 };

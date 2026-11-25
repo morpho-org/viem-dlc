@@ -518,16 +518,16 @@ export interface Yul {
   gas: Op0;
   pop: (x: Word) => void;
 }
-type YulType = Bytes32Token | Token<"bytes"> | Token<"string">;
 /**
- * A block that ends in `return word` is a value: a uint256, or the type named first (the word is then
- * the bytes32 itself, or the memory pointer of the string or bytes). The type is an argument and not a
- * type parameter because a type parameter is erased before the transform reads the source. A block
- * with no `return` is a statement. Every block is `"memory-safe"`, and says so.
+ * A block that ends in `return word` is a value: a uint256, or the elementary type named first (the
+ * word is then the value itself, or the memory pointer of a string or bytes). The word is anything a
+ * block computes, a comparison included. The type is an argument and not a type parameter because a
+ * type parameter is erased before the transform reads the source. A block with no `return` is a
+ * statement. Every block is `"memory-safe"`, and says so.
  */
 export interface Assembly {
-  <T extends YulType>(type: T, flag: "memory-safe", block: () => bigint): Out<T>;
-  (flag: "memory-safe", block: () => bigint): uint256;
+  <T extends Token>(type: T, flag: "memory-safe", block: () => Word): Out<T>;
+  (flag: "memory-safe", block: () => Word): uint256;
   (flag: "memory-safe", block: () => void): void;
 }
 
