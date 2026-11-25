@@ -39,18 +39,43 @@ export const unwrap = (node: Span): AnyNode => {
   return current;
 };
 
-/** Statements that print as nothing: the empty statement, and a type declared in a body, which is only TypeScript. */
-export const ERASED_STATEMENTS: ReadonlySet<string> = new Set([
-  "EmptyStatement",
-  "TSTypeAliasDeclaration",
-  "TSInterfaceDeclaration",
+/** TypeScript nodes that hold a value. Every other `TS…` node is a type, and names nothing at run time. */
+const VALUE_NODES = new Set([
+  "TSAsExpression",
+  "TSSatisfiesExpression",
+  "TSNonNullExpression",
+  "TSTypeAssertion",
+  "TSInstantiationExpression",
+  "TSParameterProperty",
+  "TSModuleDeclaration",
+  "TSModuleBlock",
+  "TSEnumDeclaration",
+  "TSEnumBody",
+  "TSEnumMember",
+  "TSExportAssignment",
+  "TSImportEqualsDeclaration",
+  "TSExternalModuleReference",
+  "TSQualifiedName",
 ]);
+
+/**
+ * True for what is only TypeScript, and is gone from the JavaScript a compiler emits: a type, a type
+ * alias, an interface, an overload signature, and anything declared with `declare`. No stage reads
+ * one, so a module means the same read from `.ts` source and from built `.js`.
+ */
+export const isErased = (node: Span): boolean => {
+  const { type, declare } = node as AnyNode;
+  return declare === true || (type.startsWith("TS") && !VALUE_NODES.has(type));
+};
+
+/** True for a statement that prints as nothing: the empty statement, and one that is only TypeScript. */
+export const printsNothing = (statement: Span): boolean => is(statement, "EmptyStatement") || isErased(statement);
 
 /** True for a `this` parameter, which is a TypeScript annotation and is erased with the others. */
 export const isThisParameter = (parameter: Span): boolean => is(parameter, "Identifier") && parameter.name === "this";
 
 /** Keys of a node that hold TypeScript types, labels or back-pointers, which no stage reads. */
-export const SKIPPED_KEYS = new Set([
+const SKIPPED_KEYS = new Set([
   "type",
   "start",
   "end",
@@ -62,19 +87,21 @@ export const SKIPPED_KEYS = new Set([
   "superTypeArguments",
   "returnType",
   "implements",
-  "decorators",
   "label",
 ]);
 
-/** The child nodes of a node, in source order, without the keys of {@link SKIPPED_KEYS}. */
+/**
+ * The child nodes of a node, in source order: what is left of them in JavaScript. The keys of
+ * {@link SKIPPED_KEYS}, the nodes that are only TypeScript and a `this` parameter are not among them, so
+ * nothing that walks a tree reads a name a compiler erases.
+ */
 export const children = (node: AnyNode): AnyNode[] => {
   const out: AnyNode[] = [];
   for (const key in node) {
     if (SKIPPED_KEYS.has(key)) continue;
     const value = node[key];
-    if (Array.isArray(value)) {
-      for (const item of value) if (isNode(item)) out.push(item);
-    } else if (isNode(value)) out.push(value);
+    for (const item of Array.isArray(value) ? value : [value])
+      if (isNode(item) && !isErased(item) && !(key === "params" && isThisParameter(item))) out.push(item);
   }
   return out;
 };
@@ -82,7 +109,7 @@ export const children = (node: AnyNode): AnyNode[] => {
 const isNode = (value: unknown): value is AnyNode =>
   typeof value === "object" && value !== null && typeof (value as AnyNode).type === "string";
 
-/** Visits a node and everything under it, TypeScript types excluded. */
+/** Visits a node and everything under it that {@link children} gives. */
 export const walk = (node: AnyNode, visit: (node: AnyNode) => void): void => {
   visit(node);
   for (const child of children(node)) walk(child, visit);

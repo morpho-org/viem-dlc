@@ -771,23 +771,32 @@ Read a body as Solidity. Arithmetic happens at the operands' width and reverts o
 the type checker, and a body never runs as JavaScript. The declarations give the editor its types:
 `quote` above has the fields `gross`, `fee` and `net`, with no generated file.
 
+A lens is written in one expression, `contract(name, functions).implementation({ … })`, with
+`contract` imported from the package. Any other use of `contract` stops the build: a declaration kept
+in a variable and implemented later, or `contract` passed on, exported, or read off a namespace import
+in any way but `namespace.contract`, would leave a lens that is never compiled.
+
+Every name is printed in Solidity as it is written, and none is changed. Two declarations of one lens
+cannot share a name, and none can have the name of the contract or of an entry point: the build stops
+at the second. A constant is printed in place, so its name is free.
+
 ### Entry points
 
 | Import | What it is | Needs |
 | --- | --- | --- |
 | `@morpho-org/viem-dlc/solidity` | What a lens module imports: the types, `Struct`, `view`, `pure`, `iface`, `internal`, `immutable`, `library`, `contract`, and what a body can call | `viem` |
 | `@morpho-org/viem-dlc/solidity/yul` | The opcodes of an `assembly` block | nothing |
-| `@morpho-org/viem-dlc/solidity/vite` | The plugin for Vite, Vitest, Rolldown and tsdown | `solc`, `oxc-parser` |
-| `@morpho-org/viem-dlc/solidity/next` | `withSolidity`, for Next with Turbopack | `solc`, `oxc-parser` |
-| `@morpho-org/viem-dlc/solidity/register` | The `node --import` hook, for scripts | `solc`, `oxc-parser`, `oxc-resolver` |
-| `viem-dlc-solidity` (command) | `check`, which compiles every lens under a directory | `solc`, `oxc-parser`, `oxc-resolver` |
-| `@morpho-org/viem-dlc/solidity/build` | The transform itself, for writing another integration | `solc`, `oxc-parser` |
+| `@morpho-org/viem-dlc/solidity/vite` | The plugin for Vite, Vitest, Rolldown and tsdown | `solc`, `oxc-parser`, `@typescript-eslint/scope-manager` |
+| `@morpho-org/viem-dlc/solidity/next` | `withSolidity`, for Next with Turbopack | `solc`, `oxc-parser`, `@typescript-eslint/scope-manager` |
+| `@morpho-org/viem-dlc/solidity/register` | The `node --import` hook, for scripts | `solc`, `oxc-parser`, `@typescript-eslint/scope-manager`, `oxc-resolver` |
+| `viem-dlc-solidity` (command) | `check`, which compiles every lens under a directory | `solc`, `oxc-parser`, `@typescript-eslint/scope-manager`, `oxc-resolver` |
+| `@morpho-org/viem-dlc/solidity/build` | The transform itself, for writing another integration | `solc`, `oxc-parser`, `@typescript-eslint/scope-manager` |
 
-`solc`, `oxc-parser` and `oxc-resolver` are optional peer dependencies. Install them where lenses
-are built or tested, and nowhere else:
+`solc`, `oxc-parser`, `@typescript-eslint/scope-manager` and `oxc-resolver` are optional peer
+dependencies. Install them where lenses are built or tested, and nowhere else:
 
 ```bash
-pnpm add -D solc@0.8.36 oxc-parser oxc-resolver
+pnpm add -D solc@0.8.36 oxc-parser @typescript-eslint/scope-manager oxc-resolver
 ```
 
 The first two rows are all that reaches production, and they import only `viem`.
@@ -833,11 +842,14 @@ Every integration runs the same transform, and holds to the same rules:
   next.
 - **Modules are parsed and never run.** A lens reaches helpers, structs and constants in other
   modules through imports, re-exports, `export *` and namespace imports, resolved by the tool's own
-  resolver, so a path alias such as `@/` works. Under `node --import` that resolver is Node's own, with
-  the conditions the process runs with; TypeScript's conventions and the `paths` of `tsconfig.json`
-  apply only to an import Node cannot resolve. A helper can also be read from the JavaScript that
-  `tsc` emitted for it. Output that a bundler or a minifier has rewritten is not supported: it may be
-  refused, or print different Solidity.
+  resolver, so a path alias such as `@/` works. A name is read through `export *` only where one
+  `export *` of the module offers it. Where two offer it the build stops, even if both lead to one
+  declaration: export the name there by name, which comes before any `export *`. Under
+  `node --import` that resolver is Node's own, with the conditions the process runs with;
+  TypeScript's conventions and the `paths` of `tsconfig.json` apply only to an import Node cannot
+  resolve. A helper can also be read from the JavaScript that `tsc` emitted for it. Output that a
+  bundler or a minifier has rewritten is not supported: it may be refused, or print different
+  Solidity.
 - **Nothing is written into the source tree.** The only files written are the tool's own output and
   the cache described below.
 

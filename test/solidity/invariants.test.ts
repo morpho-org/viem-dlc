@@ -41,14 +41,20 @@ describe("the packed package, installed without its optional peers", () => {
     return JSON.parse(result.stdout);
   };
 
-  it("has no compiler, parser or resolver to find", () => {
+  it("has no compiler, parser, resolver or scope analyzer to find", () => {
     const found = evaluate(`
       import { createRequire } from "node:module";
       const require = createRequire(process.cwd() + "/");
       const resolves = (name) => { try { require.resolve(name); return true; } catch { return false; } };
-      console.log(JSON.stringify(Object.fromEntries(["viem", "solc", "oxc-parser", "oxc-resolver"].map((name) => [name, resolves(name)]))));
+      console.log(JSON.stringify(Object.fromEntries(["viem", "solc", "oxc-parser", "oxc-resolver", "@typescript-eslint/scope-manager"].map((name) => [name, resolves(name)]))));
     `);
-    expect(found).toEqual({ viem: true, solc: false, "oxc-parser": false, "oxc-resolver": false });
+    expect(found).toEqual({
+      viem: true,
+      solc: false,
+      "oxc-parser": false,
+      "oxc-resolver": false,
+      "@typescript-eslint/scope-manager": false,
+    });
   });
 
   it("imports the runtime entries, and a compiled lens works", () => {
@@ -81,10 +87,8 @@ describe("the packed package, installed without its optional peers", () => {
         await failed("@morpho-org/viem-dlc/solidity/vite"),
       ]));
     `);
-    expect(failure).toEqual([
-      expect.stringMatching(/^ERR_MODULE_NOT_FOUND: Cannot find package 'oxc-parser'/),
-      expect.stringMatching(/^ERR_MODULE_NOT_FOUND: Cannot find package 'oxc-parser'/),
-    ]);
+    const missing = /^ERR_MODULE_NOT_FOUND: Cannot find package '(?:oxc-parser|@typescript-eslint\/scope-manager)'/;
+    expect(failure).toEqual([expect.stringMatching(missing), expect.stringMatching(missing)]);
   });
 });
 

@@ -5,57 +5,47 @@
  * from the package directly, at any nesting depth. Its parts are literals written
  * in place, and anything else is a located error.
  *
- * A name means its nearest binding: where a parameter or a local is named like the imported `contract`,
- * or like the namespace it is read off, the call is ordinary code and is left as it is.
+ * What `contract` is bound to is read from the scope analysis, not from its spelling: where a parameter
+ * or a local is named like the imported `contract`, or like the namespace it is read off, the call is
+ * ordinary code and is left as it is.
  *
  * Every other use of the package's `contract` is a located error: a declaration kept in a variable and
- * implemented later, or `contract` passed around under another name, would not be compiled, and would
- * throw on first use.
+ * implemented later, `contract` passed around or exported under another name, or read off the package's
+ * namespace in any way but `namespace.contract`, would not be compiled, and would throw on first use.
+ * The namespace itself is only ever the object of `namespace.name`, so no such read goes unseen.
  */
-import { type AnyNode, is, SKIPPED_KEYS, unwrap, walk } from "./ast.js";
+import { type AnyNode, is, keyName, unwrap, walk } from "./ast.js";
 import { SOLIDITY_SPECIFIER } from "./builtins.js";
 import { fail, failOnExtraArgument } from "./errors.js";
 import { refusedName } from "./names.js";
-import { isHidden } from "./scopes.js";
+import { boundTo } from "./scopes.js";
 import type { LensSite, SourceModule } from "./types.js";
 
 /** True when a module's text can hold a lens. Checked before parsing, so other files cost nothing. */
 export const mentionsPackage = (code: string): boolean => code.includes(SOLIDITY_SPECIFIER);
 
-/** True when `callee` is the package's export `name`, imported by name or read off a namespace import. */
-export const isPackageExport = (module: SourceModule, callee: AnyNode, name: string): boolean => {
-  if (is(callee, "Identifier")) {
-    const binding = module.bindings.get(callee.name);
-    return binding?.kind === "import" && binding.source === SOLIDITY_SPECIFIER && binding.imported === name;
-  }
-  if (is(callee, "MemberExpression") && !callee.computed && callee.property.name === name) {
-    const object = unwrap(callee.object);
-    if (!is(object, "Identifier")) return false;
-    const binding = module.bindings.get(object.name);
-    return binding?.kind === "import" && binding.source === SOLIDITY_SPECIFIER && binding.imported === "*";
-  }
-  return false;
-};
-
-/** TypeScript nodes that hold a value. Every other `TS…` node is a type, and names nothing at run time. */
-const VALUE_NODES = new Set([
-  "TSAsExpression",
-  "TSSatisfiesExpression",
-  "TSNonNullExpression",
-  "TSTypeAssertion",
-  "TSInstantiationExpression",
-  "TSParameterProperty",
-  "TSModuleDeclaration",
-  "TSModuleBlock",
-  "TSEnumDeclaration",
-  "TSEnumBody",
-  "TSEnumMember",
-  "TSExportAssignment",
-]);
+const NOT_A_LENS =
+  "contract is written in one expression with its implementation, as contract(name, functions).implementation({ … }): used in any other way, a lens is not compiled";
 
 export function find(module: SourceModule): LensSite[] {
   const sites: LensSite[] = [];
   const program = module.program as unknown as AnyNode;
+
+  /** The export of the package a name is bound to where it is written: `"*"` for a namespace import. */
+  const imported = (node: AnyNode): string | undefined => {
+    const bound = is(node, "Identifier") || is(node, "JSXIdentifier") ? boundTo(module, node) : undefined;
+    return bound?.kind === "module" && bound.binding?.kind === "import" && bound.binding.source === SOLIDITY_SPECIFIER
+      ? bound.binding.imported
+      : undefined;
+  };
+  /** The namespace import of the package that `node` reads `name` off, when it is written `namespace.name`. */
+  const namespaceOf = (node: AnyNode, name?: string): AnyNode | undefined => {
+    if (!is(node, "MemberExpression") || node.computed || (name !== undefined && node.property.name !== name))
+      return undefined;
+    const object = unwrap(node.object);
+    return imported(object) === "*" ? object : undefined;
+  };
+
   /** The uses of `contract` that are the start of a lens. */
   const used = new Set<AnyNode>();
   walk(program, (node) => {
@@ -63,10 +53,9 @@ export function find(module: SourceModule): LensSite[] {
     const callee = unwrap(node.callee);
     if (!is(callee, "MemberExpression") || callee.computed || callee.property.name !== "implementation") return;
     const declaration = unwrap(callee.object);
-    if (!is(declaration, "CallExpression") || !isPackageExport(module, unwrap(declaration.callee), "contract")) return;
+    if (!is(declaration, "CallExpression")) return;
     const factory = unwrap(declaration.callee);
-    const imported = is(factory, "MemberExpression") ? unwrap(factory.object) : factory;
-    if (isHidden(program, imported, imported.name as string)) return;
+    if (imported(factory) !== "contract" && !namespaceOf(factory, "contract")) return;
     used.add(factory);
 
     const [nameNode, functionsNode, optionsNode] = declaration.arguments.map(unwrap);
@@ -102,32 +91,27 @@ export function find(module: SourceModule): LensSite[] {
     sites.push({ node, declaration, name, functions: functionsNode, options: optionsNode, implementation });
   });
 
-  const others = (node: AnyNode): void => {
-    for (const key in node) {
-      if (SKIPPED_KEYS.has(key)) continue;
-      const value = node[key];
-      for (const child of (Array.isArray(value) ? value : [value]) as (AnyNode | null)[]) {
-        if (typeof child?.type !== "string" || (child.type.startsWith("TS") && !VALUE_NODES.has(child.type))) continue;
-        // A name that is declared, a property, a key, or a specifier of an import or an export is not a use.
-        const names = key === "id" || ((key === "property" || key === "key") && !node.computed);
-        if (
-          !names &&
-          !node.type.endsWith("Specifier") &&
-          !used.has(child) &&
-          isPackageExport(module, child, "contract")
-        ) {
-          const imported = is(child, "MemberExpression") ? unwrap(child.object) : child;
-          if (!isHidden(program, imported, imported.name as string))
-            fail(
-              module,
-              child,
-              "contract is written in one expression with its implementation, as contract(name, functions).implementation({ … }): used in any other way, a lens is not compiled",
-            );
-        }
-        others(child);
-      }
+  /** The reads of the package's namespace that are written `namespace.name`. */
+  const namespaceReads = new Set<AnyNode>();
+  walk(program, (node) => {
+    // `export { contract } from "…"` hands the package's contract to another module, where it is not found.
+    if (is(node, "ExportNamedDeclaration") && node.source?.value === SOLIDITY_SPECIFIER && node.exportKind !== "type")
+      for (const specifier of node.specifiers)
+        if (specifier.exportKind !== "type" && keyName(specifier.local) === "contract")
+          fail(module, specifier, NOT_A_LENS);
+    const namespace = namespaceOf(node);
+    if (namespace) {
+      namespaceReads.add(namespace);
+      if (namespaceOf(node, "contract") && !used.has(node)) fail(module, node, NOT_A_LENS);
     }
-  };
-  others(program);
+    const name = imported(node);
+    if (name === "contract" && !used.has(node)) fail(module, node, NOT_A_LENS);
+    if (name === "*" && !namespaceReads.has(node))
+      fail(
+        module,
+        node,
+        "a namespace import of the package is only read as namespace.name: read in any other way, a contract taken from it is not seen, and its lens is not compiled",
+      );
+  });
   return sites;
 }

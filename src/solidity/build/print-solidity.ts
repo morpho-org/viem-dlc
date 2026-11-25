@@ -17,7 +17,8 @@
  *   integer has no spelling: it is a located error asking for a bigint.
  *
  * What is only TypeScript is erased before anything is read: annotations, generics, `as`, `satisfies`,
- * `!`, a `this` parameter, and a type declared in a body. `Number(x)` and `BigInt(x)` print as `x`.
+ * `!`, a `this` parameter, and a type or anything else declared in a body that a compiler emits nothing
+ * for. Its name is no name of the body. `Number(x)` and `BigInt(x)` print as `x`.
  *
  * An operator is printed as the same operator. Parentheses come from the tree and never from the source
  * text, so a module prints the same from `.ts` and from built `.js`: an operator that is an operand of
@@ -36,11 +37,12 @@ import type { Span } from "oxc-parser";
 import {
   type AnyNode,
   children,
-  ERASED_STATEMENTS,
   is,
+  isErased,
   isThisParameter,
   keyName,
   patternNames,
+  printsNothing,
   unwrap,
   walk,
 } from "./ast.js";
@@ -357,7 +359,7 @@ class Printer {
   // ---- statements ------------------------------------------------------------------------------------------
   #statement(node: AnyNode): void {
     const out = this.#out;
-    if (ERASED_STATEMENTS.has(node.type)) return;
+    if (printsNothing(node)) return;
     out.line();
     out.node({ module: this.#module, node }, () => {
       switch (node.type) {
@@ -510,7 +512,7 @@ class Printer {
     if (is(node, "BlockStatement")) {
       this.#out.write(" ");
       this.#block(node);
-    } else if (ERASED_STATEMENTS.has(node.type))
+    } else if (printsNothing(node))
       this.#fail(node, "the body of an if or a loop is a statement or a block: an empty one is written {}");
     else {
       this.#scopes.push(new Map());
@@ -544,7 +546,7 @@ class Printer {
     if (!handler || node.finalizer) this.#fail(node, TRY);
     if (handler.param) this.#fail(handler.param as Span, "catch binds nothing in a lens: write catch { … }");
     const block = node.block as AnyNode;
-    const statements = (block.body as AnyNode[]).filter((statement) => !ERASED_STATEMENTS.has(statement.type));
+    const statements = (block.body as AnyNode[]).filter((statement) => !printsNothing(statement));
     const [statement] = statements;
     const expression =
       statements.length === 1 && is(statement, "ExpressionStatement") ? this.#strip(statement.expression) : undefined;
@@ -919,10 +921,11 @@ class Printer {
         // What is left is a field its struct declares, or the length of an array. A native member of a
         // Solidity type, such as the balance of an address, has no form in a lens.
         const receiver = this.#declaredType(object);
-        if (receiver?.kind === "struct") {
+        if (!receiver) this.#fail(node, this.#undeclaredReceiver(object, `"${property}" is read`, `.${property}`));
+        if (receiver.kind === "struct") {
           if (!receiver.declaration.fields.some((field) => field.name === property))
             this.#fail(node, `struct ${receiver.declaration.name} has no field "${property}"`);
-        } else if (receiver?.kind !== "array" || property !== "length")
+        } else if (receiver.kind !== "array" || property !== "length")
           this.#fail(
             node,
             `"${property}" is not a member a lens can read here. A member is a field of a struct, the length of an array, block.timestamp, block.number, or I.f.selector`,
@@ -1188,7 +1191,9 @@ class Printer {
     } else {
       this.#expression(object, true);
       // A native member of a Solidity type, such as the call of an address, has no form in a lens.
-      if (this.#declaredType(object)?.kind !== "interface")
+      const receiver = this.#declaredType(object);
+      if (!receiver) this.#fail(node, this.#undeclaredReceiver(object, `.${name}(…) is called`, `.${name}(…)`));
+      if (receiver.kind !== "interface")
         this.#fail(
           node,
           `.${name}(…) is not a call a lens can make here. A member is called on a handle of a declared interface, on a library, on this, or as abi.encode, abi.decode and I.f.encode`,
@@ -1196,6 +1201,17 @@ class Printer {
       out.write(`.${name}`);
     }
     this.#arguments(args);
+  }
+
+  /**
+   * Why a member cannot be taken off `object`: nothing in the source declares the type of `object`, and the
+   * printer works out the type of no expression. A conditional is the usual case, and says how it is written.
+   */
+  #undeclaredReceiver(object: AnyNode, what: string, member: string): string {
+    const rule = `${what} off an expression whose type no declaration gives. A member needs a receiver with a declared type: a parameter, a local, a field, an element of an array, or what a call returns`;
+    return is(object, "ConditionalExpression")
+      ? `${rule}. The type of a conditional is not worked out: take the member in each branch, as in c ? a${member} : b${member}`
+      : rule;
   }
 
   #arguments(args: readonly AnyNode[]): void {
@@ -1378,7 +1394,7 @@ class Printer {
   #hoist(statements: readonly AnyNode[]): void {
     const scope = this.#scopes.at(-1);
     for (const statement of statements) {
-      if (!is(statement, "VariableDeclaration")) continue;
+      if (!is(statement, "VariableDeclaration") || isErased(statement)) continue;
       for (const declarator of statement.declarations)
         for (const name of patternNames(declarator.id)) if (!scope?.has(name)) scope?.set(name, undefined);
     }
