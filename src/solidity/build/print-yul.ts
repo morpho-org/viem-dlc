@@ -20,8 +20,10 @@
  *
  * A function written with a block body follows the block's own rule: a final `return word` is
  * `r := word`, and a body with none is a function that returns nothing. A callback or a function
- * whose body is an expression returns that expression. `r` is the one name the printer chooses, so a
- * function that returns a word is refused where a Solidity local is already named `r`.
+ * whose body is an expression returns that expression. `r` is the one name the printer chooses. Where the
+ * block writes `r`, a Solidity local around it has that name, or a function around the function gives its
+ * own value that name, the name is `r_`, then `r__`, and so on. A name that is called is an opcode or a
+ * function declared in the block.
  *
  * A literal is an integer, respelled as in Solidity (`0n` is `0`, `0x1fn` is `0x1f`). A constant named
  * inside a block must be a single such literal, because Yul has no operators. Anything that is not in
