@@ -845,6 +845,14 @@ Next is supported with Turbopack. A webpack build of a configuration wrapped in 
 with an error, and webpack, esbuild and Bun have no integration yet. A loader rule the configuration
 already has for `*.{ts,tsx}` is kept, and runs after the lenses are compiled.
 
+Two limits come from Next itself:
+
+- Turbopack does not tell a loader whether a module is imported or required. An import that resolves
+  to a file its package lists for `require` is therefore refused, with an error at the import: the
+  application's own `import` may load another file.
+- With server fast refresh, `next dev` can keep serving the failure of a lens that has since been
+  repaired (seen with Next 16.4). Restart the server, or run `next dev --no-server-fast-refresh`.
+
 ### `solidity.config.json`
 
 One file per repository pins the compiler, so a lens compiles the same way in a build and in a test.

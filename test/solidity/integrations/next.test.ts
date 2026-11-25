@@ -6,9 +6,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { withSolidity } from "../../../src/solidity/build/adapters/next.js";
 import { type Evm, requireAnvil, startAnvil } from "../helpers/anvil.js";
+import { positionIn } from "../helpers/harness.js";
 
 import { describeHost } from "./helpers/host-suite.js";
 import { type Background, bin, freePort, Project, ROOT, waitFor } from "./helpers/project.js";
+import { expectHostResolution, REPORT, type Reported, VALUES, writeResolutionFixture } from "./helpers/resolution.js";
+import { expectNoLensSourceInMaps } from "./helpers/source-maps.js";
 
 const startDev = async (project: Project, ...flags: string[]) => {
   const port = await freePort();
@@ -88,10 +91,44 @@ describe("Next with Turbopack, beyond the shared suite", { timeout: 240_000 }, (
 
 describe("a Next build, beyond the shared suite", { timeout: 240_000 }, () => {
   let project: Project;
-  beforeAll(() => {
+  let evm: Evm | undefined;
+  beforeAll(async () => {
     project = new Project("next");
+    if (requireAnvil()) evm = await startAnvil();
   }, 60_000);
-  afterAll(() => project?.remove());
+  afterAll(() => {
+    evm?.stop();
+    project?.remove();
+  });
+
+  const RESOLVED_ROUTE = `import { DUAL, ResolvedLens, SCALE, UNIT } from "@/resolved/lens";
+
+export const dynamic = "force-static";
+
+export function GET() {
+  return new Response(${REPORT});
+}
+`;
+
+  // The loader asks Turbopack's resolver, which answers for the layer a module is built for: a route
+  // handler is built for the server, where a package's "react-server" answer is the one imported.
+  it.skipIf(!requireAnvil())(
+    "a lens reads the module Next bundles, under the conditions of the layer it is built for",
+    async () => {
+      project.restore();
+      // Turbopack resolves no `./only.js` to an `only.ts`, in an application module or for a loader.
+      writeResolutionFixture(project, "src/resolved", { dual: "import", sourceOnly: false });
+      project.write("src/app/api/resolved/route.ts", RESOLVED_ROUTE);
+      const built = await project.run([bin("next"), "build"]);
+      expect(built.ok, built.output).toBe(true);
+      await expectHostResolution(
+        evm as Evm,
+        JSON.parse(project.read(".next/server/app/api/resolved.body")) as Reported,
+        VALUES["fixture-units, under the condition 'react-server'"],
+        { sourceOnly: false },
+      );
+    },
+  );
 
   it("an application's own rule for the same files still runs, on a module with a lens and on one without", async () => {
     project.restore();
@@ -133,6 +170,58 @@ export function GET() {
       bytecode: (await project.expectedLens()).bytecode,
       marks: ["with a lens:marked", "without a lens:marked"],
     });
+  });
+
+  it("with browser and server source maps, no map holds a lens body", async () => {
+    project.restore();
+    project.write(
+      "src/client/quote.tsx",
+      `"use client";
+
+import { QuoteLens } from "@/lens";
+
+export function Quote() {
+  return <code>{QuoteLens.bytecode}</code>;
+}
+`,
+    );
+    project.write(
+      "src/app/client/page.tsx",
+      `import { Quote } from "@/client/quote";
+
+export default function Page() {
+  return <Quote />;
+}
+`,
+    );
+    project.edit(
+      "next.config.mjs",
+      "withSolidity({",
+      "withSolidity({\n  productionBrowserSourceMaps: true,\n  experimental: { serverSourceMaps: true },",
+    );
+    const built = await project.run([bin("next"), "build"]);
+    expect(built.ok, built.output).toBe(true);
+    const found = expectNoLensSourceInMaps(project, ".next", [".next/cache"]);
+    // The lens is mapped in a script for the browser and in one for the server.
+    expect(found.external.filter((map) => map.startsWith(".next/static/"))).not.toEqual([]);
+    expect(found.external.filter((map) => map.startsWith(".next/server/"))).not.toEqual([]);
+  });
+
+  // Turbopack's resolver is not told, for a loader, whether a module is imported or required, and
+  // gives the first of a package's two answers. Where "require" comes first, that is not what the
+  // application's import loads.
+  it("refuses an import that a package answers differently to require, at the import", async () => {
+    project.restore();
+    writeResolutionFixture(project, "src/resolved", { dual: "require", sourceOnly: false });
+    project.write("src/app/api/resolved/route.ts", RESOLVED_ROUTE);
+    const run = await project.run([bin("next"), "build"]);
+    expect(run.ok, run.output).toBe(false);
+    const lens = project.file("src/resolved/lens.ts");
+    const { line, column } = positionIn(project.read("src/resolved/lens.ts"), "DUAL } from");
+    expect(run.output).toContain(`${lens}:${line}:${column} - error: cannot resolve "fixture-dual" from ${lens}`);
+    expect(run.output).toContain(
+      `${lens}: cannot tell which file an import of "fixture-dual" loads. ${project.file("node_modules/fixture-dual/package.json")} gives require.js to "require", and Turbopack does not tell a loader whether a module is imported or required. A lens cannot read from a module resolved this way.`,
+    );
   });
 });
 
