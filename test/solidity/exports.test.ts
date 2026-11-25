@@ -70,9 +70,35 @@ describe("export * follows the rules of a JavaScript module", () => {
       },
     );
   });
+
+  it("refuses a name two export * declarations give as the namespaces of different modules", async () => {
+    const lens = reads('import { units } from "./barrel.js";', "units.X");
+    await expectRejection(
+      {
+        "lens.ts": lens,
+        "barrel.ts": 'export * from "./left.js";\nexport * from "./right.js";\n',
+        "left.ts": 'import * as units from "./small.js";\nexport { units };\n',
+        "right.ts": 'import * as units from "./large.js";\nexport { units };\n',
+        "small.ts": "export const X = 11n;\n",
+        "large.ts": "export const X = 22n;\n",
+      },
+      { message: "from different declarations", ...positionIn(lens, "units }"), source: "transform" },
+    );
+  });
 });
 
 describePairs("names that export * does give", {
+  "the namespace of one module, which two modules each import and export": {
+    ts: {
+      "lens.ts": reads('import { units } from "./top.js";', "units.X"),
+      "top.ts": 'export * from "./one.js";\nexport * from "./two.js";\n',
+      "one.ts": 'import * as units from "./provider.js";\nexport { units };\n',
+      "two.ts": 'import * as units from "./provider.js";\nexport { units };\n',
+      "provider.ts": "export const X = 33n;\n",
+    },
+    solidity: RUN.replace("VALUE", "33"),
+    calls: [{ functionName: "run" }],
+  },
   "one binding reached through two export * declarations": {
     ts: {
       "lens.ts": reads('import * as top from "./top.js";', "top.X"),

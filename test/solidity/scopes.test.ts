@@ -66,6 +66,55 @@ export const Real = contract("Real", { f: pure().returns(uint256) }).implementat
 `;
     expect(await lensesOf(code)).toEqual(["Real"]);
   });
+
+  it("leaves a name that a loop, a switch, a class, a function of a block or a namespace binds as it is", async () => {
+    const code = `import { contract, pure, uint256 } from "${PACKAGE}";
+export function counted(make) {
+  for (let contract = make; ; ) return contract("A", {}).implementation({});
+}
+export function listed(makers) {
+  for (const contract of makers) return contract("B", {}).implementation({});
+}
+export function keyed(makers) {
+  for (const contract in makers) return contract("C", {}).implementation({});
+}
+export function switched(make, on) {
+  switch (on) {
+    case 0:
+      const contract = make;
+    default:
+      return contract("D", {}).implementation({});
+  }
+}
+export function declared() {
+  for (;;) {
+    function contract(name) {
+      return { implementation: () => name };
+    }
+    return contract("E", {}).implementation({});
+  }
+}
+export function classed() {
+  class contract {
+    static again() {
+      return contract("F", {}).implementation({});
+    }
+  }
+  return contract;
+}
+export const expressed = class contract {
+  static again() {
+    return contract("G", {}).implementation({});
+  }
+};
+export namespace inner {
+  export const contract = (name: string, functions: object) => ({ implementation: (bodies: object) => name });
+  export const made = contract("H", {}).implementation({});
+}
+export const Real = contract("Real", { f: pure().returns(uint256) }).implementation({ f: () => 1n });
+`;
+    expect(await lensesOf(code)).toEqual(["Real"]);
+  });
 });
 
 describe("a lens cannot capture a binding of the code around it", () => {

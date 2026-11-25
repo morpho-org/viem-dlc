@@ -96,6 +96,23 @@ describe("the files a build reports", () => {
     expect(dependencies).toEqual(["width.ts", "solidity.config.json"]);
   });
 
+  it("are reported to a host whose own error is passed on as the host threw it", async () => {
+    const hostError = new Error("the host watches no more files");
+    const outcome = transform(
+      lens("uint256"),
+      path.join(DIR, "main.ts"),
+      {
+        resolve: (specifier, importer) => path.resolve(path.dirname(importer), specifier).replace(/\.js$/, ".ts"),
+        addDependency: (file) => {
+          if (path.basename(file) === "solidity.config.json") throw hostError;
+        },
+        readFile: () => "export const WIDTH = 256n;\n",
+      },
+      { cache: false },
+    );
+    await expect(outcome).rejects.toBe(hostError);
+  });
+
   it("are each reported once, for a module with two lenses", async () => {
     const two = `${lens("uint256")}
 export const OtherLens = contract("OtherLens", { width: pure().returns(uint256) }).implementation({

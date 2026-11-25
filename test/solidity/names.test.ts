@@ -151,6 +151,12 @@ export const Lens = contract("mapping", { f: pure().returns(uint256) }).implemen
       `"café" ${IDENTIFIER}`,
     ],
     [
+      "a local named with a sized integer type",
+      lens("const uint96 = x;\n    return uint96;"),
+      "uint96 = x",
+      `"uint96" ${RESERVED}`,
+    ],
+    [
       "a helper named with a sized type",
       lens("return bytes7(x);", "const bytes7 = internal(pure(uint256).returns(uint256), (a) => a);"),
       "bytes7 = internal",
@@ -211,6 +217,20 @@ export const Lens = contract("Lens", { f: pure(uint256).returns(uint256) }).impl
 });
 
 describePairs("names that are names in both languages", {
+  "names that look like sized types and are of no size Solidity has": {
+    ts: lens("const uint7 = x;\n    const int264 = uint7;\n    const bytes33 = int264;\n    return bytes33 + 1n;"),
+    solidity: `
+      contract Lens {
+          function f(uint256 x) external pure returns (uint256) {
+              uint256 uint7 = x;
+              uint256 int264 = uint7;
+              uint256 bytes33 = int264;
+              return bytes33 + 1;
+          }
+      }
+    `,
+    calls: [{ functionName: "f", args: [5n] }],
+  },
   "a field named like a built-in, and names with $ and _": {
     ts: `${IMPORTS}
       class Note extends Struct({ msg: uint256, block: uint256, $value: uint256 }) {}

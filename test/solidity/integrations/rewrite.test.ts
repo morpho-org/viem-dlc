@@ -7,7 +7,7 @@ import path from "node:path";
 import { parseSync } from "oxc-parser";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { transform } from "../../../src/solidity/build/index.js";
+import { parseModule, rewrite, transform } from "../../../src/solidity/build/index.js";
 import { positionIn } from "../helpers/harness.js";
 
 import { bin, Project } from "./helpers/project.js";
@@ -169,6 +169,30 @@ export const Lens = contract("Lens", { run: pure(uint256).returns(uint256) }).im
     expect((await transformSnippet({ "main.ts": mentions })).result).toBeNull();
     expect((await transformSnippet({ "main.ts": "export const one = 1;\n" })).result).toBeNull();
   });
+
+  it("is the module as it was written when no lens was built from it", () => {
+    expect(rewrite(parseModule(path.join(DIR, "main.ts"), source), [])).toBe(source);
+  });
+
+  it("puts its wrapper import beside a namespace import the lens is written through", async () => {
+    const viaNamespace = `import * as sol from "@morpho-org/viem-dlc/solidity";
+
+export const NamespaceLens = sol
+  .contract("NamespaceLens", { one: sol.pure().returns(sol.uint256) })
+  .implementation({ one: () => 1n });
+export const word = sol.uint256;
+`;
+    const code = (await transformSnippet({ "main.ts": viaNamespace })).result?.code ?? "";
+    expect(parseSync("main.ts", code).errors).toEqual([]);
+    expect(code.split("\n")).toHaveLength(viaNamespace.split("\n").length);
+    // On the line of the namespace import, which stays: the module still reads a name off it.
+    expect(code.split("\n")[0]).toMatch(
+      /^import \* as sol from "@morpho-org\/viem-dlc\/solidity";+import \{ compiledLens as __viemDlcCompiledLens \} from "@morpho-org\/viem-dlc\/solidity";$/,
+    );
+    expect(code).toContain("export const NamespaceLens = /*#__PURE__*/ __viemDlcCompiledLens({");
+    expect(code).not.toContain(".implementation(");
+    expect(code).toContain("export const word = sol.uint256;");
+  });
 });
 
 /** A module with one lens whose only helper is `scale`, and whatever else the module says. */
@@ -214,6 +238,24 @@ describe("what the rewritten module keeps, by binding", () => {
       "export const attempt = () => {\n  try {\n    return 1;\n  } catch (scale) {\n    return scale;\n  }\n};",
     ],
     ["a label", "export const first = () => {\n  scale: for (;;) break scale;\n};"],
+    [
+      "a local of a switch",
+      "export const pick = (on: number) => {\n  switch (on) {\n    default:\n      const scale = 3n;\n      return scale;\n  }\n};",
+    ],
+    [
+      "a function declared in a block",
+      "export const sizes: bigint[] = [];\n{\n  function scale() {\n    return 3n;\n  }\n  sizes.push(scale());\n}",
+    ],
+    ["a var declared in a block", "export function three() {\n  {\n    var scale = 3n;\n  }\n  return scale;\n}"],
+    [
+      "a value a namespace exports",
+      "export namespace Ruler {\n  export const scale = 3n;\n  export const twice = scale * 2n;\n}",
+    ],
+    [
+      "a value an ambient module declares and lists as an export",
+      'declare module "ruler" {\n  const scale: bigint;\n  export { scale };\n}',
+    ],
+    ["a name another module exports", 'export { scale as ruler } from "./ruler.js";'],
     ["the far side of an export alias", "const ruler = 3;\nexport { ruler as scale };"],
     ["a parameter in a type", "export type Ruler = (scale: bigint) => bigint;"],
   ])("%s spelled like a helper does not keep the helper", async (_what, rest) => {
