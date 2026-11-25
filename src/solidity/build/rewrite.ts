@@ -10,11 +10,15 @@
  * module-level binding, as a value or as a type. A property key, a label, or a parameter or local of the
  * same name is not among them, and a name read where its own scope does not yet hide it is.
  *
+ * A use that is not written is not seen. JSX is compiled to calls of a factory, and to reads of a
+ * fragment, that a pragma or an option of the compiler names: any binding of a module that holds JSX may
+ * be one of them. There, only the lens expressions are replaced, and nothing else is removed.
+ *
  * Every edit keeps the line count, so the rest of the file keeps its line numbers without a source map.
  */
 import type { Span } from "oxc-parser";
 
-import { type AnyNode, is, unwrap } from "./ast.js";
+import { type AnyNode, is, unwrap, walk } from "./ast.js";
 import { SOLIDITY_SPECIFIER } from "./builtins.js";
 import { LINE_TERMINATOR } from "./errors.js";
 import { usesOf } from "./scopes.js";
@@ -61,8 +65,12 @@ export function rewrite(module: SourceModule, lenses: readonly BuiltLens[]): str
   }
 
   // ---- what only the removed bodies used -----------------------------------------------------------------
-  /** True when something outside what is removed uses the binding. */
-  const live = (binding: ModuleBinding) => usesOf(module, binding).some((use) => !inRemoved(use.start));
+  let holdsJsx = false;
+  walk(module.program as unknown as AnyNode, (node) => {
+    holdsJsx ||= is(node, "JSXElement") || is(node, "JSXFragment");
+  });
+  /** True when something outside what is removed uses the binding, or may use it without writing it. */
+  const live = (binding: ModuleBinding) => holdsJsx || usesOf(module, binding).some((use) => !inRemoved(use.start));
 
   // Only the lenses' own declarations are candidates: their initializers are stub calls and literals,
   // so removing one cannot remove a side effect.
@@ -120,8 +128,7 @@ export function rewrite(module: SourceModule, lenses: readonly BuiltLens[]): str
       const binding = module.bindings.get(specifier.local.name);
       // An import of a type is no binding of the module, and is left for the compiler that erases it.
       if (binding?.node !== specifier) return true;
-      const uses = usesOf(module, binding);
-      return uses.every((use) => !inRemoved(use.start)) || uses.some((use) => !inRemoved(use.start));
+      return usesOf(module, binding).every((use) => !inRemoved(use.start)) || live(binding);
     });
     if (kept.length === statement.specifiers.length) continue;
     const text = (node: Span) => code.slice(node.start, node.end);

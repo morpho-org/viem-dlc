@@ -868,6 +868,11 @@ Every integration runs the same transform, and holds to the same rules:
     importing module's own package. Another package is reached by its name.
 
   The rest of the application imports what it likes: only what a lens reads is held to this.
+- **The module around a lens runs as it was written.** A lens is replaced with its compiled form,
+  and what only its body used goes with it: its helpers, structs and constants, and the imports
+  nothing else uses. A module that holds JSX keeps all of them. JSX is compiled to calls of a factory
+  that a pragma or a compiler option names, and the build does not read which of the module's names
+  that is.
 - **Nothing is written into the source tree.** The only files written are the tool's own output and
   the cache described below.
 
