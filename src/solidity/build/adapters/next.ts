@@ -54,6 +54,7 @@ export function withSolidity<C extends NextConfigLike>(config: C = {} as C): C {
             versionIn(new URL("../../../../package.json", import.meta.url)),
             versionOf("solc"),
             versionOf("oxc-parser"),
+            versionOf("@typescript-eslint/scope-manager"),
           ].join("+"),
         },
       },

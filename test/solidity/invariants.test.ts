@@ -76,7 +76,7 @@ describe("the packed package, installed without its optional peers", () => {
       const { withSolidity } = await import("@morpho-org/viem-dlc/solidity/next");
       console.log(JSON.stringify(withSolidity({}).turbopack.rules["*.{ts,tsx}"].loaders[0].options.cacheKey));
     `);
-    expect(cacheKey).toMatch(/^\d+\.\d+\.\d+[^+]*\+absent\+absent$/);
+    expect(cacheKey).toMatch(/^\d+\.\d+\.\d+[^+]*\+absent\+absent\+absent$/);
   });
 
   it("cannot import the build half, which is what needs them", () => {

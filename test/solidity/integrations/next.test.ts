@@ -320,9 +320,10 @@ describe("withSolidity", () => {
 
   it("keys Turbopack's cache on the versions that decide the output", async () => {
     const { default: manifest } = await import("../../../package.json", { with: { type: "json" } });
-    const [own, solc, parser] = loaderOf(withSolidity())?.options.cacheKey.split("+") ?? [];
+    const [own, solc, parser, scopes] = loaderOf(withSolidity())?.options.cacheKey.split("+") ?? [];
     expect(own).toBe(manifest.version);
     expect(solc).toBe(manifest.devDependencies.solc);
     expect(parser).toBe(manifest.devDependencies["oxc-parser"]);
+    expect(scopes).toBe(manifest.devDependencies["@typescript-eslint/scope-manager"]);
   });
 });
