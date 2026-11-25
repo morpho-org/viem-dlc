@@ -20,6 +20,7 @@
  * another plugin loads. A build stops at a lens in such a module, because a map would embed the lens
  * body. A dev server or a test run ships no map, and compiles the lens in its transform.
  */
+import { statSync } from "node:fs";
 import fs from "node:fs/promises";
 
 import { MENTIONS_PACKAGE } from "../builtins.js";
@@ -69,10 +70,28 @@ export interface SolidityPlugin {
 
 const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
 
-/** The file of a module: its id without the query, and without the fragment, it was asked for with. */
+const isFile = (file: string): boolean => {
+  try {
+    return statSync(file, { throwIfNoEntry: false })?.isFile() === true;
+  } catch {
+    // No path at all: the id of a module another plugin made up.
+    return false;
+  }
+};
+
+/**
+ * The file of a module: its id without the query and the fragment it was asked for with, whatever they
+ * hold. Everything that asks what kind of file a module is asks about this, never about the id.
+ *
+ * A query starts at the first `?`. A `#` starts a fragment, unless it is a character of the path, which
+ * Vite's resolver allows: so the file is the longest of the id's ends that is a file on disk, and where
+ * none is, what comes before the first `#`.
+ */
 const fileOf = (id: string): string => {
-  const [file = id] = id.split("?");
-  return SOURCE_FILE.test(file) ? file : file.replace(/#[^/]*$/, "");
+  const [path = id] = id.split("?");
+  if (!path.includes("#")) return path;
+  const ends = [path, ...[...path.matchAll(/#/g)].map((mark) => path.slice(0, mark.index)).reverse()];
+  return ends.find(isFile) ?? (ends.at(-1) as string);
 };
 
 const NOT_LOADED =
@@ -92,7 +111,10 @@ export function solidity(options: TransformOptions = {}): SolidityPlugin {
         code,
         file,
         {
-          resolve: async (specifier, importer) => (await context.resolve(specifier, importer))?.id.split("?")[0],
+          resolve: async (specifier, importer) => {
+            const resolved = await context.resolve(specifier, importer);
+            return resolved ? fileOf(resolved.id) : undefined;
+          },
           addDependency: (dependency) => {
             context.addWatchFile(dependency);
             const lensModules = dependents.get(dependency) ?? new Set<string>();
@@ -132,7 +154,7 @@ export function solidity(options: TransformOptions = {}): SolidityPlugin {
     async load(id) {
       // A query or a fragment may ask for something other than the module as written: those are left to
       // the loader that answers them, and the transform below sees what it returned.
-      if (id.includes("?") || !firstParty(id)) return null;
+      if (fileOf(id) !== id || !firstParty(id)) return null;
       const code = await fs.readFile(id, "utf8").catch(() => undefined);
       if (code === undefined) return null;
       const result = await compile(this, code, id, true);
