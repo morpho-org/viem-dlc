@@ -5,13 +5,14 @@
  * from the package directly, at any nesting depth. Its parts are literals written
  * in place, and anything else is a located error.
  *
- * Detection is by import binding, not by scope analysis: a local that shadows the imported `contract`
- * at the call would be taken for it.
+ * A name means its nearest binding: where a parameter or a local is named like the imported `contract`,
+ * or like the namespace it is read off, the call is ordinary code and is left as it is.
  */
 import { type AnyNode, is, unwrap, walk } from "./ast.js";
 import { SOLIDITY_SPECIFIER } from "./builtins.js";
 import { fail } from "./errors.js";
 import { refusedName } from "./names.js";
+import { isHidden } from "./scopes.js";
 import type { LensSite, SourceModule } from "./types.js";
 
 /** True when a module's text can hold a lens. Checked before parsing, so other files cost nothing. */
@@ -40,6 +41,9 @@ export function find(module: SourceModule): LensSite[] {
     if (!is(callee, "MemberExpression") || callee.computed || callee.property.name !== "implementation") return;
     const declaration = unwrap(callee.object);
     if (!is(declaration, "CallExpression") || !isPackageExport(module, unwrap(declaration.callee), "contract")) return;
+    const factory = unwrap(declaration.callee);
+    const imported = is(factory, "MemberExpression") ? unwrap(factory.object) : factory;
+    if (isHidden(module.program as unknown as AnyNode, imported, imported.name as string)) return;
 
     const [nameNode, functionsNode, optionsNode] = declaration.arguments.map(unwrap);
     if (!is(nameNode, "Literal") || typeof nameNode.value !== "string")

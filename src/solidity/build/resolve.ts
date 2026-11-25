@@ -23,6 +23,7 @@ import {
 } from "./builtins.js";
 import { fail } from "./errors.js";
 import { refusedName } from "./names.js";
+import { enclosingScopes } from "./scopes.js";
 import type {
   ConstantDeclaration,
   FunctionBody,
@@ -156,6 +157,25 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     }
   };
 
+  /** The names bound between the module's scope and the lens: the parameters and locals of the code around it. */
+  const around = new Set(
+    enclosingScopes(module.program as unknown as AnyNode, site.node).flatMap((scope) => [...scope]),
+  );
+
+  /**
+   * The value of a name written in `m`. A name means its nearest binding, and inside the lens a binding of the
+   * code around it is nearer than the module's: that is a capture, which a lens compiled ahead of time cannot make.
+   */
+  const valueOfIdentifier = (m: SourceModule, node: Span, name: string): Value => {
+    if (m === module && around.has(name) && node.start >= site.node.start && node.end <= site.node.end)
+      return error(
+        m,
+        node,
+        `"${name}" is a parameter or a local of the code around this lens, which a lens cannot capture. ${NAMES}.`,
+      );
+    return valueOfName(m, name, m, node);
+  };
+
   /** The value of the module-level name `name` of `m`. `user` and `at` are where it is used. */
   const valueOfName = (m: SourceModule, name: string, user: SourceModule, at: Span): Value => {
     const binding = m.bindings.get(name);
@@ -172,7 +192,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
    * other expression.
    */
   const staticValue = (m: SourceModule, node: AnyNode): Value | undefined => {
-    if (is(node, "Identifier")) return valueOfName(m, node.name, m, node);
+    if (is(node, "Identifier")) return valueOfIdentifier(m, node, node.name);
     if (is(node, "MemberExpression") && !node.computed) {
       const object = unwrap(node.object);
       if (!is(object, "Identifier") && !is(object, "MemberExpression")) return undefined;
@@ -292,7 +312,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
     switch (node.type) {
       case "Identifier": {
         const name = node.name as string;
-        if (!isLocal(name)) use(uses, asReference(valueOfName(m, name, m, node), m, node), node);
+        if (!isLocal(name)) use(uses, asReference(valueOfIdentifier(m, node, name), m, node), node);
         return;
       }
       case "MemberExpression": {
@@ -301,7 +321,7 @@ export function resolve(site: LensSite, module: SourceModule, loader: ModuleLoad
         let root = object;
         while (is(root, "MemberExpression") && !root.computed) root = unwrap(root.object);
         if (!node.computed && is(root, "Identifier") && !isLocal(root.name)) {
-          const base = valueOfName(m, root.name, m, root);
+          const base = valueOfIdentifier(m, root, root.name);
           const value = base.kind === "namespace" || base.kind === "package" ? staticValue(m, node) : undefined;
           if (value) {
             use(uses, asReference(value, m, node), node);
